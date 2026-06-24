@@ -6,16 +6,18 @@ incrementally — so contributions and bug reports are welcome.
 
 ## Development setup
 
-Requires Node `>=20` and npm.
+Requires Node `>=20` and [pnpm](https://pnpm.io/) (pinned via the
+`packageManager` field in `package.json`; run `corepack enable` to have the
+right version selected automatically).
 
 ```bash
-npm install
-npm run build        # tsc -> dist (emits JS + .d.ts)
-npm run typecheck    # tsc --noEmit
-npm run lint         # eslint
-npm run format       # prettier --write
-npm run format:check # prettier --check (what CI runs)
-npm test             # node --test
+pnpm install
+pnpm run build        # tsc -> dist (emits JS + .d.ts)
+pnpm run typecheck    # tsc --noEmit
+pnpm run lint         # eslint
+pnpm run format       # prettier --write
+pnpm run format:check # prettier --check (what CI runs)
+pnpm test             # node --test
 ```
 
 CI runs `format:check`, `lint`, `typecheck`, and `test` (on Node 20 and 22), plus
