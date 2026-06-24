@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run format:check
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm test
+
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check pinned API spec version against latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPEC_REPO: nexus-xyz/nexus-exchange-api
+        run: |
+          set -euo pipefail
+          pinned="$(tr -d '[:space:]' < .api-version)"
+          [ -n "$pinned" ] || { echo "::error file=.api-version::.api-version is empty"; exit 1; }
+          echo "Pinned API spec version: $pinned"
+          api="https://api.github.com/repos/${SPEC_REPO}"
+          pinned_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${api}/releases/tags/${pinned}")"
+          [ "$pinned_status" = "200" ] || { echo "::error::Pinned spec ${pinned} not found as a release in ${SPEC_REPO} (HTTP ${pinned_status})."; exit 1; }
+          latest="$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${api}/releases/latest" | jq -r '.tag_name // empty')"
+          [ -n "$latest" ] || { echo "::error::Could not determine latest release of ${SPEC_REPO}."; exit 1; }
+          echo "Latest API spec release:  $latest"
+          if [ "$pinned" != "$latest" ]; then
+            echo "::error::Spec drift: SDK pins ${pinned} but the latest Exchange API spec is ${latest}."
+            exit 1
+          fi
+          echo "No drift: pinned to the latest API spec (${pinned})."
