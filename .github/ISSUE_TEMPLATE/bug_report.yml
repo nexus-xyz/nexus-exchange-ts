@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a problem with the TypeScript SDK.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please do **not** include secrets (API keys,
+        signatures) in this report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: A minimal code snippet or steps that reproduce the issue.
+      render: typescript
+    validations:
+      required: true
+  - type: input
+    id: sdk-version
+    attributes:
+      label: SDK version
+      description: The version of "@nexus-xyz/exchange-ts" you're using.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Environment
+      description: Node version (and/or browser) and OS.
+      placeholder: e.g. Node 20.11 on macOS 14
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Any relevant error messages or stack traces.
+      render: shell
+    validations:
+      required: false

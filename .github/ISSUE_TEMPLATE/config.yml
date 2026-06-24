@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/nexus-xyz/nexus-exchange-ts/security/advisories/new
+    about: Please report security vulnerabilities privately — do not open a public issue.
+  - name: Nexus Exchange API spec
+    url: https://github.com/nexus-xyz/nexus-exchange-api
+    about: For issues with the underlying API spec rather than this SDK.
