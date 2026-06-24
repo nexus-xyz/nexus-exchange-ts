@@ -1,0 +1,48 @@
+{
+  "name": "@nexus-xyz/exchange-ts",
+  "version": "0.0.0",
+  "description": "Official TypeScript SDK for the Nexus Exchange API — a typed wrapper over the public REST + WebSocket API.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexus-xyz/nexus-exchange-ts.git"
+  },
+  "homepage": "https://github.com/nexus-xyz/nexus-exchange-ts#readme",
+  "bugs": {
+    "url": "https://github.com/nexus-xyz/nexus-exchange-ts/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.19.21",
+    "eslint": "^10.5.0",
+    "globals": "^17.7.0",
+    "prettier": "^3.8.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.62.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
