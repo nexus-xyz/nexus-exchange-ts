@@ -39,6 +39,29 @@ vendored spec still matches the upstream spec at the pinned tag. If the upstream
 spec adds, renames, or removes a schema, the check fails until the models and
 pin are updated to match.
 
+## Releasing
+
+Releases are automated. [release-please](https://github.com/googleapis/release-please)
+watches `main` and, from the Conventional Commit history, maintains a "release
+PR" that bumps the version (in `package.json`, `.release-please-manifest.json`,
+and the `SDK_VERSION` constant) and updates the changelog. **Merging that PR**
+is the release: release-please tags the commit and cuts a GitHub release, and
+the [`Release`](./.github/workflows/release.yml) workflow then re-runs the full
+build/lint/test gate and publishes to npm.
+
+The published tarball carries [npm provenance](https://docs.npmjs.com/generating-provenance-statements)
+(`--provenance`), attesting it was built from this repo at that commit. The
+artifact npm publishes is smoke-tested on every PR and again before publish via
+`npm run verify:pack`, which installs the packed tarball into a throwaway
+project and imports it.
+
+One-time setup: add an `NPM_TOKEN` repository secret (a granular automation
+token scoped to publish `@nexus-xyz/exchange-ts`). The `npm-publish`
+[environment](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
+can hold the secret and an optional manual-approval gate. As an even stronger
+alternative, npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)
+(OIDC) removes the long-lived token entirely.
+
 ## License
 
 Dual-licensed under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE), at

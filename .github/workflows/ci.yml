@@ -1,0 +1,44 @@
+name: CI
+
+# Build/lint/test/typecheck parity gate. This is the same set of checks the
+# release workflow re-runs before publishing, so a green CI on the merge commit
+# is what makes a release safe to cut.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: CI only ever reads the checkout. No secrets, no write scopes.
+permissions:
+  contents: read
+
+# One in-flight run per ref. Superseded PR pushes are cancelled (the checks are
+# read-only and idempotent, so cancelling wastes nothing); main is serialized
+# without cancellation so every landed commit is fully verified.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # Clean, lockfile-exact install — no implicit upgrades.
+      - run: npm ci
+
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+      # Prove the artifact npm would publish installs and imports cleanly.
+      - run: npm run verify:pack

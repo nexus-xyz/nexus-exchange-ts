@@ -31,7 +31,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:drift": "node scripts/check-spec-drift.mjs",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/*.test.ts",
+    "verify:pack": "node scripts/verify-pack.mjs",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
