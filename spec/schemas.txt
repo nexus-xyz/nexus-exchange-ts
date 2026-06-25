@@ -1,0 +1,36 @@
+# Component schemas the SDK provides a typed model for, checked against the
+# vendored spec (spec/openapi.json, pinned by .api-version) by
+# scripts/check-spec-drift.mjs. The check validates this list BOTH ways:
+#
+#   * every name here must exist in the spec's components.schemas (no
+#     removed/renamed/typo'd schema), AND must be exported as a matching model
+#     in src/models.ts (the list can't claim coverage the code doesn't have);
+#   * every schema in the spec must be listed here, or the check fails with a
+#     coverage gap — so a NEW upstream schema can't land unnoticed and unmodeled.
+#
+# So: when the pinned spec gains or renames a schema, update both this file and
+# src/models.ts, or the drift check fails. One schema name per line.
+LoginRequest
+LoginResponse
+Market
+MarketSummary
+MarketStatus
+AdlClosureRecord
+AdlEventRecord
+Ticker
+OrderBook
+Trade
+FundingSample
+OrderRequest
+OrderResponse
+Order
+AccountSummary
+CreditRequest
+CreditResponse
+RateLimitStatus
+Position
+AgentRegistrationRequest
+AgentInfo
+Fill
+Decimal
+TimestampMs
