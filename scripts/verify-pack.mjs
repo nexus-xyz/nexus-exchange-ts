@@ -55,14 +55,15 @@ const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
 const expectedName = pkg.name;
 const expectedVersion = pkg.version;
 
-// Create the tarball exactly as `pnpm publish` would (prepack rebuilds dist).
-// --json prints { name, version, filename, files } for the tarball it wrote.
-const packOut = run("pnpm", ["pack", "--json"]);
-const { filename } = JSON.parse(packOut);
-const tarball = resolve(REPO, filename);
-
 const work = mkdtempSync(join(tmpdir(), "exchange-ts-pack-"));
 try {
+  // Create the tarball exactly as `pnpm publish` would (prepack rebuilds dist),
+  // writing it into the temp dir. We pin the output path with --out rather than
+  // parse stdout: the prepack script's output is interleaved on stdout, so the
+  // --json form is not reliably machine-readable.
+  const tarball = join(work, "package.tgz");
+  run("pnpm", ["pack", "--out", tarball]);
+
   // A throwaway consumer project, fully isolated from the developer's pnpm
   // state via a temp store and --ignore-workspace.
   writeFileSync(
@@ -120,6 +121,6 @@ try {
     `\nverify-pack: ${expectedName}@${expectedVersion} packs and imports cleanly.`,
   );
 } finally {
+  // Removes the throwaway project, its temp store, and the tarball it holds.
   rmSync(work, { recursive: true, force: true });
-  rmSync(tarball, { force: true });
 }
