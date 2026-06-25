@@ -104,7 +104,9 @@ export function resolveConfig(config: ClientConfig = {}): ResolvedConfig {
   return {
     baseUrl,
     timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    maxAttempts: config.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+    // Clamp to >= 1 so the request loop always runs at least once; a 0/negative
+    // value would skip the loop entirely and surface as `throw undefined`.
+    maxAttempts: Math.max(1, config.maxAttempts ?? DEFAULT_MAX_ATTEMPTS),
     fetch: fetchImpl,
   };
 }
