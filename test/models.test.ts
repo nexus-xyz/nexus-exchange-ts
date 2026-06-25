@@ -9,6 +9,7 @@ import type {
   OrderRequest,
   Order,
   Ticker,
+  Trade,
   Fill,
   AccountSummary,
   Candle,
@@ -94,6 +95,22 @@ test("Order, Ticker, Fill, AccountSummary, Candle accept wire shapes", () => {
   assert.equal(fill.taker_or_maker, "taker");
   assert.equal(account.positions.length, 0);
   assert.equal(candle.length, 6);
+});
+
+test("open-union response fields accept known and forward-compatible values", () => {
+  // Known request-enum values narrow cleanly...
+  const limit: Order["order_type"] = "Limit";
+  const gtc: Order["time_in_force"] = "GTC";
+  const maker: Trade["takerOrMaker"] = "maker";
+  // ...and values outside the public request enum (e.g. an order placed via
+  // another client) still type-check, so listing them never fails to parse.
+  const stop: Order["order_type"] = "StopLimit";
+  const postOnly: Order["time_in_force"] = "PostOnly";
+  const nullTaker: Trade["takerOrMaker"] = null;
+  assert.deepEqual(
+    [limit, gtc, maker, stop, postOnly, nullTaker],
+    ["Limit", "GTC", "maker", "StopLimit", "PostOnly", null],
+  );
 });
 
 test("vendored spec carries no internal hosts or ENG/Linear references", () => {

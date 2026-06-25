@@ -46,6 +46,19 @@ export type OrderType = "Limit" | "Market";
 /** Time-in-force accepted by `POST /orders`. */
 export type TimeInForce = "GTC" | "IOC" | "FOK";
 
+/**
+ * An "open" string literal union: the listed members are surfaced for
+ * autocomplete and type-narrowing, but any other `string` is still assignable.
+ *
+ * Used for response fields the spec types as a bare `string` (no `enum`) even
+ * though the request side is enumerated — e.g. `Order.order_type`. A closed
+ * union there would be a type lie: an account can hold an order placed by a
+ * different client (a stop/take-profit order from the web UI) whose echoed
+ * value falls outside the request enum. This keeps the SDK forward-compatible
+ * with values the public request surface can't itself produce.
+ */
+export type OpenUnion<T extends string> = T | (string & {});
+
 /** Lifecycle status of an {@link Order}. */
 export type OrderStatus =
   | "Open"
@@ -258,7 +271,12 @@ export interface Trade {
   side: TradeSide;
   timestamp: TimestampMs;
   datetime: string;
-  takerOrMaker: string | null;
+  /**
+   * `"taker"` / `"maker"` when known, else `null`. The spec leaves this an open
+   * (un-enumerated) string on public trades — unlike {@link Fill}, where it is
+   * a closed `TakerOrMaker` — so the value is surfaced but not constrained.
+   */
+  takerOrMaker: OpenUnion<TakerOrMaker> | null;
   is_liquidation: boolean;
   info: Record<string, unknown>;
 }
@@ -299,12 +317,19 @@ export interface Order {
   market_id: string;
   account_id: string;
   side: OrderSide;
-  order_type: string;
+  /**
+   * Echoed order type. `OrderType` (`Limit`/`Market`) covers everything the
+   * public `POST /orders` can create, but the spec keeps this open: an account
+   * may also hold orders placed by other clients (e.g. stop / take-profit from
+   * the web UI) whose type falls outside that set.
+   */
+  order_type: OpenUnion<OrderType>;
   price: Decimal;
   quantity: Decimal;
   filled_qty: Decimal;
   status: OrderStatus;
-  time_in_force: string;
+  /** Echoed time-in-force; open for the same reason as {@link Order.order_type}. */
+  time_in_force: OpenUnion<TimeInForce>;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }
