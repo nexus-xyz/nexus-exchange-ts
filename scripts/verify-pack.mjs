@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Published-artifact smoke test — proves the tarball npm would publish is
+ * Published-artifact smoke test — proves the tarball pnpm would publish is
  * actually consumable.
  *
- * `npm publish` ships exactly what `npm pack` produces, which is *not* the
+ * `pnpm publish` ships exactly what `pnpm pack` produces, which is *not* the
  * working tree: it is the `files` allowlist after `prepack` runs. A green
  * build/test on the source tree therefore does not prove the published package
  * resolves — a wrong `main`/`types`/`exports`, a `dist/` left out of `files`,
@@ -13,9 +13,10 @@
  * is reachable and the advertised types file exists.
  *
  * Safety properties:
- *   - Pure local: the package has no runtime dependencies, so installing the
- *     tarball touches no registry. We pass --no-audit/--no-fund and an isolated
- *     cache + prefix so a run can never mutate the developer's npm state.
+ *   - Isolated: installs into a temp project with a temp pnpm store
+ *     (--store-dir) and --ignore-workspace, so a run can never mutate the
+ *     developer's pnpm state or attach to a surrounding workspace. The package
+ *     has no runtime dependencies, so the install touches no registry.
  *   - No shell: every external command goes through execFileSync with an
  *     argument array, so nothing is interpolated into a shell string.
  *   - Self-cleaning: the temp dir and the packed tarball are always removed in
@@ -54,16 +55,16 @@ const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
 const expectedName = pkg.name;
 const expectedVersion = pkg.version;
 
-// Create the tarball exactly as `npm publish` would (prepack rebuilds dist).
-// --json prints a one-element array describing the tarball it wrote into REPO.
-const packOut = run("npm", ["pack", "--json", "--silent"]);
-const [{ filename }] = JSON.parse(packOut);
+// Create the tarball exactly as `pnpm publish` would (prepack rebuilds dist).
+// --json prints { name, version, filename, files } for the tarball it wrote.
+const packOut = run("pnpm", ["pack", "--json"]);
+const { filename } = JSON.parse(packOut);
 const tarball = resolve(REPO, filename);
 
 const work = mkdtempSync(join(tmpdir(), "exchange-ts-pack-"));
 try {
-  // A throwaway consumer project. Isolate npm's cache/state inside `work` so
-  // nothing leaks into the user's environment.
+  // A throwaway consumer project, fully isolated from the developer's pnpm
+  // state via a temp store and --ignore-workspace.
   writeFileSync(
     join(work, "package.json"),
     JSON.stringify({
@@ -73,19 +74,15 @@ try {
     }) + "\n",
   );
   run(
-    "npm",
+    "pnpm",
     [
-      "install",
+      "add",
       tarball,
-      "--no-audit",
-      "--no-fund",
-      "--no-package-lock",
-      "--cache",
-      join(work, ".npm-cache"),
+      "--ignore-workspace",
+      "--store-dir",
+      join(work, ".pnpm-store"),
     ],
-    {
-      cwd: work,
-    },
+    { cwd: work },
   );
 
   // The advertised types entry must actually be in the tarball.

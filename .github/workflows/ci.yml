@@ -23,22 +23,31 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest supported (engines: >=20) and current LTS.
+        node-version: ["20", "22"]
     steps:
       - uses: actions/checkout@v4
 
+      # Install the pnpm version pinned by package.json's "packageManager" field.
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: npm
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
 
-      # Clean, lockfile-exact install — no implicit upgrades.
-      - run: npm ci
+      # Fail if pnpm-lock.yaml is out of sync with package.json — installs are
+      # exact and reproducible, no implicit upgrades.
+      - run: pnpm install --frozen-lockfile
 
-      - run: npm run format:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm test
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm test
 
-      # Prove the artifact npm would publish installs and imports cleanly.
-      - run: npm run verify:pack
+      # Prove the artifact pnpm would publish installs and imports cleanly.
+      - run: pnpm run verify:pack

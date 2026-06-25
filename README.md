@@ -32,7 +32,7 @@ This SDK targets a released version of the Exchange API spec, pinned in
 The spec lives in
 [`nexus-xyz/nexus-exchange-api`](https://github.com/nexus-xyz/nexus-exchange-api).
 
-A drift check (`npm run check:drift`, run in CI) keeps four things in lockstep:
+A drift check (`pnpm run check:drift`, run in CI) keeps four things in lockstep:
 the pin, the vendored spec, the targeted schema list
 ([`spec/schemas.txt`](./spec/schemas.txt)), and the models — and verifies the
 vendored spec still matches the upstream spec at the pinned tag. If the upstream
@@ -47,12 +47,12 @@ PR" that bumps the version (in `package.json`, `.release-please-manifest.json`,
 and the `SDK_VERSION` constant) and updates the changelog. **Merging that PR**
 is the release: release-please tags the commit and cuts a GitHub release, and
 the [`Release`](./.github/workflows/release.yml) workflow then re-runs the full
-build/lint/test gate and publishes to npm.
+build/lint/test gate and `pnpm publish`es to npm.
 
 The published tarball carries [npm provenance](https://docs.npmjs.com/generating-provenance-statements)
 (`--provenance`), attesting it was built from this repo at that commit. The
-artifact npm publishes is smoke-tested on every PR and again before publish via
-`npm run verify:pack`, which installs the packed tarball into a throwaway
+artifact published is smoke-tested on every PR and again before publish via
+`pnpm run verify:pack`, which installs the packed tarball into a throwaway
 project and imports it.
 
 One-time setup: add an `NPM_TOKEN` repository secret (a granular automation

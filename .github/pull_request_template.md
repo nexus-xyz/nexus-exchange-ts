@@ -15,8 +15,8 @@ Use a Conventional Commit style title (feat:, fix:, docs:, chore:, ci:, …).
 
 ## Checklist
 
-- [ ] `npm run format:check` passes
-- [ ] `npm run lint` passes
-- [ ] `npm run typecheck` passes
-- [ ] `npm test` passes
+- [ ] `pnpm run format:check` passes
+- [ ] `pnpm run lint` passes
+- [ ] `pnpm run typecheck` passes
+- [ ] `pnpm test` passes
 - [ ] Public API changes are reflected in `src/index.ts` and documented

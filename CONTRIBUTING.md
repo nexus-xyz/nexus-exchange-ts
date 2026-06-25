@@ -6,21 +6,24 @@ incrementally — so contributions and bug reports are welcome.
 
 ## Development setup
 
-Requires Node `>=20` and npm.
+Requires Node `>=20` and [pnpm](https://pnpm.io). The pnpm version is pinned in
+`package.json` (`packageManager`); with [Corepack](https://nodejs.org/api/corepack.html)
+enabled (`corepack enable`) the right version is selected automatically.
 
 ```bash
-npm install
-npm run build        # tsc -> dist (emits JS + .d.ts)
-npm run typecheck    # tsc --noEmit
-npm run lint         # eslint
-npm run format       # prettier --write
-npm run format:check # prettier --check (what CI runs)
-npm test             # node --test
+pnpm install
+pnpm run build        # tsc -> dist (emits JS + .d.ts)
+pnpm run typecheck    # tsc --noEmit
+pnpm run lint         # eslint
+pnpm run format       # prettier --write
+pnpm run format:check # prettier --check (what CI runs)
+pnpm test             # node --test
+pnpm run verify:pack  # pack the tarball and import it, as a consumer would
 ```
 
-CI runs `format:check`, `lint`, `typecheck`, and `test` (on Node 20 and 22), plus
-a `drift` check on the pinned API spec. Please make sure all of these pass
-locally before opening a pull request.
+CI runs `format:check`, `lint`, `typecheck`, `test`, and `verify:pack` (on Node
+20 and 22), plus a `drift` check on the pinned API spec. Please make sure all of
+these pass locally before opening a pull request.
 
 ## Pull requests
 
