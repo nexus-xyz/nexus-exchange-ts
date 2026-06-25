@@ -1,0 +1,2708 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Nexus Exchange API",
+    "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.",
+    "version": "0.4.0"
+  },
+  "servers": [
+    {
+      "url": "https://exchange.nexus.xyz/api/exchange",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:9090",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Authentication",
+      "description": "EVM wallet sign-in and API key management"
+    },
+    {
+      "name": "Agents",
+      "description": "Agent key registration and management (EIP-712 signed, no session token required)"
+    },
+    {
+      "name": "Markets",
+      "description": "Market parameters and summaries"
+    },
+    {
+      "name": "Tickers",
+      "description": "24h price statistics",
+      "x-ccxt": true
+    },
+    {
+      "name": "Order Book",
+      "description": "Live order book depth",
+      "x-ccxt": true
+    },
+    {
+      "name": "Trades",
+      "description": "Recent trade history",
+      "x-ccxt": true
+    },
+    {
+      "name": "Candles",
+      "description": "OHLCV candlestick data",
+      "x-ccxt": true
+    },
+    {
+      "name": "Funding",
+      "description": "Funding rate history"
+    },
+    {
+      "name": "Trading",
+      "description": "Order submission and cancellation"
+    },
+    {
+      "name": "Account",
+      "description": "Balance and order management"
+    },
+    {
+      "name": "Positions",
+      "description": "Open position queries"
+    },
+    {
+      "name": "WebSocket",
+      "description": "Real-time streaming via short-lived tokens"
+    },
+    {
+      "name": "Admin",
+      "description": "Tier management (requires ADMIN_SECRET)"
+    }
+  ],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Sign in with EVM wallet",
+        "description": "Submit an EIP-191 personal_sign signature to receive a session token. The session token is used to create and manage API keys via /keys endpoints. For trading, use HMAC API keys instead. Session tokens expire after 24 hours.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              },
+              "example": {
+                "message": "Sign in to Nexus Exchange",
+                "signature": "0x1234...abcd"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                },
+                "example": {
+                  "token": "a1b2c3d4e5f6...",
+                  "address": "0xAbCdEf0123456789..."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Signature verification failed"
+          }
+        }
+      }
+    },
+    "/keys": {
+      "post": {
+        "operationId": "createApiKey",
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Create an API key",
+        "description": "Create a new HMAC API key for the authenticated wallet. Returns the secret once \u2014 it is never stored or shown again. Requires a session token (Bearer) from POST /auth/login.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key created",
+            "content": {
+              "application/json": {
+                "example": {
+                  "key_id": "nx_a1b2c3d4e5f67890",
+                  "secret": "deadbeef..."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Valid session token required"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listApiKeys",
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "List your API keys",
+        "description": "Returns key IDs and tiers for all keys owned by the authenticated wallet. Secrets are not included.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session's API keys.",
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "key_id": "nx_a1b2c3d4e5f67890",
+                    "tier": "Pro"
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Valid session token required"
+          }
+        }
+      }
+    },
+    "/keys/{key_id}": {
+      "delete": {
+        "operationId": "deleteApiKey",
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Delete an API key",
+        "description": "Delete a key you own. Cannot delete keys owned by other wallets.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key deleted"
+          },
+          "401": {
+            "description": "Valid session token required"
+          },
+          "404": {
+            "description": "Key not found or not owned by you"
+          }
+        }
+      }
+    },
+    "/agents/register": {
+      "post": {
+        "operationId": "registerAgent",
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Register an agent key",
+        "description": "Register a new agent key for your wallet. An agent is an Ethereum-derived keypair that can sign trading requests on your behalf without exposing your main wallet. The registration is authorized by an EIP-712 signature from the wallet that will own the agent \u2014 no session token required.\n\nEIP-712 domain: `{ name: 'NexusExchange', version: '1', chainId: <testnet chain id> }`.\nTyped data type: `RegisterAgent { address agent, uint256 expiresAt, uint256 nonce }`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRegistrationRequest"
+              },
+              "example": {
+                "wallet": "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+                "agent": "0x1234567890AbCdEf1234567890AbCdEf12345678",
+                "expires_at": 1782000000000,
+                "nonce": 1,
+                "signature": "0xdeadbeef..."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Agent registered",
+            "content": {
+              "application/json": {
+                "example": {
+                  "agent_address": "0x1234567890AbCdEf1234567890AbCdEf12345678",
+                  "expires_at": 1782000000000
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request: bad_wallet, bad_agent, expiry_out_of_range [1 d, 90 d from now], or invalid_json"
+          },
+          "401": {
+            "description": "signature_invalid or signer_mismatch \u2014 the EIP-712 signature did not recover to the claimed wallet"
+          },
+          "409": {
+            "description": "duplicate_agent \u2014 the agent address is already registered to this wallet"
+          }
+        }
+      }
+    },
+    "/agents": {
+      "get": {
+        "operationId": "listAgents",
+        "tags": [
+          "Agents"
+        ],
+        "summary": "List your agents",
+        "description": "Returns all non-expired agent keys registered to the authenticated wallet.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of agent records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentInfo"
+                  }
+                },
+                "example": [
+                  {
+                    "address": "0x1234567890AbCdEf1234567890AbCdEf12345678",
+                    "expiresAt": 1782000000000,
+                    "registeredAt": 1779000000000,
+                    "label": "my-bot"
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "HMAC authentication required"
+          }
+        }
+      }
+    },
+    "/agents/{address}": {
+      "delete": {
+        "operationId": "revokeAgent",
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Revoke an agent",
+        "description": "Immediately revoke an agent key. Any in-flight requests signed by the revoked agent will be rejected after this call returns.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Agent address to revoke (0x-prefixed)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent revoked"
+          },
+          "401": {
+            "description": "HMAC authentication required"
+          },
+          "404": {
+            "description": "Agent not found or not owned by you"
+          }
+        }
+      }
+    },
+    "/ws-tokens": {
+      "post": {
+        "operationId": "createWsToken",
+        "tags": [
+          "WebSocket"
+        ],
+        "summary": "Mint a WebSocket token (legacy)",
+        "description": "Legacy endpoint. Prefer POST /ws/token which supports both HMAC keys and registered agents. Returns a short-lived (60s), single-use token for the public /stream endpoint.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A minted WebSocket authentication token.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "token": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "HMAC authentication required"
+          }
+        }
+      }
+    },
+    "/ws/token": {
+      "post": {
+        "operationId": "createWsTokenLegacy",
+        "tags": [
+          "WebSocket"
+        ],
+        "summary": "Mint a WebSocket token",
+        "description": "Returns a short-lived (60s), single-use token bound to the authenticated account. Pass it as `?token=TOKEN` when upgrading to `GET /ws`. Supports HMAC keys, registered agent keys, and session tokens (Bearer). The token encodes the account identity so per-account channels (orders, fills, positions, balances) are automatically scoped to the connected wallet.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token minted",
+            "content": {
+              "application/json": {
+                "example": {
+                  "token": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          }
+        }
+      }
+    },
+    "/markets": {
+      "get": {
+        "tags": [
+          "Markets"
+        ],
+        "summary": "List all markets",
+        "operationId": "fetchMarkets",
+        "description": "Returns market parameters for all perpetual futures markets including tick size, lot size, margin rates, and maximum leverage.",
+        "x-ccxt-method": "fetchMarkets",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of market parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Market"
+                  }
+                },
+                "example": [
+                  {
+                    "market_id": "BTC-USDX-PERP",
+                    "base_asset": "BTC",
+                    "quote_asset": "USDX",
+                    "tick_size": "0.5",
+                    "lot_size": "0.001",
+                    "min_order_size": "0.001",
+                    "max_order_size": "100",
+                    "initial_margin_rate": "0.05",
+                    "maintenance_margin_rate": "0.025",
+                    "max_leverage": 20
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/summary": {
+      "get": {
+        "operationId": "fetchMarketsSummary",
+        "tags": [
+          "Markets"
+        ],
+        "summary": "Market summaries with volume",
+        "description": "Returns last trade price, 24h volume, and trade count for all markets.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Volume and price summaries for all markets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MarketSummary"
+                  }
+                },
+                "example": [
+                  {
+                    "market_id": "BTC-USDX-PERP",
+                    "last_trade_price": 48850,
+                    "volume_24h": 19530020.08,
+                    "trade_count": 45230
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/ticker": {
+      "get": {
+        "tags": [
+          "Tickers"
+        ],
+        "summary": "Get ticker for a market",
+        "operationId": "fetchTicker",
+        "x-ccxt-method": "fetchTicker",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current ticker for the market.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ticker"
+                },
+                "example": {
+                  "symbol": "BTC-USDX-PERP",
+                  "timestamp": 1776033911836,
+                  "datetime": "2026-04-12T22:45:11.836Z",
+                  "high": 50500,
+                  "low": 49200,
+                  "bid": 50100.5,
+                  "bidVolume": 1.4,
+                  "ask": 50102,
+                  "askVolume": 0.8,
+                  "open": 49800,
+                  "close": 50100,
+                  "last": 50100,
+                  "change": 300,
+                  "percentage": 0.602,
+                  "baseVolume": 1250.5,
+                  "quoteVolume": 62525000,
+                  "markPrice": 50101.5,
+                  "indexPrice": null,
+                  "info": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Market not found"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/tickers": {
+      "get": {
+        "tags": [
+          "Tickers"
+        ],
+        "summary": "Get tickers for all markets",
+        "operationId": "fetchTickers",
+        "x-ccxt-method": "fetchTickers",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Object keyed by market_id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/Ticker"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/orderbook": {
+      "get": {
+        "tags": [
+          "Order Book"
+        ],
+        "summary": "Get order book",
+        "operationId": "fetchOrderBook",
+        "x-ccxt-method": "fetchOrderBook",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current order book for the market.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderBook"
+                },
+                "example": {
+                  "symbol": "BTC-USDX-PERP",
+                  "bids": [
+                    [
+                      50100.5,
+                      1.4
+                    ],
+                    [
+                      50099,
+                      2.1
+                    ]
+                  ],
+                  "asks": [
+                    [
+                      50102,
+                      0.8
+                    ],
+                    [
+                      50103.5,
+                      1.2
+                    ]
+                  ],
+                  "timestamp": 1776033930898,
+                  "datetime": "2026-04-12T22:45:30.898Z",
+                  "nonce": 1651
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Market not found"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/trades": {
+      "get": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Get recent trades",
+        "operationId": "fetchTrades",
+        "x-ccxt-method": "fetchTrades",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 1000
+            },
+            "description": "Number of trades to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent trades for the market.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Trade"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "cf72c7f3-4c59-4d3c-85c8-99d92bc1fda7",
+                    "symbol": "BTC-USDX-PERP",
+                    "price": 50100.5,
+                    "amount": 0.033,
+                    "cost": 1653.32,
+                    "side": "buy",
+                    "timestamp": 1776033942331,
+                    "datetime": "2026-04-12T22:45:42.331Z",
+                    "takerOrMaker": null,
+                    "is_liquidation": false,
+                    "info": {}
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/candles": {
+      "get": {
+        "tags": [
+          "Candles"
+        ],
+        "summary": "Get OHLCV candles",
+        "operationId": "fetchOHLCV",
+        "x-ccxt-method": "fetchOHLCV",
+        "description": "Returns candlestick data as arrays: [timestamp, open, high, low, close, volume].",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          },
+          {
+            "name": "timeframe",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1s",
+                "1m",
+                "5m",
+                "1h"
+              ],
+              "default": "1m"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OHLCV candles for the market.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "integer",
+                        "description": "timestamp (ms)"
+                      },
+                      {
+                        "type": "number",
+                        "description": "open"
+                      },
+                      {
+                        "type": "number",
+                        "description": "high"
+                      },
+                      {
+                        "type": "number",
+                        "description": "low"
+                      },
+                      {
+                        "type": "number",
+                        "description": "close"
+                      },
+                      {
+                        "type": "number",
+                        "description": "volume"
+                      }
+                    ]
+                  }
+                },
+                "example": [
+                  [
+                    1776033900000,
+                    48062,
+                    51903,
+                    44992,
+                    51903,
+                    27.123
+                  ]
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/funding": {
+      "get": {
+        "operationId": "fetchFunding",
+        "tags": [
+          "Funding"
+        ],
+        "summary": "Get funding rate history",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 300,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Funding rate history for the market.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FundingSample"
+                  }
+                },
+                "example": [
+                  {
+                    "timestamp": 1776033960368,
+                    "funding_rate": "0.000000016",
+                    "premium_index": "0.004192",
+                    "mark_price": "49756.75",
+                    "oracle_price": "49549.0"
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/status": {
+      "get": {
+        "operationId": "fetchMarketStatus",
+        "tags": [
+          "Markets"
+        ],
+        "summary": "Get market status and halt info (v0.21)",
+        "description": "Returns current market status including halt state from ADL exhaustion. Halted markets reject new orders with ExchangeError::MarketHalted.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Market status and halt information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Market not found"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/adl-events": {
+      "get": {
+        "operationId": "fetchAdlEvents",
+        "tags": [
+          "Markets"
+        ],
+        "summary": "Get ADL settlement history for a market (v0.21)",
+        "description": "Returns up to `limit` ADL settlement events for the market, most recent first. Populated when the insurance fund is depleted and auto-deleveraging closes opposite-side positions to absorb bad debt.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ADL settlement history for the market.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdlEventRecord"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/account/{address}/adl-history": {
+      "get": {
+        "operationId": "fetchAdlHistory",
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get ADL events touching an account (v0.21)",
+        "description": "Returns ADL settlements where the specified address was either the bankrupt target or one of the counterparties whose position was closed.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Account address (0x-prefixed hex)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ADL events touching the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdlEventRecord"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/markets/{market_id}/mark-price": {
+      "get": {
+        "operationId": "fetchMarkPrice",
+        "tags": [
+          "Markets"
+        ],
+        "summary": "Get mark price",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MarketId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current mark price for the market.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "market_id": "BTC-USDX-PERP",
+                  "mark_price": "50011.60"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "tags": [
+          "Trading"
+        ],
+        "summary": "Submit an order",
+        "operationId": "createOrder",
+        "x-ccxt-method": "createOrder",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              },
+              "example": {
+                "market_id": "BTC-USDX-PERP",
+                "side": "Buy",
+                "order_type": "Limit",
+                "price": "50000",
+                "quantity": "0.1",
+                "time_in_force": "GTC"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Order accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (insufficient margin, invalid tick size, etc.)"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "List open orders",
+        "operationId": "fetchOpenOrders",
+        "x-ccxt-method": "fetchOpenOrders",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's open orders.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Order"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Trading"
+        ],
+        "summary": "Cancel all orders",
+        "operationId": "cancelAllOrders",
+        "x-ccxt-method": "cancelAllOrders",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "market_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Cancel only orders on this market"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled orders returned"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/orders/batch": {
+      "post": {
+        "operationId": "createOrdersBatch",
+        "tags": [
+          "Trading"
+        ],
+        "summary": "Submit multiple orders",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OrderRequest"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Array of order responses"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "description": "Submit multiple orders in one request. Orders are processed sequentially and non-atomically: an early order consuming margin can cause a later order in the same batch to fail, and per-order failures do not abort the batch. The response array preserves request order with a per-order success or error result."
+      }
+    },
+    "/orders/{order_id}": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get order by ID",
+        "operationId": "fetchOrder",
+        "x-ccxt-method": "fetchOrder",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Order not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Trading"
+        ],
+        "summary": "Cancel an order",
+        "operationId": "cancelOrder",
+        "x-ccxt-method": "cancelOrder",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled order returned"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Order not found"
+          }
+        }
+      }
+    },
+    "/account": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get account summary",
+        "operationId": "fetchBalance",
+        "x-ccxt-method": "fetchBalance",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account summary for the authenticated caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountSummary"
+                },
+                "example": {
+                  "balance": "100000.00",
+                  "collateral": "100000.00",
+                  "equity": "102500.50",
+                  "available_margin": "85000.00",
+                  "positions": []
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/account/deposit": {
+      "post": {
+        "operationId": "deposit",
+        "tags": [
+          "Account"
+        ],
+        "summary": "Deposit USDX collateral",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "amount": "10000"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The deposit result.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "balance": "110000.00"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/account/credit": {
+      "post": {
+        "operationId": "credit",
+        "tags": [
+          "Account"
+        ],
+        "summary": "Claim synthetic USDX credit",
+        "description": "Credit synthetic USDX to the authenticated account, up to a per-API-key daily allowance (default 500 USDX, resets at midnight UTC). `amount` is a decimal string; omit it to claim the full remaining daily allowance. Returns 429 with code `daily_limit_exceeded` once the allowance is used up, and 403 with code `credits_frozen` while crediting is administratively frozen. This is a testnet faucet: the credited USDX is synthetic and carries no real-world value.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreditRequest"
+              },
+              "example": {
+                "amount": "500"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Credit applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditResponse"
+                },
+                "example": {
+                  "amount": "500",
+                  "credited_today": "500",
+                  "daily_limit": "500"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Crediting is administratively frozen",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "credits_frozen",
+                  "message": "USDX crediting is temporarily frozen by an administrator. Existing balances remain tradeable."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Daily credit allowance exhausted (resets at midnight UTC)",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "daily_limit_exceeded",
+                  "message": "daily USDX credit allowance reached for this API key",
+                  "credited_today": "500",
+                  "daily_limit": "500"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/rate-limit": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get rate limit status",
+        "description": "Returns the authenticated caller's rate limit tier, effective request ceiling, remaining requests, and reset timestamp \u2014 the same data surface as the X-RateLimit-* response headers, exposed as a queryable resource. This endpoint does not consume a rate limit token, so it can be polled freely to self-manage request pacing without depleting the caller's budget. For HMAC API keys with a per-key rate, the reported values are the binding minimum of the key bucket and the owner bucket. For unlimited-tier callers (gateway keys), `limit`, `remaining`, and `reset_at_ms` are null.",
+        "operationId": "fetchRateLimitStatus",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current rate-limit status for the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitStatus"
+                },
+                "example": {
+                  "tier": "pro",
+                  "limit": 20,
+                  "remaining": 17,
+                  "reset_at_ms": 1765432100123
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/positions": {
+      "get": {
+        "tags": [
+          "Positions"
+        ],
+        "summary": "List open positions",
+        "operationId": "fetchPositions",
+        "x-ccxt-method": "fetchPositions",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's open positions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Position"
+                  }
+                },
+                "example": [
+                  {
+                    "market_id": "BTC-USDX-PERP",
+                    "side": "Long",
+                    "size": "0.5",
+                    "entry_price": "49500.00",
+                    "unrealized_pnl": "250.50",
+                    "realized_pnl": "0.00",
+                    "liquidation_price": "42000.00"
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/fills": {
+      "get": {
+        "operationId": "fetchFills",
+        "tags": [
+          "Account"
+        ],
+        "summary": "List your fills",
+        "description": "Returns up to 1000 fills for the authenticated account, newest first. Fills are trade executions resulting from order matches \u2014 each fill carries the matched price, quantity, fee, and whether it was the taker or maker side.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 1000
+            },
+            "description": "Maximum fills to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of fills, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Fill"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "cf72c7f3-1234-5678-abcd-ef0123456789",
+                    "order_id": "ord_a1b2c3d4e5f6...",
+                    "market_id": "BTC-USDX-PERP",
+                    "side": "buy",
+                    "price": "84250.00",
+                    "size": "0.01",
+                    "fee": "0.84",
+                    "taker_or_maker": "taker",
+                    "timestamp": 1779225381434,
+                    "is_liquidation": false
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/withdrawals": {
+      "get": {
+        "operationId": "fetchWithdrawals",
+        "tags": [
+          "Account"
+        ],
+        "summary": "List your withdrawals",
+        "description": "Returns up to 100 withdrawal records for the authenticated account, newest first.",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 100
+            },
+            "description": "Maximum records to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of withdrawal records",
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "id": "wd_a1b2c3d4e5f6",
+                    "amount": "500.00",
+                    "timestamp": 1779225381434,
+                    "status": "settled"
+                  }
+                ]
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/ws": {
+      "get": {
+        "operationId": "connectWebSocket",
+        "tags": [
+          "WebSocket"
+        ],
+        "summary": "Per-account WebSocket stream",
+        "description": "WebSocket endpoint for both public market data and per-account private channels. Requires a token from POST /ws/token:\n```\nwss://host/ws?token=YOUR_TOKEN\n```\nTokens are single-use and expire after 60 seconds.\n\nEvery client\u2192server and server\u2192client message is a JSON envelope tagged with an `op` field. Subscribe to one channel per message:\n```json\n{\"op\": \"subscribe\", \"channel\": \"trades\", \"market\": \"BTC-USDX-PERP\"}\n{\"op\": \"subscribe\", \"channel\": \"fills\"}\n```\nUnsubscribe with `{\"op\": \"unsubscribe\", \"channel\": \"...\", \"market\": \"...\"}`.\n\n**Public channels** (the token is always required to upgrade): `trades`, `book`, `candles` \u2014 each requires a `market` field.\n\n**Per-account channels** (scoped to the wallet that minted the token): `orders`, `fills`, `positions`, `balances`.\n\n**Server messages:**\n- `{\"op\": \"subscribed\", \"channel\": \"fills\", \"market\": null, \"seq_at_join\": 42}` \u2014 subscribe ack; `seq_at_join` is the channel's current sequence at attach time, used as the reconnect cursor.\n- `{\"op\": \"unsubscribed\", \"channel\": \"fills\", \"market\": null}` \u2014 unsubscribe ack.\n- `{\"op\": \"event\", \"channel\": \"fills\", \"market\": null, \"seq\": 43, \"payload\": {...}}` \u2014 a delivered event; `seq` is monotonic per channel.\n- `{\"op\": \"out_of_sync\", \"channel\": \"fills\", \"market\": null, \"oldest_seq\": 100}` \u2014 the requested `since` cursor fell behind the replay buffer; refetch state over REST and resubscribe with a fresh cursor.\n- `{\"op\": \"error\", \"message\": \"...\"}` \u2014 invalid op, unknown channel, or bad message format.\n\n**Reconnection:** tokens are single-use \u2014 mint a new one via POST /ws/token before reconnecting. To resume a channel without gaps, pass the last `seq` you received:\n```json\n{\"op\": \"subscribe\", \"channel\": \"fills\", \"since\": 42}\n```",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Short-lived token from POST /ws/token"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols \u2014 WebSocket upgrade."
+          }
+        }
+      }
+    },
+    "/stream": {
+      "get": {
+        "operationId": "connectStream",
+        "tags": [
+          "WebSocket"
+        ],
+        "summary": "Public WebSocket stream (legacy)",
+        "description": "Legacy public-only WebSocket endpoint. Prefer GET /ws which also supports per-account channels. Requires a token from POST /ws-tokens. Unlike /ws, the protocol is a single untagged subscribe message listing channels:\n```json\n{\"subscribe\": [\"trades:*\", \"book:BTC-USDX-PERP\", \"stats\"]}\n```\nChannels: `trades:*` / `trades:{market_id}`, `book:*` / `book:{market_id}`, `stats`.",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Short-lived token from POST /ws-tokens"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols \u2014 WebSocket upgrade."
+          }
+        }
+      }
+    },
+    "/admin/tiers": {
+      "put": {
+        "operationId": "setTier",
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Set account tier",
+        "description": "Assign a rate-limit tier to an address. Invalidates the existing rate-limit bucket so the new cap takes effect immediately.",
+        "security": [
+          {
+            "adminAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "example": {
+                "address": "0x1234...abcd",
+                "tier": "MarketMaker"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated account tier.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "address": "0x1234...abcd",
+                  "tier": "MarketMaker"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin secret required"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listTiers",
+        "tags": [
+          "Admin"
+        ],
+        "summary": "List tier overrides",
+        "description": "Returns all addresses with non-default tier assignments.",
+        "security": [
+          {
+            "adminAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The configured tier overrides.",
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "address": "0x1234...abcd",
+                    "tier": "MarketMaker"
+                  }
+                ]
+              }
+            }
+          },
+          "403": {
+            "description": "Admin secret required"
+          }
+        }
+      }
+    },
+    "/admin/tiers/{address}": {
+      "delete": {
+        "operationId": "deleteTier",
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Reset account tier",
+        "description": "Remove a tier override, reverting the address to the default Pro tier.",
+        "security": [
+          {
+            "adminAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Ethereum address (0x-prefixed)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tier removed"
+          },
+          "403": {
+            "description": "Admin secret required"
+          },
+          "404": {
+            "description": "Address not in allowlist"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "tags": [
+          "Markets"
+        ],
+        "summary": "Health check",
+        "description": "No authentication required. Used by Fly.io health checks and uptime monitors.",
+        "responses": {
+          "200": {
+            "description": "Service health status.",
+            "content": {
+              "application/json": {
+                "example": {
+                  "events_received": 50000,
+                  "fills_total": 25000,
+                  "uptime_seconds": 3600,
+                  "connected": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "hmacAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "HMAC API key authentication. Send three headers:\n- `X-API-Key`: your key ID (e.g. `nx_a1b2c3...`)\n- `X-Timestamp`: current time in unix milliseconds\n- `X-Signature`: `hex(hmac_sha256(secret, timestamp + \"\\n\" + METHOD + \"\\n\" + path + \"\\n\" + query + \"\\n\" + sha256_hex(body)))`\n\nTimestamp must be within 30 seconds of server time."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Session token from POST /auth/login. Used only for API key management (/keys endpoints)."
+      },
+      "adminAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Admin secret (ADMIN_SECRET environment variable). Used for tier management and service control."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Authentication failed. All 401 responses return the same opaque body to prevent information leakage.",
+        "content": {
+          "application/json": {
+            "example": {
+              "code": "unauthorized"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Rate limit exceeded. Check X-RateLimit-* headers and Retry-After.",
+        "headers": {
+          "X-RateLimit-Limit": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Requests per second allowed for your tier"
+          },
+          "X-RateLimit-Remaining": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Requests remaining in current window"
+          },
+          "X-RateLimit-Reset": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Unix timestamp when the limit resets"
+          },
+          "Retry-After": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Seconds to wait before retrying"
+          }
+        },
+        "content": {
+          "application/json": {
+            "example": {
+              "code": "RateLimitExceeded",
+              "tier": "Pro"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "MarketId": {
+        "name": "market_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "example": "BTC-USDX-PERP",
+        "description": "Market identifier (e.g. BTC-USDX-PERP, ETH-USDX-PERP)"
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "message",
+          "signature"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Must be exactly: \"Sign in to Nexus Exchange\""
+          },
+          "signature": {
+            "type": "string",
+            "description": "EIP-191 personal_sign hex (0x-prefixed, 65 bytes)"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Session token (64-char hex). Use as Bearer token for /keys endpoints."
+          },
+          "address": {
+            "type": "string",
+            "description": "Recovered Ethereum address (0x-prefixed)"
+          }
+        }
+      },
+      "Market": {
+        "type": "object",
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "base_asset": {
+            "type": "string"
+          },
+          "quote_asset": {
+            "type": "string"
+          },
+          "tick_size": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "lot_size": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "min_order_size": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "max_order_size": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "initial_margin_rate": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "maintenance_margin_rate": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "max_leverage": {
+            "type": "integer"
+          }
+        }
+      },
+      "MarketSummary": {
+        "type": "object",
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "last_trade_price": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Last trade price (\"what the market is trading at\"). NOT the mark; the engine-derived mark is exposed separately."
+          },
+          "volume_24h": {
+            "type": "number"
+          },
+          "trade_count": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "halted"
+            ],
+            "description": "v0.21: halted when ADL pool exhausted"
+          },
+          "halt_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "halted_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Unix ms timestamp when market was halted"
+          },
+          "adl_event_count": {
+            "type": "integer",
+            "description": "Cumulative ADL settlement events for this market"
+          }
+        }
+      },
+      "MarketStatus": {
+        "type": "object",
+        "description": "Per-market halt status (v0.21).",
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "halted"
+            ]
+          },
+          "halt_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "halted_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "adl_event_count": {
+            "type": "integer"
+          }
+        }
+      },
+      "AdlClosureRecord": {
+        "type": "object",
+        "description": "One counterparty's forced closure within an ADL settlement.",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "description": "0x-prefixed address of the counterparty whose position was closed"
+          },
+          "position_closed": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Decimal quantity closed"
+          },
+          "settlement_amount": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Decimal amount charged to the counterparty"
+          }
+        }
+      },
+      "AdlEventRecord": {
+        "type": "object",
+        "description": "Single ADL settlement (insurance fund depleted \u2192 counterparty closures). v0.21.",
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "target_account": {
+            "type": "string",
+            "description": "0x-prefixed bankrupt account"
+          },
+          "bankruptcy_price": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "bad_debt_absorbed_by_fund": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "counterparty_closures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdlClosureRecord"
+            }
+          },
+          "sequence": {
+            "type": "integer",
+            "description": "Engine event sequence number"
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "Unix ms"
+          }
+        }
+      },
+      "Ticker": {
+        "type": "object",
+        "description": "CCXT-compatible ticker with 24h statistics",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "Unix ms"
+          },
+          "datetime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "high": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "low": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "bid": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "bidVolume": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "ask": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "askVolume": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "open": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "close": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "last": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "change": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "percentage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "baseVolume": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "quoteVolume": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "markPrice": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Engine-derived mark price (oracle + premium-index), falling back to the last trade until the first mark-price poll lands. The raw last trade is carried by `last`."
+          },
+          "indexPrice": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "info": {
+            "type": "object"
+          }
+        }
+      },
+      "OrderBook": {
+        "type": "object",
+        "description": "CCXT-compatible order book. Bids/asks are [price, amount] arrays.",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "datetime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "nonce": {
+            "type": "integer"
+          }
+        }
+      },
+      "Trade": {
+        "type": "object",
+        "description": "CCXT-compatible trade record",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "cost": {
+            "type": "number"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "datetime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "takerOrMaker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_liquidation": {
+            "type": "boolean"
+          },
+          "info": {
+            "type": "object"
+          }
+        }
+      },
+      "FundingSample": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "funding_rate": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "premium_index": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "mark_price": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "oracle_price": {
+            "$ref": "#/components/schemas/Decimal"
+          }
+        }
+      },
+      "OrderRequest": {
+        "type": "object",
+        "required": [
+          "market_id",
+          "side",
+          "order_type",
+          "quantity",
+          "time_in_force"
+        ],
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "Buy",
+              "Sell"
+            ]
+          },
+          "order_type": {
+            "type": "string",
+            "enum": [
+              "Limit",
+              "Market"
+            ]
+          },
+          "price": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Required for Limit orders"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "time_in_force": {
+            "type": "string",
+            "enum": [
+              "GTC",
+              "IOC",
+              "FOK"
+            ]
+          },
+          "reduce_only": {
+            "type": "boolean"
+          }
+        }
+      },
+      "OrderResponse": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "$ref": "#/components/schemas/Order"
+          },
+          "fills": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "market_id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "Buy",
+              "Sell"
+            ]
+          },
+          "order_type": {
+            "type": "string"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "filled_qty": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "Open",
+              "PartiallyFilled",
+              "Filled",
+              "Cancelled",
+              "Expired",
+              "Rejected"
+            ]
+          },
+          "time_in_force": {
+            "type": "string"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/TimestampMs"
+          }
+        }
+      },
+      "AccountSummary": {
+        "type": "object",
+        "properties": {
+          "balance": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "collateral": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "equity": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "available_margin": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Position"
+            }
+          }
+        }
+      },
+      "CreditRequest": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Synthetic USDX to credit (decimal string). Omit to claim the full remaining daily allowance."
+          }
+        }
+      },
+      "CreditResponse": {
+        "type": "object",
+        "required": [
+          "amount",
+          "credited_today",
+          "daily_limit"
+        ],
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "USDX credited by this request (decimal string)."
+          },
+          "credited_today": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Total USDX credited to this API key so far today (decimal string)."
+          },
+          "daily_limit": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Per-API-key daily credit allowance in USDX (decimal string)."
+          }
+        }
+      },
+      "RateLimitStatus": {
+        "type": "object",
+        "required": [
+          "tier",
+          "limit",
+          "remaining",
+          "reset_at_ms"
+        ],
+        "properties": {
+          "tier": {
+            "type": "string",
+            "description": "Rate limit tier name (e.g. `pro`, `marketmaker`, `unlimited`)."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Maximum requests per second. Also the burst capacity \u2014 the token bucket holds one second's worth of tokens \u2014 so `remaining` never exceeds it. Null for the unlimited tier."
+          },
+          "remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Requests that can be made right now before throttling (tokens currently in the bucket). Null for the unlimited tier."
+          },
+          "reset_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Unix timestamp in milliseconds when the bucket refills back to `limit`; `0` when it is already full. Null for the unlimited tier."
+          }
+        }
+      },
+      "Position": {
+        "type": "object",
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "Long",
+              "Short"
+            ]
+          },
+          "size": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "entry_price": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "unrealized_pnl": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "realized_pnl": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "liquidation_price": {
+            "$ref": "#/components/schemas/Decimal"
+          }
+        }
+      },
+      "AgentRegistrationRequest": {
+        "type": "object",
+        "required": [
+          "wallet",
+          "agent",
+          "nonce",
+          "signature"
+        ],
+        "properties": {
+          "wallet": {
+            "type": "string",
+            "description": "Owner wallet address (0x-prefixed, 20 bytes)"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Agent Ethereum address (0x-prefixed, 20 bytes) derived from the agent keypair"
+          },
+          "expires_at": {
+            "type": "integer",
+            "description": "Expiry as Unix ms. Optional \u2014 defaults to now+30d. Must be in [now+1d, now+90d]."
+          },
+          "nonce": {
+            "type": "integer",
+            "description": "Monotonic nonce. Use the current Unix timestamp in ms as a safe starting value."
+          },
+          "signature": {
+            "type": "string",
+            "description": "EIP-712 signature over RegisterAgent{agent, expiresAt, nonce} from the wallet private key (0x-prefixed)"
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional human-readable label for the agent (e.g. 'my-bot')"
+          }
+        }
+      },
+      "AgentInfo": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Agent address (0x-prefixed)"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "Expiry Unix ms"
+          },
+          "registeredAt": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "Registration time Unix ms"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional label"
+          }
+        }
+      },
+      "Fill": {
+        "type": "object",
+        "description": "A single trade execution for the authenticated account",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Fill ID"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "Parent order ID"
+          },
+          "market_id": {
+            "type": "string",
+            "description": "Market (e.g. BTC-USDX-PERP)"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "price": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Executed price (decimal string)"
+          },
+          "size": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Executed quantity (decimal string)"
+          },
+          "fee": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Fee charged in USDX (decimal string)"
+          },
+          "taker_or_maker": {
+            "type": "string",
+            "enum": [
+              "taker",
+              "maker"
+            ]
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "Unix ms"
+          },
+          "is_liquidation": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Decimal": {
+        "type": "string",
+        "description": "Arbitrary-precision decimal serialized as a string (lossless). Parse with a decimal type, never a float."
+      },
+      "TimestampMs": {
+        "type": "integer",
+        "format": "int64",
+        "description": "Unix epoch timestamp in milliseconds."
+      }
+    }
+  }
+}

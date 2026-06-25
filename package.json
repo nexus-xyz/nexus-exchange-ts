@@ -31,6 +31,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check:drift": "node scripts/check-spec-drift.mjs",
     "test": "node --test --import tsx test/*.test.ts"
   },
   "devDependencies": {

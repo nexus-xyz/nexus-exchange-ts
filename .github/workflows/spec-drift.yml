@@ -1,0 +1,75 @@
+name: Spec drift
+
+# Keeps the pinned API version, the vendored spec, the targeted schema list, and
+# the hand-written models in lockstep (scripts/check-spec-drift.mjs), and proves
+# the vendored spec still matches the authoritative upstream spec at the pinned
+# tag. The upstream spec is fetched from the raw-at-tag URL (uncounted — the
+# release asset download_count is reserved as an external adoption signal) and
+# cached by the pinned version so a normal run does no network.
+
+on:
+  pull_request:
+    paths:
+      - ".api-version"
+      - "spec/openapi.json"
+      - "spec/schemas.txt"
+      - "src/models.ts"
+      - "scripts/check-spec-drift.mjs"
+      - ".github/workflows/spec-drift.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".api-version"
+      - "spec/openapi.json"
+      - "spec/schemas.txt"
+      - "src/models.ts"
+      - "scripts/check-spec-drift.mjs"
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check vendored spec is in sync
+        run: node scripts/check-spec-drift.mjs
+
+      - name: Read pinned spec version
+        id: pin
+        run: |
+          tag="$(tr -d '[:space:]' < .api-version)"
+          # Validate before it reaches any URL / cache key: a crafted
+          # .api-version on a fork PR could otherwise inject into the fetch.
+          if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::.api-version must look like vX.Y.Z (got: '$tag')"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the upstream spec
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: openapi.upstream.json
+          key: spec-${{ steps.pin.outputs.tag }}
+
+      - name: Fetch upstream spec (cache miss only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          # Passed via env (not interpolated into the script) so the tag is
+          # data, not code; validated to ^v[0-9.]+$ in the pin step above.
+          SPEC_TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/nexus-xyz/nexus-exchange-api/${SPEC_TAG}/openapi.json" \
+            -o openapi.upstream.json
+
+      - name: Check SDK against upstream spec at the pinned tag
+        run: node scripts/check-spec-drift.mjs openapi.upstream.json
