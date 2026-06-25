@@ -12,6 +12,7 @@
     "url": "https://github.com/nexus-xyz/nexus-exchange-ts/issues"
   },
   "type": "module",
+  "packageManager": "pnpm@10.34.4",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,7 +32,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:drift": "node scripts/check-spec-drift.mjs",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/*.test.ts",
+    "verify:pack": "node scripts/verify-pack.mjs",
+    "prepack": "pnpm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

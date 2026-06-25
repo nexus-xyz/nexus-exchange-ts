@@ -1,0 +1,53 @@
+name: CI
+
+# Build/lint/test/typecheck parity gate. This is the same set of checks the
+# release workflow re-runs before publishing, so a green CI on the merge commit
+# is what makes a release safe to cut.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: CI only ever reads the checkout. No secrets, no write scopes.
+permissions:
+  contents: read
+
+# One in-flight run per ref. Superseded PR pushes are cancelled (the checks are
+# read-only and idempotent, so cancelling wastes nothing); main is serialized
+# without cancellation so every landed commit is fully verified.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest supported (engines: >=20) and current LTS.
+        node-version: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install the pnpm version pinned by package.json's "packageManager" field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      # Fail if pnpm-lock.yaml is out of sync with package.json — installs are
+      # exact and reproducible, no implicit upgrades.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm test
+
+      # Prove the artifact pnpm would publish installs and imports cleanly.
+      - run: pnpm run verify:pack

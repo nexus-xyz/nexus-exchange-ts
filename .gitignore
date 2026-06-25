@@ -4,3 +4,5 @@ dist/
 .DS_Store
 coverage/
 .env
+# Packed tarballs (npm/pnpm pack output) — never commit a build artifact.
+*.tgz

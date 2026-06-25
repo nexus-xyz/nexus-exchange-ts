@@ -11,5 +11,8 @@
 
 export * from "./models.js";
 
-/** The version of this SDK package. */
-export const SDK_VERSION = "0.0.0";
+/**
+ * The version of this SDK package. Kept in lockstep with package.json by
+ * release-please (see release-please-config.json) — do not edit by hand.
+ */
+export const SDK_VERSION = "0.0.0"; // x-release-please-version

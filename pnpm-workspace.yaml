@@ -1,0 +1,11 @@
+# pnpm settings (pnpm >= 10 reads them here, not from package.json).
+#
+# pnpm does NOT run dependency lifecycle scripts (postinstall/install) by
+# default — a deliberate supply-chain defense against a malicious or
+# compromised transitive dep executing code on install. We opt in only the
+# packages that genuinely need to build, and nothing else.
+#
+#   esbuild — pulled in via tsx to run the TypeScript test suite; its install
+#             script materializes the platform-native binary.
+onlyBuiltDependencies:
+  - esbuild
