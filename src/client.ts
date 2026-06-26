@@ -66,8 +66,10 @@ type QueryParams = Record<string, string | number | undefined>;
 
 const RETRIABLE_STATUSES = new Set([429, 502, 503]);
 
+const MAX_BACKOFF_MS = 8000;
+
 function backoffMs(attempt: number): number {
-  return Math.min(500 * 2 ** attempt, 8000);
+  return Math.min(500 * 2 ** attempt, MAX_BACKOFF_MS);
 }
 
 function delay(ms: number): Promise<void> {
@@ -207,7 +209,10 @@ export class NexusExchangeClient {
         if (!res.ok) {
           const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
           if (RETRIABLE_STATUSES.has(res.status) && !lastAttempt) {
-            await delay(retryAfterMs ?? backoffMs(attempt));
+            // Clamp a server-supplied Retry-After to the same cap as the
+            // exponential backoff, so a hostile/typo'd `Retry-After: 86400`
+            // can't hang the client for 24h instead of the 8s ceiling.
+            await delay(Math.min(retryAfterMs ?? backoffMs(attempt), MAX_BACKOFF_MS));
             continue;
           }
           throw await toApiError(res, retryAfterMs);
