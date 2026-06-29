@@ -8,10 +8,56 @@ and Node.
 
 > **⚠️ Experimental / in development.** It is being extracted and sanitized out
 > of the Nexus web app's existing bindings; the public surface lands
-> incrementally. The typed request/response models have landed; the REST and
-> WebSocket client surface is in progress. For the ahead-of-this surface use the
+> incrementally. The typed request/response models and the **public market-data
+> REST client** have landed; authenticated trading and WebSocket streaming are
+> in progress. For the ahead-of-this surface use the
 > [Rust SDK](https://github.com/nexus-xyz/nexus-exchange-rs) or the
 > [Python SDK](https://github.com/nexus-xyz/nexus-exchange-py).
+
+## Quick start
+
+```ts
+import { Client } from "@nexus-xyz/exchange-ts";
+
+const client = new Client(); // defaults to the public gateway, no credentials
+
+for (const market of await client.fetchMarkets()) {
+  console.log(market.market_id);
+}
+
+const ticker = await client.fetchTicker("BTC-USDX-PERP");
+console.log(ticker.last, ticker.markPrice);
+```
+
+No credentials are needed for market data. See
+[`examples/public_market_data.ts`](./examples/public_market_data.ts). A `Client`
+is stateless per request and safe to share across concurrent calls — each call
+signs and assembles its own request, with no shared mutable state and no locks.
+
+### Market-data methods
+
+`fetchMarkets`, `fetchMarketSummaries`, `fetchTickers`, `fetchTicker`,
+`fetchOrderBook`, `fetchTrades`, `fetchCandles`, `fetchFundingHistory`,
+`fetchMarkPrice`, `fetchMarketStatus`, `fetchMarketAdlEvents`,
+`fetchAccountAdlHistory`, and `health` — covering the public market-data routes
+of the pinned spec. Each returns the corresponding [typed model](#typed-models).
+
+Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
+`transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
+`transient`), and `MissingCredentialsError`.
+
+### Authentication
+
+Authenticated methods are not built yet, but the HMAC-SHA256 signing plumbing
+ships now (pass `apiKey` / `apiSecret` to the `Client`). The canonical string
+the exchange verifies is:
+
+```text
+<timestamp_ms>\n<METHOD>\n<path>\n<query>\n<sha256hex(body)>
+```
+
+signed with the hex-decoded secret and sent as `x-signature` with `x-api-key`
+and `x-timestamp`.
 
 ## Typed models
 
@@ -32,7 +78,7 @@ This SDK targets a released version of the Exchange API spec, pinned in
 The spec lives in
 [`nexus-xyz/nexus-exchange-api`](https://github.com/nexus-xyz/nexus-exchange-api).
 
-A drift check (`npm run check:drift`, run in CI) keeps four things in lockstep:
+A drift check (`pnpm run check:drift`, run in CI) keeps four things in lockstep:
 the pin, the vendored spec, the targeted schema list
 ([`spec/schemas.txt`](./spec/schemas.txt)), and the models — and verifies the
 vendored spec still matches the upstream spec at the pinned tag. If the upstream

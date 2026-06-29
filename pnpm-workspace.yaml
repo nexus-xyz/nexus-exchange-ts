@@ -1,0 +1,6 @@
+# esbuild ships a prebuilt binary via a postinstall script; allow it so `tsx`
+# (used to run the TypeScript tests/examples) works.
+allowBuilds:
+  esbuild: true
+onlyBuiltDependencies:
+  - esbuild
