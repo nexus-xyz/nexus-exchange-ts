@@ -1,0 +1,91 @@
+name: Release
+
+# Release automation for the npm package, in two stages:
+#
+#   1. release-please watches main. Conventional-commit history is accumulated
+#      into a "release PR" that bumps the version + CHANGELOG. Nothing publishes
+#      while that PR sits open. Merging it is the human gate: release-please then
+#      tags the commit and cuts a GitHub release, setting release_created=true.
+#
+#   2. Only on that release commit, the publish job re-runs the full CI gate and
+#      publishes to npm with provenance.
+#
+# Security posture:
+#   - Default-deny permissions at the top; each job is granted only what it needs.
+#   - The NPM_TOKEN is referenced exclusively by the publish job, which runs only
+#     on a release commit on main — never on PRs (where fork contributors could
+#     see workflow changes but can't reach repo secrets anyway).
+#   - Provenance (--provenance + id-token: write) signs the published tarball so
+#     consumers can verify it was built from this repo at this commit.
+#   - pnpm install --frozen-lockfile installs exactly the lockfile; the registry
+#     rejects re-publishing an existing version, so a re-run can't clobber a release.
+
+on:
+  push:
+    branches: [main]
+
+# Default-deny; jobs opt into the minimum they need.
+permissions: {}
+
+# Serialize releases and never cancel a publish mid-flight — interrupting the
+# publish could leave a half-uploaded release. Runs queue instead.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release tag + GitHub release
+      pull-requests: write # open/update the release PR
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # mint the OIDC token npm uses to attest provenance
+    environment: npm-publish # optional manual-approval / secret-scoping gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      # Install the pnpm version pinned by package.json's "packageManager" field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: pnpm install --frozen-lockfile
+
+      # Re-run the full gate on the exact commit being published. CI already
+      # ran it, but re-running here means the bytes we publish are the bytes we
+      # verified — no trust gap between the gate and the upload.
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm test
+      - run: pnpm run verify:pack
+
+      # --provenance: publish a signed build-provenance attestation.
+      # --access public: a scoped (@nexus-xyz/…) package is private by default.
+      # --no-git-checks: we publish from a detached tag checkout, not a branch.
+      - run: pnpm publish --provenance --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

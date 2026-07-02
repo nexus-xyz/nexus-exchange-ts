@@ -23,6 +23,9 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run typecheck
       - run: pnpm run build
+      # Prove the artifact pnpm would publish installs and imports cleanly — the
+      # same check the release workflow re-runs before `pnpm publish`.
+      - run: pnpm run verify:pack
 
   test:
     runs-on: ubuntu-latest
