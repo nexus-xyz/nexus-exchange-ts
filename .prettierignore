@@ -1,5 +1,6 @@
 dist/
 node_modules/
+package-lock.json
 pnpm-lock.yaml
 # Vendored upstream spec — preserve it verbatim, don't reformat.
 spec/openapi.json

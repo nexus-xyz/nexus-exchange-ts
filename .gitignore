@@ -4,5 +4,9 @@ dist/
 .DS_Store
 coverage/
 .env
+
 # Packed tarballs (npm/pnpm pack output) — never commit a build artifact.
 *.tgz
+
+# This repo's lockfile is pnpm-lock.yaml; a stray npm lockfile shouldn't land.
+package-lock.json

@@ -303,12 +303,28 @@ export interface OrderRequest {
   market_id: string;
   side: OrderSide;
   order_type: OrderType;
-  /** Required for `Limit` orders. */
+  /** Required for `Limit` orders; omit for `Market`. */
   price?: Decimal;
   quantity: Decimal;
   time_in_force: TimeInForce;
   /** When true, the order may only reduce an existing position. */
   reduce_only?: boolean;
+  /**
+   * Caller-assigned idempotency/correlation id. When set you can later look the
+   * order up via {@link Client.getOrderByClientId}.
+   */
+  client_order_id?: string;
+}
+
+/**
+ * Request body for `PUT /orders/{order_id}` (atomic cancel-replace). Only the
+ * provided fields are changed.
+ */
+export interface AmendOrder {
+  price?: Decimal;
+  quantity?: Decimal;
+  time_in_force?: TimeInForce;
+  client_order_id?: string;
 }
 
 /** A resting or completed order (`GET /orders`, `GET /orders/{order_id}`). */
@@ -334,7 +350,7 @@ export interface Order {
   updated_at: TimestampMs;
 }
 
-/** Response from `POST /orders`. */
+/** Response from `POST /orders` and `PUT /orders/{order_id}`. */
 export interface OrderResponse {
   order: Order;
   /**

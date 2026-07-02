@@ -7,5 +7,7 @@
 #
 #   esbuild — pulled in via tsx to run the TypeScript test suite; its install
 #             script materializes the platform-native binary.
+allowBuilds:
+  esbuild: true
 onlyBuiltDependencies:
   - esbuild
