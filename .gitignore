@@ -4,3 +4,8 @@ dist/
 .DS_Store
 coverage/
 .env
+
+# This repo's lockfile is npm's package-lock.json (CI uses `npm ci`); keep
+# locally-generated pnpm artifacts out of the tree.
+pnpm-lock.yaml
+pnpm-workspace.yaml

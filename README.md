@@ -9,8 +9,8 @@ and Node.
 > **⚠️ Experimental / in development.** It is being extracted and sanitized out
 > of the Nexus web app's existing bindings; the public surface lands
 > incrementally. The typed request/response models, the **public market-data
-> REST client**, and the **authenticated account/order endpoints** have landed;
-> WebSocket streaming is in progress. For the ahead-of-this surface use the
+> REST client**, the **authenticated account/order endpoints**, and the
+> **WebSocket streaming client** have landed. For the ahead-of-this surface use the
 > [Rust SDK](https://github.com/nexus-xyz/nexus-exchange-rs) or the
 > [Python SDK](https://github.com/nexus-xyz/nexus-exchange-py).
 
@@ -85,6 +85,46 @@ Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account summary, positions, fills, rate-limit status,
 testnet credit; place / fetch / amend / cancel orders.
+
+## WebSocket streaming
+
+`createWsClient` multiplexes any number of channel subscriptions onto a single
+socket, tracks per-channel sequence numbers, and reconnects with replay-from-
+`lastSeq` on drop. Each subscription is an `AsyncIterable<WsEvent>`.
+
+```ts
+import { createWsClient } from "@nexus-xyz/exchange-ts";
+
+// Public market data — no auth.
+const client = createWsClient({ url: "wss://stream.exchange.nexus.xyz" });
+const book = client.subscribe("book", { market: "BTC-PERP" });
+
+for await (const evt of book.events) {
+  if (evt.outOfSync) {
+    // Stream lost continuity — refetch a REST snapshot, then keep going.
+    continue;
+  }
+  console.log(evt.seq, evt.data);
+}
+```
+
+Public channels (`book`, `trades`, `candles`) need no authentication.
+Account-scoped channels (`orders`, `fills`, `positions`, `balances`) require a
+short-lived token: pass a `tokenProvider` that mints one. It is called on every
+(re)connect, so it always supplies a fresh token.
+
+```ts
+const client = createWsClient({
+  url: "wss://stream.exchange.nexus.xyz",
+  tokenProvider: async () => myMintWsToken(), // your auth, e.g. an agent-signed mint
+});
+const orders = client.subscribe("orders");
+```
+
+The token rides the connection URL as `?token=…`, so the client refuses to mint
+one over an insecure `ws://` connection to a non-loopback host — use `wss://`.
+On Node < 22 (no global `WebSocket`), pass `WebSocketImpl` (e.g. the `ws`
+package). Call `client.close()` to tear everything down.
 
 ## Typed models
 

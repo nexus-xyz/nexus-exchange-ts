@@ -5,9 +5,9 @@
  * bindings) is being extracted and sanitized out of the Nexus web app's
  * existing bindings and lands incrementally. The typed request/response models
  * (mirrored from the vendored OpenAPI spec and held in sync by the spec drift
- * check), the public market-data REST client, and the authenticated
- * account/order endpoints have landed; WebSocket streaming is in progress.
- * Imports added here become part of the published package's public API.
+ * check), the public market-data REST client, the authenticated account/order
+ * endpoints, and the WebSocket streaming client have landed. Imports added here
+ * become part of the published package's public API.
  *
  * @example
  * ```ts
@@ -54,3 +54,19 @@ export { signRequest, sha256Hex, bytesToHex, hexToBytes } from "./sign.js";
 
 /** The version of this SDK package. */
 export const SDK_VERSION = "0.0.0";
+
+// WebSocket streaming client (book / trades / candles + account-scoped).
+export {
+  createWsClient,
+  type WsClient,
+  type WsSubscription,
+  type WsEvent,
+  type WsStatus,
+  type Channel,
+  type PublicChannel,
+  type AccountChannel,
+  type TokenProvider,
+  type CreateWsClientOpts,
+  type WebSocketLike,
+  type WebSocketCtor,
+} from "./ws/client.js";
