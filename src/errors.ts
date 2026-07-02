@@ -1,15 +1,76 @@
-/**
- * Error types thrown by the client, plus the defensive sanitizer that scrubs
- * upstream error bodies before they surface to callers or logs.
- *
- * The signing inputs (api key id, secret) never appear in any error here: a
- * {@link MissingCredentialsError} names only the failed request, and
- * {@link ExchangeApiError} carries only the (sanitized) upstream response body —
- * never our request headers.
- */
+// Error taxonomy for the Nexus Exchange SDK.
+//
+// Mirrors the other SDKs' split between *terminal* failures (the request was
+// rejected — don't retry) and *transient* failures (transport / 5xx — safe to
+// retry an idempotent request). Every error subclasses NexusExchangeError, and
+// carries a `transient` flag so a caller can decide whether a retry could help
+// without matching on subclasses.
+
+/** Base class for all SDK errors. */
+export class NexusExchangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = new.target.name;
+    // Restore the prototype chain so `instanceof` works after transpilation to
+    // older targets (a TS/Babel down-level gotcha when extending Error).
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+
+  /** Whether retrying the same idempotent request might succeed. */
+  get transient(): boolean {
+    return false;
+  }
+}
 
 /**
- * Max upstream-body length carried on an {@link ExchangeApiError}. Bounded so a
+ * The API returned a non-2xx response.
+ *
+ * Terminal for 4xx (the request was rejected); transient for 5xx and 408. The
+ * `body` has already been run through {@link sanitizeErrorBody}, so it is safe
+ * to log — credential-looking tokens are redacted and the length is bounded.
+ */
+export class ApiError extends NexusExchangeError {
+  readonly status: number;
+  /** Sanitized, bounded response body — never assume it is JSON. */
+  readonly body: string;
+  /** Machine-readable error code from the JSON body, when present. */
+  readonly code?: string;
+
+  constructor(
+    status: number,
+    body: string,
+    opts: { code?: string; message?: string } = {},
+  ) {
+    super(`Exchange API ${status}: ${opts.message ?? body}`);
+    this.status = status;
+    this.body = body;
+    this.code = opts.code;
+  }
+
+  override get transient(): boolean {
+    return this.status >= 500 || this.status === 408;
+  }
+}
+
+/** A connection / timeout / abort error before any response was received. */
+export class TransportError extends NexusExchangeError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+
+  override get transient(): boolean {
+    return true;
+  }
+}
+
+/** A signed request was attempted without an API key + secret. */
+export class MissingCredentialsError extends NexusExchangeError {}
+
+/**
+ * Max sanitized error-body length carried on an {@link ApiError}. Bounded so a
  * large or hostile error response can't blow up logs or memory; enough to
  * convey a normal JSON error.
  */
@@ -36,7 +97,8 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
 
 /**
  * Bound and scrub an upstream error body: redact credential-looking tokens,
- * then truncate to {@link MAX_ERROR_BODY} chars.
+ * then truncate to {@link MAX_ERROR_BODY} chars. Applied to every {@link
+ * ApiError} body so a signed request's error can never surface credentials.
  */
 export function sanitizeErrorBody(raw: string): string {
   let out = raw;
@@ -47,37 +109,4 @@ export function sanitizeErrorBody(raw: string): string {
     out = `${out.slice(0, MAX_ERROR_BODY)}… [truncated]`;
   }
   return out;
-}
-
-/** A non-2xx response from the Exchange API. The body is already sanitized. */
-export class ExchangeApiError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly body: string,
-  ) {
-    super(`Exchange API ${status}: ${body}`);
-    this.name = "ExchangeApiError";
-  }
-}
-
-/** A signed endpoint was called on a client constructed without credentials. */
-export class MissingCredentialsError extends Error {
-  constructor(request: string) {
-    super(
-      `"${request}" requires API credentials. Construct the client with ` +
-        `{ apiKey, apiSecret } to call authenticated endpoints.`,
-    );
-    this.name = "MissingCredentialsError";
-  }
-}
-
-/** A request exceeded the configured timeout and was aborted. */
-export class ExchangeTimeoutError extends Error {
-  constructor(
-    public readonly request: string,
-    public readonly timeoutMs: number,
-  ) {
-    super(`"${request}" timed out after ${timeoutMs}ms`);
-    this.name = "ExchangeTimeoutError";
-  }
 }

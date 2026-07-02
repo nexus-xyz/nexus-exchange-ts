@@ -1,15 +1,19 @@
 /**
  * Official TypeScript SDK for the Nexus Exchange API.
  *
- * This entry point exposes the authenticated REST client and its typed models.
- * Requests are signed with the canonical HMAC-SHA256 scheme shared with the
- * Rust and Python SDKs (see {@link ./signing.js}).
+ * This is the public entry point. The client surface (typed REST + WebSocket
+ * bindings) is being extracted and sanitized out of the Nexus web app's
+ * existing bindings and lands incrementally. The typed request/response models
+ * (mirrored from the vendored OpenAPI spec and held in sync by the spec drift
+ * check), the public market-data REST client, and the authenticated
+ * account/order endpoints have landed; WebSocket streaming is in progress.
+ * Imports added here become part of the published package's public API.
  *
  * @example
  * ```ts
- * import { NexusExchangeClient, Network } from "@nexus-xyz/exchange-ts";
+ * import { Client, Network } from "@nexus-xyz/exchange-ts";
  *
- * const client = new NexusExchangeClient({
+ * const client = new Client({
  *   network: Network.Stable,
  *   apiKey: process.env.NEXUS_EXCHANGE_API_KEY,
  *   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET,
@@ -27,29 +31,26 @@
  * ```
  */
 
-export { NexusExchangeClient } from "./client.js";
+export * from "./models.js";
+
 export {
+  Client,
   Network,
   baseUrlForNetwork,
-  DEFAULT_TIMEOUT_MS,
   DEFAULT_USER_AGENT,
   type ClientOptions,
-} from "./config.js";
+  type HealthStatus,
+} from "./client.js";
+
 export {
-  ExchangeApiError,
-  ExchangeTimeoutError,
+  NexusExchangeError,
+  ApiError,
+  TransportError,
   MissingCredentialsError,
   sanitizeErrorBody,
 } from "./errors.js";
-export {
-  buildCanonicalString,
-  decodeSecret,
-  sha256Hex,
-  signRequest,
-  type SignatureHeaders,
-  type SigningContext,
-} from "./signing.js";
-export * from "./models.js";
+
+export { signRequest, sha256Hex, bytesToHex, hexToBytes } from "./sign.js";
 
 /** The version of this SDK package. */
 export const SDK_VERSION = "0.0.0";
