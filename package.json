@@ -30,6 +30,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check:drift": "node scripts/check-spec-drift.mjs",
     "test": "node --test --import tsx test/*.test.ts"
   },
   "devDependencies": {
@@ -44,5 +45,6 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "packageManager": "pnpm@11.1.3"
 }
