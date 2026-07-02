@@ -8,9 +8,9 @@ and Node.
 
 > **⚠️ Experimental / in development.** It is being extracted and sanitized out
 > of the Nexus web app's existing bindings; the public surface lands
-> incrementally. The typed request/response models and the **public market-data
-> REST client** have landed; authenticated trading and WebSocket streaming are
-> in progress. For the ahead-of-this surface use the
+> incrementally. The typed request/response models, the **public market-data
+> REST client**, and the **authenticated account/order endpoints** have landed;
+> WebSocket streaming is in progress. For the ahead-of-this surface use the
 > [Rust SDK](https://github.com/nexus-xyz/nexus-exchange-rs) or the
 > [Python SDK](https://github.com/nexus-xyz/nexus-exchange-py).
 
@@ -48,16 +48,43 @@ Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 
 ### Authentication
 
-Authenticated methods are not built yet, but the HMAC-SHA256 signing plumbing
-ships now (pass `apiKey` / `apiSecret` to the `Client`). The canonical string
-the exchange verifies is:
+Authenticated requests are signed with HMAC-SHA256 over a canonical string,
+**byte-for-byte identical** to the Rust and Python SDKs and to what the server
+verifies:
 
 ```text
 <timestamp_ms>\n<METHOD>\n<path>\n<query>\n<sha256hex(body)>
 ```
 
-signed with the hex-decoded secret and sent as `x-signature` with `x-api-key`
-and `x-timestamp`.
+The string is signed with the hex-decoded API secret and sent as three headers:
+`x-api-key`, `x-timestamp` (Unix epoch ms), and `x-signature` (hex). An empty
+query is the empty string; an empty body still contributes `sha256hex("")`.
+
+```ts
+import { Client, Network } from "@nexus-xyz/exchange-ts";
+
+const client = new Client({
+  network: Network.Stable,
+  apiKey: process.env.NEXUS_EXCHANGE_API_KEY,
+  apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET, // 32-byte hex from POST /keys
+});
+
+const account = await client.getAccount();
+const { order } = await client.placeOrder({
+  market_id: "BTC-USDX-PERP",
+  side: "Buy",
+  order_type: "Limit",
+  price: "65000",
+  quantity: "0.1",
+  time_in_force: "GTC",
+});
+await client.cancelOrder(order.id);
+```
+
+Credentials are optional — construct the client without them for public reads;
+any signed endpoint then throws `MissingCredentialsError`. Implemented
+authenticated endpoints: account summary, positions, fills, rate-limit status,
+testnet credit; place / fetch / amend / cancel orders.
 
 ## Typed models
 

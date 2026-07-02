@@ -1,28 +1,43 @@
 // HTTP client for the Nexus Exchange API.
 //
 // A thin, typed wrapper over the REST routes, mirroring the Rust and Python
-// SDKs: typed methods over the public market-data endpoints, HMAC request
-// signing, one error hierarchy. **Experimental** — only the public market-data
-// endpoints are implemented today (see the README's support table). The
-// request/signing plumbing already supports authenticated calls, but typed
-// account/trading methods are not built yet.
+// SDKs: typed methods over the public market-data endpoints and the
+// authenticated account/order endpoints, HMAC request signing, one error
+// hierarchy. **Experimental** — the public market-data and authenticated
+// account/trading endpoints are implemented (see the README's support table);
+// WebSocket streaming is still in progress.
 //
 // The client holds no per-request mutable state: every call computes its own
 // signature and assembles its own URL, so a single Client instance is safe to
 // share across concurrent callers. There are no internal locks, hence no
 // deadlock surface.
 
-import { ApiError, MissingCredentialsError, TransportError } from "./errors.js";
+import {
+  ApiError,
+  MissingCredentialsError,
+  TransportError,
+  sanitizeErrorBody,
+} from "./errors.js";
 import { signRequest } from "./sign.js";
 import type {
+  AccountSummary,
   AdlEventRecord,
+  AmendOrder,
   Candle,
+  CreditRequest,
+  CreditResponse,
+  Fill,
   FundingSample,
   Market,
   MarketStatus,
   MarketSummary,
   MarkPrice,
+  Order,
   OrderBook,
+  OrderRequest,
+  OrderResponse,
+  Position,
+  RateLimitStatus,
   Ticker,
   Trade,
 } from "./models.js";
@@ -301,6 +316,123 @@ export class Client {
     return this.#request<HealthStatus>("GET", "/health", opts);
   }
 
+  // -- authenticated: account -----------------------------------------------
+
+  /** `GET /account` — balances, equity, and open positions. */
+  getAccount(opts?: { signal?: AbortSignal }): Promise<AccountSummary> {
+    return this.#request<AccountSummary>("GET", "/account", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /positions` — open positions for the authenticated account. */
+  getPositions(opts?: { signal?: AbortSignal }): Promise<Position[]> {
+    return this.#request<Position[]>("GET", "/positions", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /fills` — trade executions for the authenticated account. */
+  getFills(opts?: { signal?: AbortSignal }): Promise<Fill[]> {
+    return this.#request<Fill[]>("GET", "/fills", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /account/rate-limit` — the caller's current rate-limit status. */
+  getRateLimit(opts?: { signal?: AbortSignal }): Promise<RateLimitStatus> {
+    return this.#request<RateLimitStatus>("GET", "/account/rate-limit", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `POST /account/credit` — claim testnet faucet credit. */
+  claimCredit(
+    request: CreditRequest = {},
+    opts?: { signal?: AbortSignal },
+  ): Promise<CreditResponse> {
+    return this.#request<CreditResponse>("POST", "/account/credit", {
+      body: request,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  // -- authenticated: orders ------------------------------------------------
+
+  /** `POST /orders` — place a single order. */
+  placeOrder(
+    order: OrderRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<OrderResponse> {
+    return this.#request<OrderResponse>("POST", "/orders", {
+      body: order,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /orders` — open orders for the authenticated account. */
+  getOpenOrders(opts?: { signal?: AbortSignal }): Promise<Order[]> {
+    return this.#request<Order[]>("GET", "/orders", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /orders/{order_id}` — fetch one order by exchange id. */
+  getOrder(orderId: string, opts?: { signal?: AbortSignal }): Promise<Order> {
+    return this.#request<Order>("GET", `/orders/${seg(orderId)}`, {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /orders/by-client-id/{client_order_id}` — fetch one order by client id. */
+  getOrderByClientId(
+    clientOrderId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Order> {
+    return this.#request<Order>(
+      "GET",
+      `/orders/by-client-id/${seg(clientOrderId)}`,
+      { signed: true, signal: opts?.signal },
+    );
+  }
+
+  /** `PUT /orders/{order_id}` — atomic cancel-replace of an order. */
+  amendOrder(
+    orderId: string,
+    amend: AmendOrder,
+    opts?: { signal?: AbortSignal },
+  ): Promise<OrderResponse> {
+    return this.#request<OrderResponse>("PUT", `/orders/${seg(orderId)}`, {
+      body: amend,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `DELETE /orders/{order_id}` — cancel one order by exchange id. */
+  cancelOrder(orderId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    return this.#request<void>("DELETE", `/orders/${seg(orderId)}`, {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `DELETE /orders` — cancel all open orders for the account. */
+  cancelAllOrders(opts?: { signal?: AbortSignal }): Promise<void> {
+    return this.#request<void>("DELETE", "/orders", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
   // -- request plumbing -----------------------------------------------------
 
   async #request<T>(
@@ -370,17 +502,21 @@ export class Client {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      const body = text.slice(0, 2000);
+      // Scrub credential-looking tokens and bound the length before the body
+      // is ever surfaced or logged — a signed request's error can echo context.
+      const body = sanitizeErrorBody(text);
       let code: string | undefined;
       let message: string | undefined;
       try {
         const parsed = JSON.parse(text) as Record<string, unknown>;
         if (parsed && typeof parsed === "object") {
           if (typeof parsed.code === "string") code = parsed.code;
-          if (typeof parsed.message === "string") message = parsed.message;
+          if (typeof parsed.message === "string") {
+            message = sanitizeErrorBody(parsed.message);
+          }
         }
       } catch {
-        // body was not JSON — keep the raw (truncated) text only
+        // body was not JSON — keep the raw (sanitized) text only
       }
       throw new ApiError(res.status, body, { code, message });
     }
