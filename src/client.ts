@@ -641,6 +641,49 @@ export class Client {
     });
   }
 
+  // -- authenticated: streaming ---------------------------------------------
+
+  /**
+   * `POST /ws-tokens` — mint a short-lived (~60s) token authenticating an
+   * account-scoped WebSocket subscription. Signed; returns the raw token.
+   *
+   * The streaming client re-mints on every (re)connect, so pass
+   * {@link wsTokenProvider} rather than a single token:
+   *
+   * ```ts
+   * const ws = createWsClient({
+   *   url: wsUrl,
+   *   tokenProvider: client.wsTokenProvider(),
+   * });
+   * ```
+   *
+   * (The gateway also accepts the legacy `POST /ws/token`; this uses the
+   * canonical plural route.)
+   *
+   * `root: true` because the WebSocket endpoints (`/ws`, `/ws-tokens`) are
+   * served at the host root, not under the `/api/v1` base — so both the URL
+   * and the signed path drop the base prefix.
+   */
+  async mintWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
+    const res = await this.#request<{ token?: string }>("POST", "/ws-tokens", {
+      signed: true,
+      root: true,
+      signal: opts?.signal,
+    });
+    if (!res || typeof res.token !== "string" || res.token.length === 0) {
+      throw new TransportError("ws-tokens response did not contain a token");
+    }
+    return res.token;
+  }
+
+  /**
+   * A bound token provider that mints a fresh WS token per call via
+   * {@link mintWsToken}. Hand straight to `createWsClient({ tokenProvider })`.
+   */
+  wsTokenProvider(): () => Promise<string> {
+    return () => this.mintWsToken();
+  }
+
   // -- request plumbing -----------------------------------------------------
 
   /**
