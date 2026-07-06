@@ -19,9 +19,9 @@ and Node.
 ```ts
 import { Client } from "@nexus-xyz/exchange-ts";
 
-const client = new Client(); // defaults to the public gateway, no credentials
+const client = new Client(); // defaults to the public /api/v1 host, no credentials
 
-for (const market of await client.fetchMarkets()) {
+for (const market of await client.fetchMarketSummaries()) {
   console.log(market.market_id);
 }
 
@@ -36,11 +36,11 @@ signs and assembles its own request, with no shared mutable state and no locks.
 
 ### Market-data methods
 
-`fetchMarkets`, `fetchMarketSummaries`, `fetchTickers`, `fetchTicker`,
-`fetchOrderBook`, `fetchTrades`, `fetchCandles`, `fetchFundingHistory`,
-`fetchMarkPrice`, `fetchMarketStatus`, `fetchMarketAdlEvents`,
-`fetchAccountAdlHistory`, and `health` — covering the public market-data routes
-of the pinned spec. Each returns the corresponding [typed model](#typed-models).
+`fetchMarketSummaries`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
+`fetchTrades`, `fetchCandles`, `fetchFundingHistory`, `fetchFundingSamples`,
+`fetchMarkPrice`, `fetchMarketStatus`, `fetchStats`, and `fetchStatsHistory` —
+covering the public market-data routes of the pinned spec. Each returns the
+corresponding [typed model](#typed-models).
 
 Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 `transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
@@ -59,6 +59,9 @@ verifies:
 The string is signed with the hex-decoded API secret and sent as three headers:
 `x-api-key`, `x-timestamp` (Unix epoch ms), and `x-signature` (hex). An empty
 query is the empty string; an empty body still contributes `sha256hex("")`.
+`<path>` is the **full** request path the server verifies, including the
+`/api/v1` prefix (e.g. `/api/v1/orders`) — the indexer serves `/api/v1`
+directly and signs over the whole path, not a stripped one.
 
 ```ts
 import { Client, Network } from "@nexus-xyz/exchange-ts";
@@ -83,8 +86,11 @@ await client.cancelOrder(order.id);
 
 Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
-authenticated endpoints: account summary, positions, fills, rate-limit status,
-testnet credit; place / fetch / amend / cancel orders.
+authenticated endpoints: account (`getAccount`, `getAccountSummary`,
+`getEquityHistory`, `getRateLimit`, `claimCredit`); positions (`getPositions`,
+`getClosedPositions`); `getFills`; and orders — `placeOrder`, `placeOrderBatch`,
+`previewOrder`, `getOpenOrders`, `getOrderHistory`, `amendOrder` (PATCH,
+cancel-replace), `cancelOrder`, `cancelAllOrders`.
 
 ## WebSocket streaming
 

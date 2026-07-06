@@ -13,11 +13,11 @@ const network =
 
 const client = new Client({ network });
 
-const markets = await client.fetchMarkets();
-console.log(`${markets.length} markets`);
-if (markets.length === 0) process.exit(0);
+const summaries = await client.fetchMarketSummaries();
+console.log(`${summaries.length} markets`);
+if (summaries.length === 0) process.exit(0);
 
-const first = markets[0]!.market_id;
+const first = summaries[0]!.market_id;
 
 const ticker = await client.fetchTicker(first);
 console.log(`${first}: last=${ticker.last} mark=${ticker.markPrice}`);
@@ -27,7 +27,7 @@ const bestBid = book.bids[0]?.[0];
 const bestAsk = book.asks[0]?.[0];
 console.log(`top of book: bid=${bestBid} ask=${bestAsk}`);
 
-const health = await client.health();
+const stats = await client.fetchStats();
 console.log(
-  `health: connected=${health.connected} uptime=${health.uptime_seconds}s`,
+  `venue: connected=${stats.connected} uptime=${stats.uptime_seconds}s`,
 );

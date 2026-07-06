@@ -39,7 +39,6 @@ export {
   baseUrlForNetwork,
   DEFAULT_USER_AGENT,
   type ClientOptions,
-  type HealthStatus,
 } from "./client.js";
 
 export {

@@ -7,6 +7,10 @@ import { dirname, join } from "node:path";
 
 import type {
   OrderRequest,
+  AmendOrderRequest,
+  OrderResult,
+  PreviewResponse,
+  AccountPortfolioSummary,
   Order,
   Ticker,
   Trade,
@@ -31,6 +35,65 @@ test("OrderRequest accepts a limit order body", () => {
     time_in_force: "GTC",
   };
   assert.equal(req.side, "Buy");
+
+  // Post-only is a first-class request value (v0.6.0 spec enum).
+  const postOnly: OrderRequest = { ...req, time_in_force: "PostOnly" };
+  assert.equal(postOnly.time_in_force, "PostOnly");
+});
+
+test("v0.6.0 /api/v1 models accept representative wire shapes", () => {
+  const amend: AmendOrderRequest = { price: "51000" };
+  const ok: OrderResult = {
+    outcome: "ok",
+    order: {
+      id: "11111111-1111-1111-1111-111111111111",
+      market_id: "BTC-USDX-PERP",
+      account_id: "0xabc",
+      side: "Buy",
+      order_type: "Limit",
+      price: "50000",
+      quantity: "0.1",
+      filled_qty: "0",
+      status: "Open",
+      time_in_force: "PostOnly",
+      created_at: 1,
+      updated_at: 1,
+    },
+    fills: [],
+  };
+  const err: OrderResult = {
+    outcome: "err",
+    error: "RiskCheck",
+    message: "no",
+  };
+  const preview: PreviewResponse = {
+    accepted: true,
+    reject_reason: null,
+    required_initial_margin: "10",
+    projected_post_trade_equity: "990",
+    projected_post_trade_liquidation_price: null,
+    projected_post_trade_leverage: "1.1",
+    expected_fill_vwap: "50000",
+    projected_fees: "0.5",
+  };
+  const summary: AccountPortfolioSummary = {
+    collateral: "1000",
+    total_equity: "1010",
+    total_unrealized_pnl: "10",
+    total_realized_pnl_24h: "0",
+    total_volume_24h: "5000",
+    open_positions_count: 1,
+    open_orders_count: 2,
+    margin_used: "100",
+    available_margin: "900",
+  };
+
+  // Narrowing the batch-result discriminated union works on `outcome`.
+  assert.equal(ok.outcome === "ok" ? ok.order.status : null, "Open");
+  assert.equal(err.outcome === "err" ? err.error : null, "RiskCheck");
+  assert.equal(amend.price, "51000");
+  assert.equal(preview.accepted, true);
+  assert.equal(summary.open_orders_count, 2);
 });
 
 test("Order, Ticker, Fill, AccountSummary, Candle accept wire shapes", () => {
@@ -101,15 +164,16 @@ test("open-union response fields accept known and forward-compatible values", ()
   // Known request-enum values narrow cleanly...
   const limit: Order["order_type"] = "Limit";
   const gtc: Order["time_in_force"] = "GTC";
+  const postOnly: Order["time_in_force"] = "PostOnly";
   const maker: Trade["takerOrMaker"] = "maker";
   // ...and values outside the public request enum (e.g. an order placed via
   // another client) still type-check, so listing them never fails to parse.
   const stop: Order["order_type"] = "StopLimit";
-  const postOnly: Order["time_in_force"] = "PostOnly";
+  const gtd: Order["time_in_force"] = "GTD";
   const nullTaker: Trade["takerOrMaker"] = null;
   assert.deepEqual(
-    [limit, gtc, maker, stop, postOnly, nullTaker],
-    ["Limit", "GTC", "maker", "StopLimit", "PostOnly", null],
+    [limit, gtc, postOnly, maker, stop, gtd, nullTaker],
+    ["Limit", "GTC", "PostOnly", "maker", "StopLimit", "GTD", null],
   );
 });
 

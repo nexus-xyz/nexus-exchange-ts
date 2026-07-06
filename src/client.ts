@@ -20,24 +20,30 @@ import {
 } from "./errors.js";
 import { signRequest } from "./sign.js";
 import type {
+  AccountPortfolioSummary,
   AccountSummary,
-  AdlEventRecord,
-  AmendOrder,
+  AmendOrderRequest,
   Candle,
+  ClosedPosition,
   CreditRequest,
   CreditResponse,
+  EquityPoint,
   Fill,
   FundingSample,
-  Market,
   MarketStatus,
   MarketSummary,
   MarkPrice,
   Order,
   OrderBook,
+  OrderHistoryEntry,
   OrderRequest,
   OrderResponse,
+  OrderResult,
   Position,
+  PreviewResponse,
   RateLimitStatus,
+  StatsSnapshot,
+  ThroughputSample,
   Ticker,
   Trade,
 } from "./models.js";
@@ -47,22 +53,6 @@ export const DEFAULT_USER_AGENT = "nexus-exchange-ts/0.0.0";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/**
- * Indexer health/status snapshot (`GET /health`). Unauthenticated.
- *
- * The spec gives `/health` no response schema (so there is no model for it in
- * `models.ts`); the fields below are surfaced best-effort and the index
- * signature preserves anything else, keeping this forward-compatible as the
- * snapshot grows.
- */
-export interface HealthStatus {
-  connected?: boolean;
-  uptime_seconds?: number;
-  events_received?: number;
-  fills_total?: number;
-  [key: string]: unknown;
-}
-
 /** Which Nexus Exchange environment to target. */
 export enum Network {
   Stable = "stable",
@@ -70,10 +60,14 @@ export enum Network {
   Local = "local",
 }
 
+// The `/api/v1` surface is served directly by the indexer at the host root,
+// NOT under the legacy `/api/exchange` gateway prefix (the gateway REST proxy
+// is being eliminated). The signed path therefore includes `/api/v1` — see
+// `basePathOf` and the signing step in `#request`.
 const NETWORK_BASE_URL: Record<Network, string> = {
-  [Network.Stable]: "https://exchange.nexus.xyz/api/exchange",
-  [Network.Beta]: "https://beta.exchange.nexus.xyz/api/exchange",
-  [Network.Local]: "http://localhost:9090",
+  [Network.Stable]: "https://exchange.nexus.xyz/api/v1",
+  [Network.Beta]: "https://beta.exchange.nexus.xyz/api/v1",
+  [Network.Local]: "http://localhost:9090/api/v1",
 };
 
 /** Resolve a network's default base URL. */
@@ -116,6 +110,31 @@ function seg(value: string): string {
 }
 
 /**
+ * The path portion of a base URL (e.g. `"/api/v1"` for
+ * `https://exchange.nexus.xyz/api/v1`), or `""` when it has none. Used as the
+ * prefix of the signed canonical path so the HMAC covers the FULL request path
+ * the server verifies (`/api/v1/orders`), not the method-relative path
+ * (`/orders`). Derived by byte-exact string slicing — never re-encoding — so
+ * the signed path matches the wire path exactly.
+ */
+function basePathOf(baseUrl: string): string {
+  try {
+    const { origin } = new URL(baseUrl);
+    // `origin` is `"null"` for opaque/non-hierarchical URLs; only slice when the
+    // base actually starts with a real origin (host case/port are length-stable,
+    // so the slice stays byte-exact).
+    if (origin !== "null" && baseUrl.startsWith(origin)) {
+      return baseUrl.slice(origin.length);
+    }
+    return new URL(baseUrl).pathname.replace(/\/+$/, "");
+  } catch {
+    // Malformed base URL: sign the method-relative path. The request itself
+    // will fail loudly at fetch time with a clear TransportError.
+    return "";
+  }
+}
+
+/**
  * Build a URL-encoded query string from the given params, dropping `undefined`
  * and `null` values. Insertion order is preserved so the signed canonical query
  * and the sent query are byte-for-byte identical.
@@ -146,6 +165,7 @@ function abortSignalFor(timeoutMs: number, caller?: AbortSignal): AbortSignal {
 
 export class Client {
   readonly #baseUrl: string;
+  readonly #basePath: string;
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
   readonly #timeoutMs: number;
@@ -158,6 +178,7 @@ export class Client {
       /\/+$/,
       "",
     );
+    this.#basePath = basePathOf(this.#baseUrl);
     this.#apiKey = options.apiKey;
     this.#apiSecret = options.apiSecret;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -180,11 +201,6 @@ export class Client {
   }
 
   // -- public market data ---------------------------------------------------
-
-  /** `GET /markets` — all tradable markets and their trading rules. */
-  fetchMarkets(opts?: { signal?: AbortSignal }): Promise<Market[]> {
-    return this.#request<Market[]>("GET", "/markets", opts);
-  }
 
   /** `GET /markets/summary` — per-market 24h volume and halt state. */
   fetchMarketSummaries(opts?: {
@@ -261,6 +277,19 @@ export class Client {
     );
   }
 
+  /** `GET /markets/{market_id}/funding-samples` — raw funding-rate samples. */
+  fetchFundingSamples(
+    marketId: string,
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<FundingSample[]> {
+    const query = buildQuery({ limit: opts.limit });
+    return this.#request<FundingSample[]>(
+      "GET",
+      `/markets/${seg(marketId)}/funding-samples`,
+      { query, signal: opts.signal },
+    );
+  }
+
   /** `GET /markets/{market_id}/mark-price` — current mark price. */
   fetchMarkPrice(
     marketId: string,
@@ -285,35 +314,16 @@ export class Client {
     );
   }
 
-  /** `GET /markets/{market_id}/adl-events` — ADL settlement events (newest first). */
-  fetchMarketAdlEvents(
-    marketId: string,
-    opts: { limit?: number; signal?: AbortSignal } = {},
-  ): Promise<AdlEventRecord[]> {
-    const query = buildQuery({ limit: opts.limit });
-    return this.#request<AdlEventRecord[]>(
-      "GET",
-      `/markets/${seg(marketId)}/adl-events`,
-      { query, signal: opts.signal },
-    );
+  /** `GET /stats` — aggregate venue statistics (incl. rolling unique-trader counts). */
+  fetchStats(opts?: { signal?: AbortSignal }): Promise<StatsSnapshot> {
+    return this.#request<StatsSnapshot>("GET", "/stats", opts);
   }
 
-  /** `GET /account/{address}/adl-history` — ADL events touching an account. */
-  fetchAccountAdlHistory(
-    address: string,
-    opts: { limit?: number; signal?: AbortSignal } = {},
-  ): Promise<AdlEventRecord[]> {
-    const query = buildQuery({ limit: opts.limit });
-    return this.#request<AdlEventRecord[]>(
-      "GET",
-      `/account/${seg(address)}/adl-history`,
-      { query, signal: opts.signal },
-    );
-  }
-
-  /** `GET /health` — indexer health/status snapshot. */
-  health(opts?: { signal?: AbortSignal }): Promise<HealthStatus> {
-    return this.#request<HealthStatus>("GET", "/health", opts);
+  /** `GET /stats/history` — venue throughput ring buffer (1s cadence). */
+  fetchStatsHistory(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ThroughputSample[]> {
+    return this.#request<ThroughputSample[]>("GET", "/stats/history", opts);
   }
 
   // -- authenticated: account -----------------------------------------------
@@ -326,9 +336,44 @@ export class Client {
     });
   }
 
+  /** `GET /account/summary` — aggregate portfolio summary. */
+  getAccountSummary(opts?: {
+    signal?: AbortSignal;
+  }): Promise<AccountPortfolioSummary> {
+    return this.#request<AccountPortfolioSummary>("GET", "/account/summary", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /account/equity-history` — equity samples for the account. */
+  getEquityHistory(
+    opts: {
+      limit?: number;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<EquityPoint[]> {
+    const query = buildQuery({ limit: opts.limit });
+    return this.#request<EquityPoint[]>("GET", "/account/equity-history", {
+      query,
+      signed: true,
+      signal: opts.signal,
+    });
+  }
+
   /** `GET /positions` — open positions for the authenticated account. */
   getPositions(opts?: { signal?: AbortSignal }): Promise<Position[]> {
     return this.#request<Position[]>("GET", "/positions", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /positions/closed` — closed-position records for the account. */
+  getClosedPositions(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ClosedPosition[]> {
+    return this.#request<ClosedPosition[]>("GET", "/positions/closed", {
       signed: true,
       signal: opts?.signal,
     });
@@ -376,6 +421,35 @@ export class Client {
     });
   }
 
+  /**
+   * `POST /orders/batch` — place a batch of orders. The batch is sequential and
+   * non-atomic: each element of the returned array independently reports either
+   * a placed order (`outcome: "ok"`) or a per-order rejection (`outcome: "err"`),
+   * in request order. Narrow on `outcome` to handle each.
+   */
+  placeOrderBatch(
+    orders: OrderRequest[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<OrderResult[]> {
+    return this.#request<OrderResult[]>("POST", "/orders/batch", {
+      body: orders,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `POST /orders/preview` — project an order's margin/equity/fee impact without submitting it. */
+  previewOrder(
+    order: OrderRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<PreviewResponse> {
+    return this.#request<PreviewResponse>("POST", "/orders/preview", {
+      body: order,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
   /** `GET /orders` — open orders for the authenticated account. */
   getOpenOrders(opts?: { signal?: AbortSignal }): Promise<Order[]> {
     return this.#request<Order[]>("GET", "/orders", {
@@ -384,33 +458,31 @@ export class Client {
     });
   }
 
-  /** `GET /orders/{order_id}` — fetch one order by exchange id. */
-  getOrder(orderId: string, opts?: { signal?: AbortSignal }): Promise<Order> {
-    return this.#request<Order>("GET", `/orders/${seg(orderId)}`, {
+  /** `GET /orders/history` — terminal-status (filled/cancelled/rejected/expired) orders. */
+  getOrderHistory(
+    opts: {
+      limit?: number;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<OrderHistoryEntry[]> {
+    const query = buildQuery({ limit: opts.limit });
+    return this.#request<OrderHistoryEntry[]>("GET", "/orders/history", {
+      query,
       signed: true,
-      signal: opts?.signal,
+      signal: opts.signal,
     });
   }
 
-  /** `GET /orders/by-client-id/{client_order_id}` — fetch one order by client id. */
-  getOrderByClientId(
-    clientOrderId: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<Order> {
-    return this.#request<Order>(
-      "GET",
-      `/orders/by-client-id/${seg(clientOrderId)}`,
-      { signed: true, signal: opts?.signal },
-    );
-  }
-
-  /** `PUT /orders/{order_id}` — atomic cancel-replace of an order. */
+  /**
+   * `PATCH /orders/{order_id}` — atomic cancel-replace of a resting order.
+   * At least one of `price` or `size` must be set. Returns the amended order.
+   */
   amendOrder(
     orderId: string,
-    amend: AmendOrder,
+    amend: AmendOrderRequest,
     opts?: { signal?: AbortSignal },
-  ): Promise<OrderResponse> {
-    return this.#request<OrderResponse>("PUT", `/orders/${seg(orderId)}`, {
+  ): Promise<Order> {
+    return this.#request<Order>("PATCH", `/orders/${seg(orderId)}`, {
       body: amend,
       signed: true,
       signal: opts?.signal,
@@ -465,7 +537,10 @@ export class Client {
           this.#apiKey,
           this.#apiSecret,
           method,
-          path,
+          // Sign the FULL request path the server verifies (e.g.
+          // `/api/v1/orders`), i.e. the base URL's path prefix + the
+          // method-relative path — not the stripped `/orders`.
+          `${this.#basePath}${path}`,
           query,
           bodyBytes,
           this.#now(),
@@ -474,7 +549,8 @@ export class Client {
     }
 
     // Assemble the URL by hand so the bytes signed above match the bytes sent
-    // (no client-side re-encoding of the already-encoded query).
+    // (no client-side re-encoding of the already-encoded query). `#baseUrl`
+    // already ends with `#basePath`, so the wire pathname equals the signed one.
     const url = `${this.#baseUrl}${withQuery(path, query)}`;
 
     const init: RequestInit = {

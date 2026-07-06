@@ -27,28 +27,28 @@ function mockFetch(
   return { impl, calls };
 }
 
-test("network base URLs are the public hosts", () => {
+test("network base URLs are the direct-indexer /api/v1 hosts", () => {
   assert.equal(
     baseUrlForNetwork(Network.Stable),
-    "https://exchange.nexus.xyz/api/exchange",
+    "https://exchange.nexus.xyz/api/v1",
   );
   assert.equal(
     baseUrlForNetwork(Network.Beta),
-    "https://beta.exchange.nexus.xyz/api/exchange",
+    "https://beta.exchange.nexus.xyz/api/v1",
   );
 });
 
-test("fetchMarkets hits /markets and decodes the body", async () => {
-  const markets = [{ market_id: "BTC-USDX-PERP", base_asset: "BTC" }];
-  const { impl, calls } = mockFetch(markets);
+test("fetchMarketSummaries hits /markets/summary and decodes the body", async () => {
+  const summaries = [{ market_id: "BTC-USDX-PERP", volume_24h: 1 }];
+  const { impl, calls } = mockFetch(summaries);
   const client = new Client({
     fetchImpl: impl,
     baseUrl: "https://example.test",
   });
 
-  const out = await client.fetchMarkets();
-  assert.deepEqual(out, markets);
-  assert.equal(calls[0]!.url, "https://example.test/markets");
+  const out = await client.fetchMarketSummaries();
+  assert.deepEqual(out, summaries);
+  assert.equal(calls[0]!.url, "https://example.test/markets/summary");
   assert.equal(calls[0]!.init.method, "GET");
 });
 
@@ -104,7 +104,7 @@ test("4xx is a terminal ApiError; 5xx is transient; code/message parsed", async 
     }).impl,
     baseUrl: "https://example.test",
   });
-  await assert.rejects(c4.fetchMarkets(), (err) => {
+  await assert.rejects(c4.fetchMarketSummaries(), (err) => {
     assert.ok(err instanceof ApiError);
     assert.equal(err.status, 400);
     assert.equal(err.code, "bad_request");
@@ -118,7 +118,7 @@ test("4xx is a terminal ApiError; 5xx is transient; code/message parsed", async 
       .impl,
     baseUrl: "https://example.test",
   });
-  await assert.rejects(c5.fetchMarkets(), (err) => {
+  await assert.rejects(c5.fetchMarketSummaries(), (err) => {
     assert.ok(err instanceof ApiError);
     assert.equal(err.transient, true);
     return true;
@@ -133,7 +133,7 @@ test("a thrown fetch becomes a transient TransportError", async () => {
     fetchImpl: impl,
     baseUrl: "https://example.test",
   });
-  await assert.rejects(client.health(), (err) => {
+  await assert.rejects(client.fetchStats(), (err) => {
     assert.ok(err instanceof TransportError);
     assert.equal(err.transient, true);
     return true;
@@ -146,7 +146,7 @@ test("empty 2xx body decodes to undefined", async () => {
     fetchImpl: impl,
     baseUrl: "https://example.test",
   });
-  assert.equal(await client.health(), undefined);
+  assert.equal(await client.fetchStats(), undefined);
 });
 
 test("hasCredentials reflects the key+secret pair", () => {
@@ -166,7 +166,7 @@ test("market-data calls never attach credentials; no auth headers leak", async (
     apiKey: "k",
     apiSecret: "abcd",
   });
-  await client.fetchMarkets();
+  await client.fetchMarketSummaries();
   const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
   assert.equal(headers["x-signature"], undefined);
   assert.equal(calls[0]!.init.credentials, "omit");
@@ -232,16 +232,18 @@ test("signed GET sends valid x-api-key / x-timestamp / x-signature", async () =>
 
   assert.equal(calls.length, 1);
   const c = calls[0]!;
-  assert.equal(c.url, "http://localhost:9090/account");
+  assert.equal(c.url, "http://localhost:9090/api/v1/account");
   assert.equal(c.method, "GET");
   assert.equal(c.headers.get("x-api-key"), "nx_test");
 
   const ts = c.headers.get("x-timestamp")!;
   assert.match(ts, /^\d{13}$/);
+  // The signed path is the FULL request path incl. the `/api/v1` prefix — the
+  // server verifies the HMAC over that, not the method-relative `/account`.
   const expected = referenceSignature(
     ts,
     "GET",
-    "/account",
+    "/api/v1/account",
     "",
     Buffer.alloc(0),
   );
@@ -267,23 +269,82 @@ test("signed POST signs the exact JSON body bytes that are sent", async () => {
   assert.ok(c.body, "request had a body");
 
   const ts = c.headers.get("x-timestamp")!;
-  // Signature must verify against the body bytes actually transmitted.
-  const expected = referenceSignature(ts, "POST", "/orders", "", c.body!);
+  // Signature must verify against the body bytes actually transmitted, over the
+  // full `/api/v1/orders` path.
+  const expected = referenceSignature(
+    ts,
+    "POST",
+    "/api/v1/orders",
+    "",
+    c.body!,
+  );
   assert.equal(c.headers.get("x-signature"), expected);
+});
+
+test("post-only order serializes time_in_force as the exact wire value PostOnly", async () => {
+  const { client, calls } = signedClientWithCapture();
+  await client.placeOrder({
+    market_id: "BTC-USDX-PERP",
+    side: "Buy",
+    order_type: "Limit",
+    price: "65000",
+    quantity: "0.1",
+    time_in_force: "PostOnly",
+  });
+
+  const body = calls[0]!.body!.toString("utf8");
+  // PascalCase `PostOnly` verbatim — not `POSTONLY` / `post_only`.
+  assert.ok(body.includes('"time_in_force":"PostOnly"'));
 });
 
 test("path params are percent-encoded and the signed path matches the URL", async () => {
   const { client, calls } = signedClientWithCapture();
   // An id containing '/' and '?' must not inject extra path/query segments.
-  await client.getOrder("a/b?c");
+  await client.cancelOrder("a/b?c");
 
   const c = calls[0]!;
-  assert.equal(c.url, "http://localhost:9090/orders/a%2Fb%3Fc");
+  assert.equal(c.method, "DELETE");
+  assert.equal(c.url, "http://localhost:9090/api/v1/orders/a%2Fb%3Fc");
+  const ts = c.headers.get("x-timestamp")!;
+  const expected = referenceSignature(
+    ts,
+    "DELETE",
+    "/api/v1/orders/a%2Fb%3Fc",
+    "",
+    Buffer.alloc(0),
+  );
+  assert.equal(c.headers.get("x-signature"), expected);
+});
+
+test("signed path uses the base URL's path prefix (custom baseUrl)", async () => {
+  // A custom base URL with its own path prefix must be folded into the signed
+  // path too — the HMAC always covers the exact pathname sent on the wire.
+  const calls: Captured[] = [];
+  const fetchImpl = (async (url: unknown, init: RequestInit | undefined) => {
+    calls.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      headers: new Headers(init?.headers),
+      body: init?.body ? Buffer.from(init.body as Uint8Array) : undefined,
+    });
+    return new Response(JSON.stringify({ balance: "0" }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const client = new Client({
+    baseUrl: "https://proxy.internal/api/v1",
+    apiKey: "nx_test",
+    apiSecret: SECRET,
+    fetchImpl,
+  });
+  await client.getAccount();
+
+  const c = calls[0]!;
+  assert.equal(c.url, "https://proxy.internal/api/v1/account");
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "GET",
-    "/orders/a%2Fb%3Fc",
+    "/api/v1/account",
     "",
     Buffer.alloc(0),
   );

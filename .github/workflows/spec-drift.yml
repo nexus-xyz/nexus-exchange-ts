@@ -53,23 +53,51 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Cache the upstream spec
-        id: cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: openapi.upstream.json
-          key: spec-${{ steps.pin.outputs.tag }}
-
-      - name: Fetch upstream spec (cache miss only)
-        if: steps.cache.outputs.cache-hit != 'true'
+      # >>> TEMP(ENG-4945): pin the upstream spec to the unmerged blocker branch <<<
+      # The /api/v1 surface this SDK targets is only in the OpenAPI spec on the
+      # nexus-exchange-api PR branch below (nexus-xyz/nexus-exchange-api#41,
+      # ENG-4943); it is NOT yet in any released tag. Until that PR merges and a
+      # release tag (v0.6.1) is cut, verify the vendored spec against the branch
+      # rather than the `.api-version` tag. The branch is mutable, so we do NOT
+      # cache — every run re-fetches the current branch head.
+      #
+      # RESTORE when the blocker merges + v0.6.1 is tagged (see PR description):
+      #   1. bump `.api-version` to the released tag (e.g. v0.6.1);
+      #   2. re-vendor `spec/openapi.json` from that tag;
+      #   3. delete this TEMP block and restore the cached tag-fetch below.
+      - name: Fetch upstream spec from the blocker branch (TEMP — ENG-4945)
         env:
-          # Passed via env (not interpolated into the script) so the tag is
-          # data, not code; validated to ^v[0-9.]+$ in the pin step above.
-          SPEC_TAG: ${{ steps.pin.outputs.tag }}
+          # Hardcoded constant (not from untrusted input): the blocker PR branch.
+          SPEC_REF: refs/heads/lucascampos/eng-4943-nexus-exchange-api-add-apiv1-routes-to-openapi-spec-cut
         run: |
           curl -fsSL \
-            "https://raw.githubusercontent.com/nexus-xyz/nexus-exchange-api/${SPEC_TAG}/openapi.json" \
+            "https://raw.githubusercontent.com/nexus-xyz/nexus-exchange-api/${SPEC_REF}/openapi.json" \
             -o openapi.upstream.json
 
-      - name: Check SDK against upstream spec at the pinned tag
+      - name: Check SDK against the upstream (blocker-branch) spec
         run: node scripts/check-spec-drift.mjs openapi.upstream.json
+
+      # --- RESTORE the following (cached fetch at the pinned tag) when the ---
+      # --- blocker merges, and delete the TEMP block above: ---
+      #
+      # - name: Cache the upstream spec
+      #   id: cache
+      #   uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      #   with:
+      #     path: openapi.upstream.json
+      #     key: spec-${{ steps.pin.outputs.tag }}
+      #
+      # - name: Fetch upstream spec (cache miss only)
+      #   if: steps.cache.outputs.cache-hit != 'true'
+      #   env:
+      #     # Passed via env (not interpolated into the script) so the tag is
+      #     # data, not code; validated to ^v[0-9.]+$ in the pin step above.
+      #     SPEC_TAG: ${{ steps.pin.outputs.tag }}
+      #   run: |
+      #     curl -fsSL \
+      #       "https://raw.githubusercontent.com/nexus-xyz/nexus-exchange-api/${SPEC_TAG}/openapi.json" \
+      #       -o openapi.upstream.json
+      #
+      # - name: Check SDK against upstream spec at the pinned tag
+      #   run: node scripts/check-spec-drift.mjs openapi.upstream.json
+      # >>> END TEMP(ENG-4945) <<<
