@@ -31,6 +31,11 @@ test("OrderRequest accepts a limit order body", () => {
     time_in_force: "GTC",
   };
   assert.equal(req.side, "Buy");
+
+  // Post-only is a first-class request value (added upstream after spec
+  // v0.4.0; the live engine accepts it).
+  const postOnly: OrderRequest = { ...req, time_in_force: "PostOnly" };
+  assert.equal(postOnly.time_in_force, "PostOnly");
 });
 
 test("Order, Ticker, Fill, AccountSummary, Candle accept wire shapes", () => {
@@ -101,15 +106,16 @@ test("open-union response fields accept known and forward-compatible values", ()
   // Known request-enum values narrow cleanly...
   const limit: Order["order_type"] = "Limit";
   const gtc: Order["time_in_force"] = "GTC";
+  const postOnly: Order["time_in_force"] = "PostOnly";
   const maker: Trade["takerOrMaker"] = "maker";
   // ...and values outside the public request enum (e.g. an order placed via
   // another client) still type-check, so listing them never fails to parse.
   const stop: Order["order_type"] = "StopLimit";
-  const postOnly: Order["time_in_force"] = "PostOnly";
+  const gtd: Order["time_in_force"] = "GTD";
   const nullTaker: Trade["takerOrMaker"] = null;
   assert.deepEqual(
-    [limit, gtc, maker, stop, postOnly, nullTaker],
-    ["Limit", "GTC", "maker", "StopLimit", "PostOnly", null],
+    [limit, gtc, postOnly, maker, stop, gtd, nullTaker],
+    ["Limit", "GTC", "PostOnly", "maker", "StopLimit", "GTD", null],
   );
 });
 

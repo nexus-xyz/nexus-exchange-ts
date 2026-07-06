@@ -43,8 +43,15 @@ export type TradeSide = "buy" | "sell";
 /** Order type accepted by `POST /orders`. */
 export type OrderType = "Limit" | "Market";
 
-/** Time-in-force accepted by `POST /orders`. */
-export type TimeInForce = "GTC" | "IOC" | "FOK";
+/**
+ * Time-in-force accepted by `POST /orders`.
+ *
+ * `"PostOnly"` rejects the order on entry if it would take liquidity,
+ * guaranteeing it rests as a maker; a crossing post-only order is rejected
+ * server-side with the `WouldTakeLiquidity` error code. Note the wire value
+ * is PascalCase `PostOnly`, unlike the uppercase `GTC`/`IOC`/`FOK`.
+ */
+export type TimeInForce = "GTC" | "IOC" | "FOK" | "PostOnly";
 
 /**
  * An "open" string literal union: the listed members are surfaced for

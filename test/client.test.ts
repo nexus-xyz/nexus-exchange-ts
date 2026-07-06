@@ -272,6 +272,27 @@ test("signed POST signs the exact JSON body bytes that are sent", async () => {
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
+test("post-only order serializes time_in_force as the exact wire value PostOnly", async () => {
+  const { client, calls } = signedClientWithCapture();
+  await client.placeOrder({
+    market_id: "BTC-USDX-PERP",
+    side: "Buy",
+    order_type: "Limit",
+    price: "65000",
+    quantity: "0.1",
+    time_in_force: "PostOnly",
+  });
+
+  const body = calls[0]!.body!.toString("utf8");
+  // The engine accepts PascalCase `PostOnly` verbatim — not `POSTONLY` or
+  // `post_only` — so pin the exact bytes on the wire.
+  assert.ok(body.includes('"time_in_force":"PostOnly"'));
+  assert.equal(
+    (JSON.parse(body) as { time_in_force: string }).time_in_force,
+    "PostOnly",
+  );
+});
+
 test("path params are percent-encoded and the signed path matches the URL", async () => {
   const { client, calls } = signedClientWithCapture();
   // An id containing '/' and '?' must not inject extra path/query segments.
