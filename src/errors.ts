@@ -25,9 +25,12 @@ export class NexusExchangeError extends Error {
 /**
  * The API returned a non-2xx response.
  *
- * Terminal for 4xx (the request was rejected); transient for 5xx and 408. The
- * `body` has already been run through {@link sanitizeErrorBody}, so it is safe
- * to log — credential-looking tokens are redacted and the length is bounded.
+ * Terminal for 4xx (the request was rejected), with one exception: `429 Too
+ * Many Requests` is transient — the same request can succeed once the rate
+ * budget refills, so it carries a {@link retryAfterMs} hint parsed from the
+ * `Retry-After` header. `5xx` and `408` are also transient. The `body` has
+ * already been run through {@link sanitizeErrorBody}, so it is safe to log —
+ * credential-looking tokens are redacted and the length is bounded.
  */
 export class ApiError extends NexusExchangeError {
   readonly status: number;
@@ -35,20 +38,27 @@ export class ApiError extends NexusExchangeError {
   readonly body: string;
   /** Machine-readable error code from the JSON body, when present. */
   readonly code?: string;
+  /**
+   * Minimum wait before retrying, in ms, parsed from a `Retry-After` header
+   * (present mainly on `429`/`503`). Undefined when the header was absent or
+   * unparseable. A retrying client should wait at least this long.
+   */
+  readonly retryAfterMs?: number;
 
   constructor(
     status: number,
     body: string,
-    opts: { code?: string; message?: string } = {},
+    opts: { code?: string; message?: string; retryAfterMs?: number } = {},
   ) {
     super(`Exchange API ${status}: ${opts.message ?? body}`);
     this.status = status;
     this.body = body;
     this.code = opts.code;
+    this.retryAfterMs = opts.retryAfterMs;
   }
 
   override get transient(): boolean {
-    return this.status >= 500 || this.status === 408;
+    return this.status >= 500 || this.status === 408 || this.status === 429;
   }
 }
 
