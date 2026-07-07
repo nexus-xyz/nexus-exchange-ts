@@ -52,6 +52,20 @@ test("fetchMarketSummaries hits /markets/summary and decodes the body", async ()
   assert.equal(calls[0]!.init.method, "GET");
 });
 
+test("ready() hits the host root /ready, not the /api/v1 base", async () => {
+  const { impl, calls } = mockFetch({ ready: true });
+  const client = new Client({
+    fetchImpl: impl,
+    baseUrl: "https://example.test/api/v1",
+  });
+
+  const out = await client.ready();
+  assert.deepEqual(out, { ready: true });
+  // Served at the origin root — the /api/v1 base path is dropped.
+  assert.equal(calls[0]!.url, "https://example.test/ready");
+  assert.equal(calls[0]!.init.method, "GET");
+});
+
 test("query params are appended in order and only when present", async () => {
   const { impl, calls } = mockFetch([]);
   const client = new Client({

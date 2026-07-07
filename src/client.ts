@@ -42,6 +42,7 @@ import type {
   Position,
   PreviewResponse,
   RateLimitStatus,
+  ReadyResponse,
   StatsSnapshot,
   ThroughputSample,
   Ticker,
@@ -97,6 +98,12 @@ interface RequestOptions {
   body?: unknown;
   signed?: boolean;
   signal?: AbortSignal;
+  /**
+   * Address the host root instead of the `/api/v1` base — for endpoints served
+   * directly at the origin (e.g. `GET /ready`). The URL and the signed path
+   * both drop the base path prefix.
+   */
+  root?: boolean;
 }
 
 /** Append a `?query` to `path` only when `query` is non-empty. */
@@ -166,6 +173,7 @@ function abortSignalFor(timeoutMs: number, caller?: AbortSignal): AbortSignal {
 export class Client {
   readonly #baseUrl: string;
   readonly #basePath: string;
+  readonly #origin: string;
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
   readonly #timeoutMs: number;
@@ -179,6 +187,13 @@ export class Client {
       "",
     );
     this.#basePath = basePathOf(this.#baseUrl);
+    // The origin (scheme + host [+ port]) is the base URL with its path prefix
+    // sliced off — byte-exact, same as `basePathOf`. Used for host-root routes
+    // like `/ready` that live outside the `/api/v1` base.
+    this.#origin =
+      this.#basePath && this.#baseUrl.endsWith(this.#basePath)
+        ? this.#baseUrl.slice(0, this.#baseUrl.length - this.#basePath.length)
+        : this.#baseUrl;
     this.#apiKey = options.apiKey;
     this.#apiSecret = options.apiSecret;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -324,6 +339,19 @@ export class Client {
     signal?: AbortSignal;
   }): Promise<ThroughputSample[]> {
     return this.#request<ThroughputSample[]>("GET", "/stats/history", opts);
+  }
+
+  /**
+   * `GET /ready` — engine readiness: `true` once every configured market has
+   * received its first oracle price this run. Served at the host root (not under
+   * `/api/v1`), needs no auth, and returns 503 during the oracle warm-up window
+   * (surfaced as an {@link ApiError}). Distinct from liveness.
+   */
+  ready(opts?: { signal?: AbortSignal }): Promise<ReadyResponse> {
+    return this.#request<ReadyResponse>("GET", "/ready", {
+      root: true,
+      signal: opts?.signal,
+    });
   }
 
   // -- authenticated: account -----------------------------------------------
@@ -512,7 +540,7 @@ export class Client {
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
-    const { query = "", body, signed = false, signal } = options;
+    const { query = "", body, signed = false, signal, root = false } = options;
 
     const bodyBytes =
       body === undefined || body === null
@@ -539,8 +567,9 @@ export class Client {
           method,
           // Sign the FULL request path the server verifies (e.g.
           // `/api/v1/orders`), i.e. the base URL's path prefix + the
-          // method-relative path — not the stripped `/orders`.
-          `${this.#basePath}${path}`,
+          // method-relative path — not the stripped `/orders`. Root routes
+          // (e.g. `/ready`) live outside the base and sign the bare path.
+          `${root ? "" : this.#basePath}${path}`,
           query,
           bodyBytes,
           this.#now(),
@@ -550,8 +579,9 @@ export class Client {
 
     // Assemble the URL by hand so the bytes signed above match the bytes sent
     // (no client-side re-encoding of the already-encoded query). `#baseUrl`
-    // already ends with `#basePath`, so the wire pathname equals the signed one.
-    const url = `${this.#baseUrl}${withQuery(path, query)}`;
+    // already ends with `#basePath`, so the wire pathname equals the signed one;
+    // root routes go to the bare origin so both again match.
+    const url = `${root ? this.#origin : this.#baseUrl}${withQuery(path, query)}`;
 
     const init: RequestInit = {
       method,
