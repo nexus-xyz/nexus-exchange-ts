@@ -12,9 +12,12 @@ name: Release
 #
 # Security posture:
 #   - Default-deny permissions at the top; each job is granted only what it needs.
-#   - The NPM_TOKEN is referenced exclusively by the publish job, which runs only
-#     on a release commit on main — never on PRs (where fork contributors could
-#     see workflow changes but can't reach repo secrets anyway).
+#   - Auth is npm Trusted Publishing (OIDC): the publish job mints an id-token
+#     (id-token: write) which pnpm exchanges for a short-lived, single-publish
+#     npm token. There is NO long-lived NPM_TOKEN secret to leak or rotate.
+#     Requires a one-time config on npmjs.com: register this repo + this
+#     workflow (optionally scoped to the `npm-publish` environment) as a trusted
+#     publisher for @nexus-xyz/exchange-ts. pnpm >= 10.16 supports this.
 #   - Provenance (--provenance + id-token: write) signs the published tarball so
 #     consumers can verify it was built from this repo at this commit.
 #   - pnpm install --frozen-lockfile installs exactly the lockfile; the registry
@@ -83,9 +86,12 @@ jobs:
       - run: pnpm test
       - run: pnpm run verify:pack
 
+      # Auth is OIDC Trusted Publishing — no NODE_AUTH_TOKEN. With id-token:write
+      # granted above and this repo/workflow registered as a trusted publisher on
+      # npmjs.com, pnpm exchanges the OIDC id-token for a short-lived publish
+      # token automatically. (If trusted publishing is not yet configured, this
+      # step fails closed rather than publishing unsigned/unauthenticated.)
       # --provenance: publish a signed build-provenance attestation.
       # --access public: a scoped (@nexus-xyz/…) package is private by default.
       # --no-git-checks: we publish from a detached tag checkout, not a branch.
       - run: pnpm publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
