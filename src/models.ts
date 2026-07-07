@@ -43,8 +43,15 @@ export type TradeSide = "buy" | "sell";
 /** Order type accepted by `POST /orders`. */
 export type OrderType = "Limit" | "Market";
 
-/** Time-in-force accepted by `POST /orders`. */
-export type TimeInForce = "GTC" | "IOC" | "FOK";
+/**
+ * Time-in-force accepted by `POST /orders`.
+ *
+ * `"PostOnly"` rejects the order on entry if it would take liquidity,
+ * guaranteeing it rests as a maker; a crossing post-only order is rejected
+ * server-side with the `WouldTakeLiquidity` error code. Note the wire value is
+ * PascalCase `PostOnly`, unlike the uppercase `GTC`/`IOC`/`FOK`.
+ */
+export type TimeInForce = "GTC" | "IOC" | "FOK" | "PostOnly";
 
 /**
  * An "open" string literal union: the listed members are surfaced for
@@ -179,6 +186,17 @@ export interface MarketStatus {
   adl_event_count: number;
 }
 
+/** Per-market risk parameters (`GET /markets/{market_id}/risk-params`). */
+export interface MarketRiskParams {
+  market_id: string;
+  /** Maximum leverage allowed for this market. */
+  max_leverage: number;
+  /** Initial margin requirement as a decimal ratio (e.g. `0.05` = 5%). */
+  initial_margin_rate: Decimal;
+  /** Maintenance margin requirement as a decimal ratio (e.g. `0.025` = 2.5%). */
+  maintenance_margin_rate: Decimal;
+}
+
 /** Current mark price for a market (`GET /markets/{market_id}/mark-price`). */
 export interface MarkPrice {
   market_id: string;
@@ -298,7 +316,10 @@ export interface FundingSample {
 
 // ─── Trading ────────────────────────────────────────────────────────────────
 
-/** Request body for `POST /orders` and each element of `POST /orders/batch`. */
+/**
+ * Request body for `POST /orders`, `POST /orders/preview`, and each element of
+ * `POST /orders/batch`.
+ */
 export interface OrderRequest {
   market_id: string;
   side: OrderSide;
@@ -309,22 +330,18 @@ export interface OrderRequest {
   time_in_force: TimeInForce;
   /** When true, the order may only reduce an existing position. */
   reduce_only?: boolean;
-  /**
-   * Caller-assigned idempotency/correlation id. When set you can later look the
-   * order up via {@link Client.getOrderByClientId}.
-   */
-  client_order_id?: string;
 }
 
 /**
- * Request body for `PUT /orders/{order_id}` (atomic cancel-replace). Only the
- * provided fields are changed.
+ * Request body for `PATCH /orders/{order_id}` (atomic cancel-replace). At least
+ * one of `price` or `size` must be present — an empty body is rejected
+ * server-side with `InvalidAmend`.
  */
-export interface AmendOrder {
+export interface AmendOrderRequest {
+  /** New limit price. */
   price?: Decimal;
-  quantity?: Decimal;
-  time_in_force?: TimeInForce;
-  client_order_id?: string;
+  /** New quantity. */
+  size?: Decimal;
 }
 
 /** A resting or completed order (`GET /orders`, `GET /orders/{order_id}`). */
@@ -350,14 +367,73 @@ export interface Order {
   updated_at: TimestampMs;
 }
 
-/** Response from `POST /orders` and `PUT /orders/{order_id}`. */
+/** Response from `POST /orders`. */
 export interface OrderResponse {
   order: Order;
-  /**
-   * Fills generated immediately on placement (for marketable orders). The spec
-   * leaves the element shape open; treat entries as opaque records.
-   */
-  fills: Array<Record<string, unknown>>;
+  /** Fills generated immediately on placement (for marketable orders). */
+  fills: Fill[];
+}
+
+/**
+ * One entry in the array returned by `POST /orders/batch`. The batch is
+ * sequential and non-atomic, so each entry independently reports either a
+ * placed order (`outcome: "ok"`) or a per-order rejection (`outcome: "err"`),
+ * in request order. Narrow on `outcome` to discriminate.
+ */
+export type OrderResult = OrderResultOk | OrderResultErr;
+
+/** A placed order in a batch result (`outcome: "ok"`). */
+export interface OrderResultOk {
+  outcome: "ok";
+  order: Order;
+  fills?: Fill[];
+}
+
+/** A rejected order in a batch result (`outcome: "err"`); mirrors the error envelope. */
+export interface OrderResultErr {
+  outcome: "err";
+  /** Machine-readable error code. */
+  error: string;
+  /** Human-readable error message. */
+  message: string;
+}
+
+/**
+ * A terminal-status order (`GET /orders/history`): filled, cancelled, rejected,
+ * or expired. Field naming differs from {@link Order} (it is a distinct
+ * history-store shape): `side`/`order_type` are lowercase, sizes and timestamps
+ * use `size`/`*_ms`.
+ */
+export interface OrderHistoryEntry {
+  id: string;
+  market_id: string;
+  side: TradeSide;
+  /** `limit` | `market` | `stop_*` | `take_profit_*` | `trailing_stop`. */
+  order_type: string;
+  /** Limit price; `null` for market orders. */
+  price: Decimal | null;
+  /** Original quantity. */
+  size: Decimal;
+  filled_qty: Decimal;
+  status: "Filled" | "Cancelled" | "Rejected" | "Expired";
+  cancellation_reason: string | null;
+  created_at_ms: TimestampMs;
+  completed_at_ms: TimestampMs;
+}
+
+/**
+ * Pre-trade preview (`POST /orders/preview`): projects the margin/equity/fee
+ * impact of an order without submitting it.
+ */
+export interface PreviewResponse {
+  accepted: boolean;
+  reject_reason: string | null;
+  required_initial_margin: Decimal;
+  projected_post_trade_equity: Decimal;
+  projected_post_trade_liquidation_price: Decimal | null;
+  projected_post_trade_leverage: Decimal;
+  expected_fill_vwap: Decimal | null;
+  projected_fees: Decimal;
 }
 
 // ─── Account ────────────────────────────────────────────────────────────────
@@ -380,6 +456,55 @@ export interface Position {
   unrealized_pnl: Decimal;
   realized_pnl: Decimal;
   liquidation_price: Decimal;
+}
+
+/** A closed position record (`GET /positions/closed`). */
+export interface ClosedPosition {
+  market_id: string;
+  /** The side the position was on before it closed. */
+  side: PositionSide;
+  /** Absolute size at close. */
+  size: Decimal;
+  entry_price: Decimal;
+  exit_price: Decimal;
+  realized_pnl: Decimal;
+  closed_at_ms: TimestampMs;
+}
+
+/**
+ * Portfolio summary for the authenticated account (`GET /account/summary`):
+ * aggregate equity, PnL, volume, and open counts.
+ */
+export interface AccountPortfolioSummary {
+  collateral: Decimal;
+  total_equity: Decimal;
+  total_unrealized_pnl: Decimal;
+  total_realized_pnl_24h: Decimal;
+  total_volume_24h: Decimal;
+  open_positions_count: number;
+  open_orders_count: number;
+  margin_used: Decimal;
+  available_margin: Decimal;
+  /** Present only when the early-access gate is active. */
+  early_access_allowed?: boolean;
+}
+
+/** One equity sample for the account (`GET /account/equity-history`, 5s cadence). */
+export interface EquityPoint {
+  timestamp_ms: TimestampMs;
+  /** Account equity at sample time. */
+  equity: number;
+}
+
+/** A funding payment for the account (`GET /funding`). */
+export interface AccountFunding {
+  market_id: string;
+  /** Signed funding amount. */
+  amount: Decimal;
+  direction: "paid" | "received";
+  funding_rate: Decimal;
+  position_size: Decimal;
+  timestamp: TimestampMs;
 }
 
 /** A single trade execution for the authenticated account (`GET /fills`). */
@@ -420,6 +545,14 @@ export interface CreditResponse {
   daily_limit: Decimal;
 }
 
+/** Testnet faucet credit result (`POST /faucet`). */
+export interface FaucetResponse {
+  /** Amount credited. */
+  amount: Decimal;
+  /** Earliest time the faucet may be claimed again. */
+  available_at_ms: TimestampMs;
+}
+
 /**
  * Rate-limit status for the caller (`GET /account/rate-limit`). `limit`,
  * `remaining`, and `reset_at_ms` are `null` for the unlimited tier.
@@ -433,4 +566,104 @@ export interface RateLimitStatus {
   remaining: number | null;
   /** Unix ms when the bucket refills to `limit`; `0` when already full. Null = unlimited. */
   reset_at_ms: number | null;
+}
+
+// ─── Funds (deposits / withdrawals) ──────────────────────────────────────────
+
+/** A single withdrawal record for the authenticated account (`GET /withdrawals`). */
+export interface Withdrawal {
+  /** Withdrawal ID. */
+  id: string;
+  /** Withdrawn amount in USDX (decimal string). */
+  amount: Decimal;
+  timestamp: TimestampMs;
+  status: "pending" | "settled" | "failed";
+}
+
+/** A deposit or withdrawal ledger entry (`GET /deposits`). */
+export interface FundsEntry {
+  id: number;
+  kind: "deposit" | "withdrawal" | "faucet";
+  /** 0x-prefixed account address. */
+  account: string;
+  amount: Decimal;
+  asset: string;
+  timestamp: TimestampMs;
+  status: "pending" | "confirmed" | "failed";
+  tx_hash: string | null;
+}
+
+/** Request body for `POST /deposits`. */
+export interface DepositRequest {
+  /** Deposit amount (positive decimal string). */
+  amount: Decimal;
+  /** Asset symbol; defaults to `USDX`. */
+  asset?: string;
+}
+
+/**
+ * Engine deposit acknowledgement (`POST /deposits`). Carries the updated
+ * authoritative balance; the spec allows additional forwarded fields.
+ */
+export interface DepositResponse {
+  /** Authoritative post-deposit balance. */
+  balance: Decimal;
+  [key: string]: unknown;
+}
+
+// ─── Venue statistics / health ───────────────────────────────────────────────
+
+/**
+ * Aggregate venue statistics (`GET /stats`). `/stats` augments the base
+ * snapshot with rolling unique-trader counts; those fields are absent elsewhere.
+ */
+export interface StatsSnapshot {
+  events_received?: number;
+  fills_total?: number;
+  liquidations_total?: number;
+  gap_count?: number;
+  connected?: boolean;
+  last_event_ms?: TimestampMs | null;
+  uptime_seconds?: number;
+  events_per_sec?: number;
+  /** Health classification (e.g. `Healthy` / `Degraded` / `Unhealthy`). */
+  health?: string;
+  highest_sequence_seen?: number;
+  /** Rolling 24h unique traders (DAU). Present on `/stats`. */
+  unique_traders_24h?: number;
+  /** Rolling 7d unique traders (WAU). Present on `/stats`. */
+  unique_traders_7d?: number;
+  /** Rolling 30d unique traders (MAU). Present on `/stats`. */
+  unique_traders_30d?: number;
+}
+
+/** One point in the venue throughput ring buffer (`GET /stats/history`, 1s cadence). */
+export interface ThroughputSample {
+  /** Unix seconds. */
+  timestamp: number;
+  fills: number;
+}
+
+/**
+ * Aggregate health for the indexer/engine/oracle/bots (`GET /status`). The
+ * `services` object carries per-component detail that may evolve; clients
+ * should rely on the top-level `status`.
+ */
+export interface ServiceHealth {
+  /** Worst-of across all components. */
+  status: "ok" | "degraded" | "down" | "starting";
+  timestamp_ms: TimestampMs;
+  /** Per-component status (indexer, engine, oracle, bots). Informational. */
+  services: Record<string, unknown>;
+}
+
+/**
+ * Engine readiness (`GET /ready`): whether every configured market has received
+ * its first oracle price this run. Distinct from `/health` liveness. A latch —
+ * stays `true` once warmed up even if a market's price later goes stale;
+ * steady-state staleness is enforced per-order, not here.
+ */
+export interface ReadyResponse {
+  /** True once every configured market has received at least one oracle price this run. */
+  ready: boolean;
 }
