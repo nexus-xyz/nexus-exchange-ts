@@ -656,3 +656,14 @@ export interface ServiceHealth {
   /** Per-component status (indexer, engine, oracle, bots). Informational. */
   services: Record<string, unknown>;
 }
+
+/**
+ * Engine readiness (`GET /ready`): whether every configured market has received
+ * its first oracle price this run. Distinct from `/health` liveness. A latch —
+ * stays `true` once warmed up even if a market's price later goes stale;
+ * steady-state staleness is enforced per-order, not here.
+ */
+export interface ReadyResponse {
+  /** True once every configured market has received at least one oracle price this run. */
+  ready: boolean;
+}

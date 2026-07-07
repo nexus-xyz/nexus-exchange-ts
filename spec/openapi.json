@@ -3,7 +3,7 @@
   "info": {
     "title": "Nexus Exchange API",
     "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.",
-    "version": "0.6.0"
+    "version": "0.6.2"
   },
   "servers": [
     {
@@ -2024,6 +2024,39 @@
                   "items": {
                     "$ref": "#/components/schemas/ThroughputSample"
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "Markets"
+        ],
+        "summary": "Engine readiness",
+        "description": "Public — no authentication required. Returns 200 once every configured market has received its first oracle price this run, 503 while any market is still awaiting its first price (the post-bind oracle warm-up window). Distinct from /health (liveness): a feed outage must not fail liveness and trigger a restart storm. Intended for use as a readiness probe.",
+        "operationId": "fetchReadiness",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Engine is ready: every market has received its first oracle price.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Engine is not yet ready: at least one market has not received an oracle price this run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
                 }
               }
             }
@@ -5125,6 +5158,19 @@
             "description": "Per-component status (indexer, engine, oracle, bots). Component detail is informational and may evolve; clients should rely on the top-level `status`."
           }
         }
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "description": "Engine readiness: whether every configured market has received its first oracle price this run. Distinct from /health liveness. A latch — stays true once warmed up even if a market's price later goes stale; steady-state staleness is enforced per-order, not here.",
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "description": "True once every configured market has received at least one oracle price this run."
+          }
+        },
+        "required": [
+          "ready"
+        ]
       },
       "EquityPoint": {
         "type": "object",

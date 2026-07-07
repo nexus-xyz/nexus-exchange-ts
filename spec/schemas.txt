@@ -51,5 +51,6 @@ DepositResponse
 StatsSnapshot
 ThroughputSample
 ServiceHealth
+ReadyResponse
 Decimal
 TimestampMs
