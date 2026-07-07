@@ -58,6 +58,11 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_BASE_MS = 250;
 const DEFAULT_RETRY_MAX_MS = 8_000;
+// A server `Retry-After` is honored above the normal backoff cap (the server
+// knows its own rate window), but only up to this ceiling — so a misbehaving
+// server/proxy sending a huge value or a far-future HTTP-date can't stall a
+// caller that passed no abort signal. 60s is generous for a real rate window.
+const RETRY_AFTER_MAX_MS = 60_000;
 
 /**
  * HTTP methods that are safe to retry automatically. A transient failure on a
@@ -309,13 +314,16 @@ export class Client {
 
   /**
    * Backoff for retry attempt `attempt` (0-based): exponential from the base,
-   * capped, with "full jitter" over the lower half so a fleet of clients doesn't
-   * retry in lockstep. Never shorter than a server-provided `Retry-After`.
+   * capped, with equal jitter (half fixed + half random) so a fleet of clients
+   * doesn't retry in lockstep. Never shorter than a server-provided
+   * `Retry-After`, but that value is itself clamped to {@link RETRY_AFTER_MAX_MS}
+   * so a hostile/oversized header can't stall a caller that passed no signal.
    */
   #backoffMs(attempt: number, retryAfterMs?: number): number {
     const capped = Math.min(this.#retryMaxMs, this.#retryBaseMs * 2 ** attempt);
     const jittered = capped / 2 + Math.random() * (capped / 2);
-    return Math.max(jittered, retryAfterMs ?? 0);
+    const retryAfter = Math.min(retryAfterMs ?? 0, RETRY_AFTER_MAX_MS);
+    return Math.max(jittered, retryAfter);
   }
 
   /** Whether this client was given both an API key and secret. */

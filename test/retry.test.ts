@@ -171,6 +171,24 @@ test("retries 429 and waits at least the Retry-After hint", async () => {
   );
 });
 
+test("clamps an oversized Retry-After so it can't stall a signal-less caller", async () => {
+  // A hostile/oversized Retry-After (1 hour) must be bounded to the ceiling.
+  const { impl } = seqFetch(status(429, { "retry-after": "3600" }), ok([]));
+  const sleep = recordSleep();
+  const client = new Client({
+    fetchImpl: impl,
+    baseUrl: BASE,
+    sleepImpl: sleep.impl,
+    retry: { baseDelayMs: 1, maxDelayMs: 5 },
+  });
+
+  await client.fetchMarketSummaries();
+  assert.ok(
+    sleep.delays[0]! <= 60_000,
+    `expected clamped to <= 60000ms, got ${sleep.delays[0]}`,
+  );
+});
+
 test("429 ApiError carries the parsed retryAfterMs", async () => {
   const { impl } = seqFetch(status(429, { "retry-after": "3" }));
   const client = new Client({
