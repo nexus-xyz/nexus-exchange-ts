@@ -15,6 +15,7 @@
 import {
   ApiError,
   MissingCredentialsError,
+  NexusExchangeError,
   TransportError,
   sanitizeErrorBody,
 } from "./errors.js";
@@ -54,6 +55,60 @@ export const DEFAULT_USER_AGENT = "nexus-exchange-ts/0.0.0";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_RETRY_BASE_MS = 250;
+const DEFAULT_RETRY_MAX_MS = 8_000;
+// A server `Retry-After` is honored above the normal backoff cap (the server
+// knows its own rate window), but only up to this ceiling — so a misbehaving
+// server/proxy sending a huge value or a far-future HTTP-date can't stall a
+// caller that passed no abort signal. 60s is generous for a real rate window.
+const RETRY_AFTER_MAX_MS = 60_000;
+
+/**
+ * HTTP methods that are safe to retry automatically. A transient failure on a
+ * non-idempotent request (notably `POST /orders`) might have *already* taken
+ * effect on the server before the error surfaced, so retrying it could double
+ * the effect — place a second order, credit twice. We therefore never auto-retry
+ * `POST`/`PATCH`; callers own the retry decision for those.
+ */
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+
+/** Sleep for `ms`, rejecting early (with a {@link TransportError}) if `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new TransportError("request aborted"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new TransportError("request aborted"));
+      },
+      { once: true },
+    );
+  });
+}
+
+/**
+ * Parse a `Retry-After` header into milliseconds. Supports both forms from the
+ * spec: an integer number of seconds, or an HTTP-date. Returns undefined when
+ * the header is absent or unparseable so the caller falls back to backoff.
+ */
+function parseRetryAfter(
+  header: string | null,
+  nowMs: number,
+): number | undefined {
+  if (!header) return undefined;
+  const secs = Number(header);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const date = Date.parse(header);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, date - nowMs);
+}
+
 /** Which Nexus Exchange environment to target. */
 export enum Network {
   Stable = "stable",
@@ -76,6 +131,24 @@ export function baseUrlForNetwork(network: Network): string {
   return NETWORK_BASE_URL[network];
 }
 
+/**
+ * Automatic retry policy for transient failures. Retries apply only to
+ * idempotent requests (see {@link IDEMPOTENT_METHODS}) that fail transiently —
+ * transport errors, `5xx`, `408`, and `429` — with exponential backoff plus
+ * jitter, honoring a `Retry-After` header when present.
+ */
+export interface RetryOptions {
+  /**
+   * Max retry attempts after the initial try. `0` disables retries entirely.
+   * Defaults to 2 (so up to 3 attempts total).
+   */
+  maxRetries?: number;
+  /** Base backoff in ms; doubles each attempt. Defaults to 250ms. */
+  baseDelayMs?: number;
+  /** Upper bound on a single backoff delay, in ms. Defaults to 8000ms. */
+  maxDelayMs?: number;
+}
+
 export interface ClientOptions {
   /** Named environment to target. Defaults to {@link Network.Stable}. */
   network?: Network;
@@ -87,10 +160,22 @@ export interface ClientOptions {
   apiSecret?: string;
   /** Per-request timeout in milliseconds. Defaults to 30s. */
   timeoutMs?: number;
+  /**
+   * Automatic-retry policy for transient failures on idempotent requests.
+   * Defaults to 2 retries with 250ms→8s exponential backoff. Pass
+   * `{ maxRetries: 0 }` to disable.
+   */
+  retry?: RetryOptions;
   /** Override the `fetch` implementation (e.g. inject a mock in tests). */
   fetchImpl?: typeof fetch;
   /** Override the wall clock (ms since epoch) — used for deterministic tests. */
   nowMs?: () => number;
+  /**
+   * Override the backoff sleep (e.g. to make retry tests instant). Receives the
+   * computed delay in ms and the request's abort signal. Defaults to a real
+   * timer.
+   */
+  sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 interface RequestOptions {
@@ -179,6 +264,10 @@ export class Client {
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
+  readonly #maxRetries: number;
+  readonly #retryBaseMs: number;
+  readonly #retryMaxMs: number;
+  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(options: ClientOptions = {}) {
     const network = options.network ?? Network.Stable;
@@ -208,6 +297,33 @@ export class Client {
     // unbound reference throws "Illegal invocation" in browsers).
     this.#fetch = options.fetchImpl ?? f.bind(globalThis);
     this.#now = options.nowMs ?? (() => Date.now());
+    this.#maxRetries = Math.max(
+      0,
+      options.retry?.maxRetries ?? DEFAULT_MAX_RETRIES,
+    );
+    this.#retryBaseMs = Math.max(
+      0,
+      options.retry?.baseDelayMs ?? DEFAULT_RETRY_BASE_MS,
+    );
+    this.#retryMaxMs = Math.max(
+      this.#retryBaseMs,
+      options.retry?.maxDelayMs ?? DEFAULT_RETRY_MAX_MS,
+    );
+    this.#sleep = options.sleepImpl ?? sleep;
+  }
+
+  /**
+   * Backoff for retry attempt `attempt` (0-based): exponential from the base,
+   * capped, with equal jitter (half fixed + half random) so a fleet of clients
+   * doesn't retry in lockstep. Never shorter than a server-provided
+   * `Retry-After`, but that value is itself clamped to {@link RETRY_AFTER_MAX_MS}
+   * so a hostile/oversized header can't stall a caller that passed no signal.
+   */
+  #backoffMs(attempt: number, retryAfterMs?: number): number {
+    const capped = Math.min(this.#retryMaxMs, this.#retryBaseMs * 2 ** attempt);
+    const jittered = capped / 2 + Math.random() * (capped / 2);
+    const retryAfter = Math.min(retryAfterMs ?? 0, RETRY_AFTER_MAX_MS);
+    return Math.max(jittered, retryAfter);
   }
 
   /** Whether this client was given both an API key and secret. */
@@ -533,9 +649,85 @@ export class Client {
     });
   }
 
+  // -- authenticated: streaming ---------------------------------------------
+
+  /**
+   * `POST /ws-tokens` — mint a short-lived (~60s) token authenticating an
+   * account-scoped WebSocket subscription. Signed; returns the raw token.
+   *
+   * The streaming client re-mints on every (re)connect, so pass
+   * {@link wsTokenProvider} rather than a single token:
+   *
+   * ```ts
+   * const ws = createWsClient({
+   *   url: wsUrl,
+   *   tokenProvider: client.wsTokenProvider(),
+   * });
+   * ```
+   *
+   * (The gateway also accepts the legacy `POST /ws/token`; this uses the
+   * canonical plural route.)
+   *
+   * `root: true` because the WebSocket endpoints (`/ws`, `/ws-tokens`) are
+   * served at the host root, not under the `/api/v1` base — so both the URL
+   * and the signed path drop the base prefix.
+   */
+  async mintWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
+    const res = await this.#request<{ token?: string }>("POST", "/ws-tokens", {
+      signed: true,
+      root: true,
+      signal: opts?.signal,
+    });
+    if (!res || typeof res.token !== "string" || res.token.length === 0) {
+      throw new TransportError("ws-tokens response did not contain a token");
+    }
+    return res.token;
+  }
+
+  /**
+   * A bound token provider that mints a fresh WS token per call via
+   * {@link mintWsToken}. Hand straight to `createWsClient({ tokenProvider })`.
+   */
+  wsTokenProvider(): () => Promise<string> {
+    return () => this.mintWsToken();
+  }
+
   // -- request plumbing -----------------------------------------------------
 
+  /**
+   * Issue a request, retrying transient failures on idempotent methods with
+   * backoff. Each attempt re-signs from scratch (via {@link #sendOnce}) so a
+   * retry after backoff carries a fresh timestamp inside the server's skew
+   * window rather than a stale one.
+   */
   async #request<T>(
+    method: string,
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<T> {
+    const retryable = IDEMPOTENT_METHODS.has(method.toUpperCase());
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await this.#sendOnce<T>(method, path, options);
+      } catch (err) {
+        const transient = err instanceof NexusExchangeError && err.transient;
+        if (!transient || !retryable || attempt >= this.#maxRetries) {
+          throw err;
+        }
+        const retryAfterMs =
+          err instanceof ApiError ? err.retryAfterMs : undefined;
+        await this.#sleep(
+          this.#backoffMs(attempt, retryAfterMs),
+          options.signal,
+        );
+        attempt += 1;
+      }
+    }
+  }
+
+  /** A single request attempt: sign, send, decode, or throw a typed error. */
+  async #sendOnce<T>(
     method: string,
     path: string,
     options: RequestOptions = {},
@@ -624,7 +816,11 @@ export class Client {
       } catch {
         // body was not JSON — keep the raw (sanitized) text only
       }
-      throw new ApiError(res.status, body, { code, message });
+      const retryAfterMs = parseRetryAfter(
+        res.headers.get("retry-after"),
+        this.#now(),
+      );
+      throw new ApiError(res.status, body, { code, message, retryAfterMs });
     }
 
     const text = await res.text();
