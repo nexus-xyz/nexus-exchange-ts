@@ -8,7 +8,8 @@
 import { Client, Network } from "../src/index.js";
 
 const argv = process.argv.slice(2);
-const netArg = argv[argv.indexOf("--network") + 1];
+const netIdx = argv.indexOf("--network");
+const netArg = argv[netIdx + 1];
 const network =
   netArg === "beta"
     ? Network.Beta
@@ -29,7 +30,10 @@ if (argv.includes("--all")) {
   await client.cancelAllOrders();
   console.log("cancelled all open orders");
 } else {
-  const orderId = argv.find((a) => !a.startsWith("--"));
+  // Skip the token right after `--network` — that's its value, not an order id.
+  const orderId = argv.find(
+    (a, i) => !a.startsWith("--") && (netIdx < 0 || i !== netIdx + 1),
+  );
   if (!orderId) {
     console.error("usage: cancel_order.ts <ORDER_ID> | --all");
     process.exit(1);

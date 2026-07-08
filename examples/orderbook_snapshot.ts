@@ -14,8 +14,13 @@ const network =
 
 const client = new Client({ network });
 
-// Use the first market unless one was passed as a positional arg.
-const positional = process.argv.slice(2).find((a) => !a.startsWith("--"));
+// Use the first market unless one was passed as a positional arg. Skip the
+// token right after `--network` — that's its value, not the market id.
+const argv = process.argv.slice(2);
+const netIdx = argv.indexOf("--network");
+const positional = argv.find(
+  (a, i) => !a.startsWith("--") && (netIdx < 0 || i !== netIdx + 1),
+);
 const marketId =
   positional ?? (await client.fetchMarketSummaries())[0]?.market_id;
 if (!marketId) {
