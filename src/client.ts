@@ -28,9 +28,16 @@ import type {
   ClosedPosition,
   CreditRequest,
   CreditResponse,
+  Decimal,
+  DepositRequest,
+  DepositResponse,
   EquityPoint,
+  FaucetResponse,
   Fill,
   FundingSample,
+  FundsEntry,
+  MarginAdjustRequest,
+  MarginAdjustResponse,
   MarketStatus,
   MarketSummary,
   MarkPrice,
@@ -48,6 +55,7 @@ import type {
   ThroughputSample,
   Ticker,
   Trade,
+  Withdrawal,
 } from "./models.js";
 
 /** Identifies TypeScript-SDK traffic in the exchange's per-client usage metrics. */
@@ -545,6 +553,93 @@ export class Client {
     opts?: { signal?: AbortSignal },
   ): Promise<CreditResponse> {
     return this.#request<CreditResponse>("POST", "/account/credit", {
+      body: request,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  // -- authenticated: funds -------------------------------------------------
+
+  /**
+   * `POST /account/deposit` — deposit **real** USDX collateral. Moves real
+   * funds; this is the production funding path. To fund a testnet account use
+   * {@link claimFaucet} or {@link claimCredit} instead. `amount` is a positive
+   * decimal string. Returns the updated authoritative balance.
+   */
+  deposit(
+    amount: Decimal,
+    opts?: { signal?: AbortSignal },
+  ): Promise<DepositResponse> {
+    return this.#request<DepositResponse>("POST", "/account/deposit", {
+      body: { amount },
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /deposits` — submit a deposit. Like {@link deposit} but takes the full
+   * request body (so a non-default `asset` can be set) and targets the ledger
+   * route. `amount` is a positive decimal string; `asset` defaults to `USDX`.
+   */
+  createDeposit(
+    request: DepositRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<DepositResponse> {
+    return this.#request<DepositResponse>("POST", "/deposits", {
+      body: request,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /deposits` — deposit/withdrawal/faucet ledger for the account. */
+  getDeposits(opts?: { signal?: AbortSignal }): Promise<FundsEntry[]> {
+    return this.#request<FundsEntry[]>("GET", "/deposits", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /withdrawals` — withdrawal history for the authenticated account. */
+  getWithdrawals(opts?: { signal?: AbortSignal }): Promise<Withdrawal[]> {
+    return this.#request<Withdrawal[]>("GET", "/withdrawals", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /faucet` — claim a fixed testnet faucet amount of synthetic USDX,
+   * subject to a per-wallet cooldown and cumulative cap. Returns the amount
+   * credited and `available_at_ms`, the earliest time the faucet may be claimed
+   * again.
+   *
+   * On the 24h cooldown (or cumulative cap) the server responds `429`, surfaced
+   * as an {@link ApiError} with `status === 429`; read `available_at_ms` off a
+   * prior successful response to know when the next claim is allowed.
+   */
+  claimFaucet(opts?: { signal?: AbortSignal }): Promise<FaucetResponse> {
+    return this.#request<FaucetResponse>("POST", "/faucet", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /account/margin` — add or remove isolated margin on an open position.
+   * Only applies to a position in isolated mode; the server rejects a
+   * cross-margined position (`MarginModeNotIsolated`), a market with no open
+   * position (`NoOpenPosition`), and a removal that breaches the withdrawal
+   * floor or exceeds collateral (`InsufficientMargin` / `InsufficientBalance`).
+   * `amount` is a positive decimal string.
+   */
+  adjustMargin(
+    request: MarginAdjustRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MarginAdjustResponse> {
+    return this.#request<MarginAdjustResponse>("POST", "/account/margin", {
       body: request,
       signed: true,
       signal: opts?.signal,

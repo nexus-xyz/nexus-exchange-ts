@@ -88,10 +88,12 @@ await client.cancelOrder(order.id);
 Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account (`getAccount`, `getAccountSummary`,
-`getEquityHistory`, `getRateLimit`, `claimCredit`); positions (`getPositions`,
-`getClosedPositions`); `getFills`; and orders — `placeOrder`, `placeOrderBatch`,
-`previewOrder`, `getOpenOrders`, `getOrderHistory`, `amendOrder` (PATCH,
-cancel-replace), `cancelOrder`, `cancelAllOrders`.
+`getEquityHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
+`createDeposit`, `getDeposits`, `getWithdrawals`, `claimFaucet`, `adjustMargin`);
+positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
+`placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
+`getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
+`cancelAllOrders`.
 
 ## WebSocket streaming
 
