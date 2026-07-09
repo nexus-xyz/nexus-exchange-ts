@@ -1,6 +1,6 @@
 {
   "name": "@nexus-xyz/exchange-ts",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Official TypeScript SDK for the Nexus Exchange API — a typed wrapper over the public REST + WebSocket API.",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -12,7 +12,7 @@
     "url": "https://github.com/nexus-xyz/nexus-exchange-ts/issues"
   },
   "type": "module",
-  "packageManager": "pnpm@10.34.4",
+  "packageManager": "pnpm@11.1.3",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -48,6 +48,5 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "packageManager": "pnpm@11.1.3"
+  }
 }
