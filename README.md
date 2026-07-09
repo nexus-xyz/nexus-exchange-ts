@@ -93,6 +93,33 @@ authenticated endpoints: account (`getAccount`, `getAccountSummary`,
 `previewOrder`, `getOpenOrders`, `getOrderHistory`, `amendOrder` (PATCH,
 cancel-replace), `cancelOrder`, `cancelAllOrders`.
 
+## Pagination
+
+List endpoints have auto-paging `*Paginated` variants (`fetchTradesPaginated`,
+`getFillsPaginated`, `getOrderHistoryPaginated`, `getEquityHistoryPaginated`,
+`getClosedPositionsPaginated`) that return a `Paginator`, mirroring the Rust
+SDK. Collect everything with `.all()`, walk pages with `.nextPage()`, or stream
+item-by-item with `for await`. Set the per-page size with `.pageSize(n)` and cap
+total pages with `.maxPages(n)`; resume from a saved cursor with
+`.startingAfter(cursor)`.
+
+```ts
+// Stream every account fill without holding them all in memory.
+for await (const fill of client.getFillsPaginated().pageSize(100)) {
+  console.log(fill.id, fill.price, fill.size);
+}
+
+// Or collect a bounded slice.
+const recent = await client
+  .fetchTradesPaginated("BTC-USDX-PERP")
+  .pageSize(100)
+  .maxPages(5)
+  .all();
+```
+
+The paginator drives the cursor for you: no request is issued until the first
+page is pulled, and it stops safely on a stuck or non-advancing server cursor.
+
 ## WebSocket streaming
 
 `createWsClient` multiplexes any number of channel subscriptions onto a single

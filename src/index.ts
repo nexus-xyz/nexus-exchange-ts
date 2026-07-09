@@ -51,6 +51,16 @@ export {
 
 export { signRequest, sha256Hex, bytesToHex, hexToBytes } from "./sign.js";
 
+// Cursor / auto-paging helpers for list endpoints (mirrors the Rust SDK).
+export {
+  Cursor,
+  Page,
+  Paginator,
+  toCursor,
+  type PageRequest,
+  type FetchPage,
+} from "./pagination.js";
+
 // WebSocket streaming client (book / trades / candles + account-scoped).
 export {
   createWsClient,
