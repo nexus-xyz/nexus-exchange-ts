@@ -64,7 +64,7 @@ jobs:
           ref: ${{ needs.release-please.outputs.tag_name }}
 
       # Install the pnpm version pinned by package.json's "packageManager" field.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
         with:
