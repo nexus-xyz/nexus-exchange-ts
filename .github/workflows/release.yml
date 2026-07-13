@@ -23,6 +23,16 @@ name: Release
 on:
   push:
     branches: [main]
+  # Manual re-publish of an already-cut tag (e.g. when the automatic
+  # publish job failed after release-please created the release). Publishes
+  # the given existing tag to npm; the registry rejects clobbering an
+  # already-published version, so this is safe to retry.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish to npm, e.g. v0.1.0"
+        required: true
+        type: string
 
 # Default-deny; jobs opt into the minimum they need.
 permissions: {}
@@ -52,7 +62,7 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,14 +71,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
 
       # Install the pnpm version pinned by package.json's "packageManager" field.
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
 
