@@ -20,6 +20,8 @@ import {
   sanitizeErrorBody,
 } from "./errors.js";
 import { signRequest } from "./sign.js";
+import { Page, Paginator } from "./pagination.js";
+import type { FetchPage } from "./pagination.js";
 import type {
   AccountPortfolioSummary,
   AccountSummary,
@@ -28,9 +30,16 @@ import type {
   ClosedPosition,
   CreditRequest,
   CreditResponse,
+  Decimal,
+  DepositRequest,
+  DepositResponse,
   EquityPoint,
+  FaucetResponse,
   Fill,
   FundingSample,
+  FundsEntry,
+  MarginAdjustRequest,
+  MarginAdjustResponse,
   MarketStatus,
   MarketSummary,
   MarkPrice,
@@ -48,6 +57,7 @@ import type {
   ThroughputSample,
   Ticker,
   Trade,
+  Withdrawal,
 } from "./models.js";
 
 /** Identifies TypeScript-SDK traffic in the exchange's per-client usage metrics. */
@@ -551,6 +561,93 @@ export class Client {
     });
   }
 
+  // -- authenticated: funds -------------------------------------------------
+
+  /**
+   * `POST /account/deposit` — deposit **real** USDX collateral. Moves real
+   * funds; this is the production funding path. To fund a testnet account use
+   * {@link claimFaucet} or {@link claimCredit} instead. `amount` is a positive
+   * decimal string. Returns the updated authoritative balance.
+   */
+  deposit(
+    amount: Decimal,
+    opts?: { signal?: AbortSignal },
+  ): Promise<DepositResponse> {
+    return this.#request<DepositResponse>("POST", "/account/deposit", {
+      body: { amount },
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /deposits` — submit a deposit. Like {@link deposit} but takes the full
+   * request body (so a non-default `asset` can be set) and targets the ledger
+   * route. `amount` is a positive decimal string; `asset` defaults to `USDX`.
+   */
+  createDeposit(
+    request: DepositRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<DepositResponse> {
+    return this.#request<DepositResponse>("POST", "/deposits", {
+      body: request,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /deposits` — deposit/withdrawal/faucet ledger for the account. */
+  getDeposits(opts?: { signal?: AbortSignal }): Promise<FundsEntry[]> {
+    return this.#request<FundsEntry[]>("GET", "/deposits", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /** `GET /withdrawals` — withdrawal history for the authenticated account. */
+  getWithdrawals(opts?: { signal?: AbortSignal }): Promise<Withdrawal[]> {
+    return this.#request<Withdrawal[]>("GET", "/withdrawals", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /faucet` — claim a fixed testnet faucet amount of synthetic USDX,
+   * subject to a per-wallet cooldown and cumulative cap. Returns the amount
+   * credited and `available_at_ms`, the earliest time the faucet may be claimed
+   * again.
+   *
+   * On the 24h cooldown (or cumulative cap) the server responds `429`, surfaced
+   * as an {@link ApiError} with `status === 429`; read `available_at_ms` off a
+   * prior successful response to know when the next claim is allowed.
+   */
+  claimFaucet(opts?: { signal?: AbortSignal }): Promise<FaucetResponse> {
+    return this.#request<FaucetResponse>("POST", "/faucet", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /account/margin` — add or remove isolated margin on an open position.
+   * Only applies to a position in isolated mode; the server rejects a
+   * cross-margined position (`MarginModeNotIsolated`), a market with no open
+   * position (`NoOpenPosition`), and a removal that breaches the withdrawal
+   * floor or exceeds collateral (`InsufficientMargin` / `InsufficientBalance`).
+   * `amount` is a positive decimal string.
+   */
+  adjustMargin(
+    request: MarginAdjustRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MarginAdjustResponse> {
+    return this.#request<MarginAdjustResponse>("POST", "/account/margin", {
+      body: request,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
   // -- authenticated: orders ------------------------------------------------
 
   /** `POST /orders` — place a single order. */
@@ -647,6 +744,114 @@ export class Client {
       signed: true,
       signal: opts?.signal,
     });
+  }
+
+  // -- auto-paging list endpoints -------------------------------------------
+  //
+  // Mirror of the Rust SDK's `rest::pagination`. Each `*Paginated` method
+  // returns a `Paginator` that drives paging for the caller: collect everything
+  // with `.all()`, walk pages with `.nextPage()`, or stream item-by-item with
+  // `for await (const item of …)`. Set the per-page limit with `.pageSize(n)`
+  // and cap total pages with `.maxPages(n)`.
+  //
+  // The underlying REST endpoints currently accept only a `limit` and return a
+  // bare array with no next-page cursor, so today a paginator resolves to a
+  // single page. The seam is deliberate: once the server starts returning a
+  // cursor, `#pageFetcherFrom` will thread it through `PageRequest.cursor` and
+  // these same methods auto-page across every page with no change to callers.
+
+  /**
+   * Adapt a `limit`-only list endpoint into a {@link FetchPage} for a
+   * {@link Paginator}. The endpoint returns a bare array today (no server
+   * cursor), so each fetched page is terminal (`nextCursor: null`); the
+   * paginator therefore resolves to a single page. `fetchArray` receives the
+   * per-page limit (or `undefined` when none was configured) and the abort
+   * signal so cancellation still flows through auto-paging.
+   */
+  #pageFetcherFrom<T>(
+    fetchArray: (
+      limit: number | undefined,
+      signal?: AbortSignal,
+    ) => Promise<T[]>,
+    signal?: AbortSignal,
+  ): FetchPage<T> {
+    return async (req) => {
+      const items = await fetchArray(req.limit ?? undefined, signal);
+      return new Page<T>(items, null);
+    };
+  }
+
+  /**
+   * `GET /markets/{market_id}/trades` as an auto-paging {@link Paginator} of
+   * recent public trades (newest first).
+   *
+   * ```ts
+   * for await (const trade of client.fetchTradesPaginated("BTC-USDX-PERP").pageSize(100)) {
+   *   // …
+   * }
+   * ```
+   */
+  fetchTradesPaginated(
+    marketId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<Trade> {
+    return new Paginator(
+      this.#pageFetcherFrom<Trade>(
+        (limit, signal) => this.fetchTrades(marketId, { limit, signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /** `GET /fills` as an auto-paging {@link Paginator} of account trade executions. */
+  getFillsPaginated(opts: { signal?: AbortSignal } = {}): Paginator<Fill> {
+    return new Paginator(
+      this.#pageFetcherFrom<Fill>(
+        // `getFills` takes no `limit` today; the paginator's page size is a
+        // no-op until the endpoint accepts one, but the surface is uniform.
+        (_limit, signal) => this.getFills({ signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /**
+   * `GET /orders/history` as an auto-paging {@link Paginator} of terminal-status
+   * (filled/cancelled/rejected/expired) orders.
+   */
+  getOrderHistoryPaginated(
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<OrderHistoryEntry> {
+    return new Paginator(
+      this.#pageFetcherFrom<OrderHistoryEntry>(
+        (limit, signal) => this.getOrderHistory({ limit, signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /** `GET /account/equity-history` as an auto-paging {@link Paginator} of equity samples. */
+  getEquityHistoryPaginated(
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<EquityPoint> {
+    return new Paginator(
+      this.#pageFetcherFrom<EquityPoint>(
+        (limit, signal) => this.getEquityHistory({ limit, signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /** `GET /positions/closed` as an auto-paging {@link Paginator} of closed-position records. */
+  getClosedPositionsPaginated(
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<ClosedPosition> {
+    return new Paginator(
+      this.#pageFetcherFrom<ClosedPosition>(
+        (_limit, signal) => this.getClosedPositions({ signal }),
+        opts.signal,
+      ),
+    );
   }
 
   // -- authenticated: streaming ---------------------------------------------

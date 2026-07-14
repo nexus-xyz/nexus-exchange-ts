@@ -611,6 +611,42 @@ export interface DepositResponse {
   [key: string]: unknown;
 }
 
+/**
+ * Whether an isolated-margin adjustment adds collateral to a position or removes
+ * it (`POST /account/margin`). Sent lowercase on the wire, as the endpoint
+ * expects.
+ */
+export type MarginDirection = "add" | "remove";
+
+/**
+ * Request body for `POST /account/margin` — add or remove isolated margin on an
+ * open position. The endpoint only applies to a position in isolated mode; the
+ * server rejects a cross-margined position (`MarginModeNotIsolated`) and a
+ * market with no open position (`NoOpenPosition`).
+ */
+export interface MarginAdjustRequest {
+  /** Market whose isolated position to adjust, e.g. `BTC-USDX-PERP`. */
+  market_id: string;
+  /** Whether to add or remove collateral. */
+  direction: MarginDirection;
+  /** Collateral to move (positive decimal string). */
+  amount: Decimal;
+}
+
+/**
+ * Result of an isolated-margin adjustment (`POST /account/margin`): the
+ * position's allocated margin and the account collateral remaining after the
+ * move.
+ */
+export interface MarginAdjustResponse {
+  /** Market the adjustment applied to, e.g. `BTC-USDX-PERP`. */
+  market_id: string;
+  /** Isolated margin now allocated to the position after the adjustment. */
+  allocated_margin: Decimal;
+  /** Account collateral remaining after the adjustment. */
+  collateral: Decimal;
+}
+
 // ─── Venue statistics / health ───────────────────────────────────────────────
 
 /**
