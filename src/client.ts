@@ -20,6 +20,8 @@ import {
   sanitizeErrorBody,
 } from "./errors.js";
 import { signRequest } from "./sign.js";
+import { Page, Paginator } from "./pagination.js";
+import type { FetchPage } from "./pagination.js";
 import type {
   AccountPortfolioSummary,
   AccountSummary,
@@ -647,6 +649,114 @@ export class Client {
       signed: true,
       signal: opts?.signal,
     });
+  }
+
+  // -- auto-paging list endpoints -------------------------------------------
+  //
+  // Mirror of the Rust SDK's `rest::pagination`. Each `*Paginated` method
+  // returns a `Paginator` that drives paging for the caller: collect everything
+  // with `.all()`, walk pages with `.nextPage()`, or stream item-by-item with
+  // `for await (const item of …)`. Set the per-page limit with `.pageSize(n)`
+  // and cap total pages with `.maxPages(n)`.
+  //
+  // The underlying REST endpoints currently accept only a `limit` and return a
+  // bare array with no next-page cursor, so today a paginator resolves to a
+  // single page. The seam is deliberate: once the server starts returning a
+  // cursor, `#pageFetcherFrom` will thread it through `PageRequest.cursor` and
+  // these same methods auto-page across every page with no change to callers.
+
+  /**
+   * Adapt a `limit`-only list endpoint into a {@link FetchPage} for a
+   * {@link Paginator}. The endpoint returns a bare array today (no server
+   * cursor), so each fetched page is terminal (`nextCursor: null`); the
+   * paginator therefore resolves to a single page. `fetchArray` receives the
+   * per-page limit (or `undefined` when none was configured) and the abort
+   * signal so cancellation still flows through auto-paging.
+   */
+  #pageFetcherFrom<T>(
+    fetchArray: (
+      limit: number | undefined,
+      signal?: AbortSignal,
+    ) => Promise<T[]>,
+    signal?: AbortSignal,
+  ): FetchPage<T> {
+    return async (req) => {
+      const items = await fetchArray(req.limit ?? undefined, signal);
+      return new Page<T>(items, null);
+    };
+  }
+
+  /**
+   * `GET /markets/{market_id}/trades` as an auto-paging {@link Paginator} of
+   * recent public trades (newest first).
+   *
+   * ```ts
+   * for await (const trade of client.fetchTradesPaginated("BTC-USDX-PERP").pageSize(100)) {
+   *   // …
+   * }
+   * ```
+   */
+  fetchTradesPaginated(
+    marketId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<Trade> {
+    return new Paginator(
+      this.#pageFetcherFrom<Trade>(
+        (limit, signal) => this.fetchTrades(marketId, { limit, signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /** `GET /fills` as an auto-paging {@link Paginator} of account trade executions. */
+  getFillsPaginated(opts: { signal?: AbortSignal } = {}): Paginator<Fill> {
+    return new Paginator(
+      this.#pageFetcherFrom<Fill>(
+        // `getFills` takes no `limit` today; the paginator's page size is a
+        // no-op until the endpoint accepts one, but the surface is uniform.
+        (_limit, signal) => this.getFills({ signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /**
+   * `GET /orders/history` as an auto-paging {@link Paginator} of terminal-status
+   * (filled/cancelled/rejected/expired) orders.
+   */
+  getOrderHistoryPaginated(
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<OrderHistoryEntry> {
+    return new Paginator(
+      this.#pageFetcherFrom<OrderHistoryEntry>(
+        (limit, signal) => this.getOrderHistory({ limit, signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /** `GET /account/equity-history` as an auto-paging {@link Paginator} of equity samples. */
+  getEquityHistoryPaginated(
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<EquityPoint> {
+    return new Paginator(
+      this.#pageFetcherFrom<EquityPoint>(
+        (limit, signal) => this.getEquityHistory({ limit, signal }),
+        opts.signal,
+      ),
+    );
+  }
+
+  /** `GET /positions/closed` as an auto-paging {@link Paginator} of closed-position records. */
+  getClosedPositionsPaginated(
+    opts: { signal?: AbortSignal } = {},
+  ): Paginator<ClosedPosition> {
+    return new Paginator(
+      this.#pageFetcherFrom<ClosedPosition>(
+        (_limit, signal) => this.getClosedPositions({ signal }),
+        opts.signal,
+      ),
+    );
   }
 
   // -- authenticated: streaming ---------------------------------------------
