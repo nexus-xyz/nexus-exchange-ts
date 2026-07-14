@@ -22,12 +22,17 @@ import {
 import { signRequest } from "./sign.js";
 import { Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
+import type { EthSigner } from "./wallet.js";
 import type {
   AccountPortfolioSummary,
   AccountSummary,
+  AgentInfo,
+  AgentRegistrationRequest,
   AmendOrderRequest,
+  ApiKeyInfo,
   Candle,
   ClosedPosition,
+  CreatedApiKey,
   CreditRequest,
   CreditResponse,
   Decimal,
@@ -40,6 +45,7 @@ import type {
   FundsEntry,
   MarginAdjustRequest,
   MarginAdjustResponse,
+  LoginResponse,
   MarketStatus,
   MarketSummary,
   MarkPrice,
@@ -168,6 +174,12 @@ export interface ClientOptions {
   apiKey?: string;
   /** Hex-encoded API secret for signed requests (paired with `apiKey`). */
   apiSecret?: string;
+  /**
+   * Session bearer token from {@link Client.signIn} (`POST /auth/login`), used
+   * to authenticate the API-key management endpoints (`/keys`). Can be supplied
+   * up front or set later with {@link Client.setSessionToken} after signing in.
+   */
+  sessionToken?: string;
   /** Per-request timeout in milliseconds. Defaults to 30s. */
   timeoutMs?: number;
   /**
@@ -192,6 +204,12 @@ interface RequestOptions {
   query?: string;
   body?: unknown;
   signed?: boolean;
+  /**
+   * Authenticate with the session bearer token instead of HMAC signing — the
+   * scheme the API-key management endpoints (`/keys`) require. Mutually
+   * exclusive with `signed`.
+   */
+  session?: boolean;
   signal?: AbortSignal;
   /**
    * Address the host root instead of the `/api/v1` base — for endpoints served
@@ -271,6 +289,8 @@ export class Client {
   readonly #origin: string;
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
+  // Mutable: {@link setSessionToken} / {@link signIn} update it after login.
+  #sessionToken?: string;
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
@@ -295,6 +315,7 @@ export class Client {
         : this.#baseUrl;
     this.#apiKey = options.apiKey;
     this.#apiSecret = options.apiSecret;
+    this.#sessionToken = options.sessionToken;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const f = options.fetchImpl ?? globalThis.fetch;
     if (typeof f !== "function") {
@@ -897,6 +918,157 @@ export class Client {
     return () => this.mintWsToken();
   }
 
+  // -- authenticated: wallet sign-in & sessions -----------------------------
+
+  /**
+   * Whether this client currently holds a session token (from {@link signIn}
+   * or the `sessionToken` constructor option).
+   */
+  get hasSession(): boolean {
+    return Boolean(this.#sessionToken);
+  }
+
+  /**
+   * Set (or replace) the session bearer token used by the `/keys` management
+   * endpoints. Pass `undefined` to clear it (a local logout — the API has no
+   * server-side session-revocation endpoint; tokens expire after 24h). Normally
+   * {@link signIn} sets this for you.
+   */
+  setSessionToken(token: string | undefined): void {
+    this.#sessionToken = token;
+  }
+
+  /**
+   * `POST /auth/login` — exchange a wallet's EIP-191 signature for a session
+   * token. Unauthenticated. On success the token is stored on this client (see
+   * {@link setSessionToken}) so the `/keys` methods work immediately, and the
+   * full {@link LoginResponse} (token + recovered address) is returned.
+   *
+   * The `signer` produces the signed body locally — no private key ever leaves
+   * the process. Session tokens expire after 24h; call `signIn` again to renew.
+   *
+   * ```ts
+   * const signer = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
+   * await client.signIn(signer);
+   * const created = await client.createApiKey();
+   * ```
+   */
+  async signIn(
+    signer: EthSigner,
+    opts?: { signal?: AbortSignal },
+  ): Promise<LoginResponse> {
+    const res = await this.#request<LoginResponse>("POST", "/auth/login", {
+      body: signer.signIn(),
+      root: true,
+      signal: opts?.signal,
+    });
+    if (!res || typeof res.token !== "string" || res.token.length === 0) {
+      throw new TransportError("auth/login response did not contain a token");
+    }
+    this.#sessionToken = res.token;
+    return res;
+  }
+
+  // -- authenticated: API-key management (session token) --------------------
+
+  /**
+   * `POST /keys` — create a new HMAC API key for the authenticated wallet.
+   * Requires a session token (see {@link signIn}). The `secret` is returned
+   * exactly once in the result and never again — persist it immediately, then
+   * pair it with `key_id` as `apiKey`/`apiSecret` to sign trading requests.
+   */
+  createApiKey(opts?: { signal?: AbortSignal }): Promise<CreatedApiKey> {
+    return this.#request<CreatedApiKey>("POST", "/keys", {
+      session: true,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `GET /keys` — list the API keys owned by the authenticated wallet (key ids
+   * and tiers; secrets are never returned). Requires a session token (see
+   * {@link signIn}).
+   */
+  listApiKeys(opts?: { signal?: AbortSignal }): Promise<ApiKeyInfo[]> {
+    return this.#request<ApiKeyInfo[]>("GET", "/keys", {
+      session: true,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `DELETE /keys/{key_id}` — revoke an API key you own. Requires a session
+   * token (see {@link signIn}). Revoking a key you don't own fails with
+   * not-found rather than touching another wallet's key.
+   */
+  deleteApiKey(keyId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    return this.#request<void>("DELETE", `/keys/${seg(keyId)}`, {
+      session: true,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
+  // -- authenticated: agent keys --------------------------------------------
+
+  /**
+   * `POST /agents/register` — register an agent key for a wallet. Authorized by
+   * the wallet's EIP-712 signature (produced by `signer.registerAgent(...)`),
+   * so it needs no session token or API key. An agent is an Ethereum-derived
+   * keypair that can sign trading requests on the wallet's behalf without
+   * exposing the main wallet key.
+   *
+   * ```ts
+   * await client.registerAgent(
+   *   walletSigner.registerAgent({
+   *     agent: agentSigner.address,
+   *     chainId: 393,
+   *     expiresAtMs: Date.now() + 30 * 24 * 3600_000,
+   *     nonce: Date.now(),
+   *     label: "my-bot",
+   *   }),
+   * );
+   * ```
+   */
+  registerAgent(
+    registration: AgentRegistrationRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<unknown> {
+    return this.#request<unknown>("POST", "/agents/register", {
+      body: registration,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `GET /agents` — list the non-expired agent keys registered to the
+   * authenticated wallet. Requires HMAC API-key credentials (`apiKey` /
+   * `apiSecret`).
+   */
+  listAgents(opts?: { signal?: AbortSignal }): Promise<AgentInfo[]> {
+    return this.#request<AgentInfo[]>("GET", "/agents", {
+      signed: true,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `DELETE /agents/{address}` — revoke an agent key by address. After this
+   * returns, in-flight requests signed by the agent are rejected. Requires HMAC
+   * API-key credentials (`apiKey` / `apiSecret`).
+   */
+  revokeAgent(address: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    return this.#request<void>("DELETE", `/agents/${seg(address)}`, {
+      signed: true,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
   // -- request plumbing -----------------------------------------------------
 
   /**
@@ -937,7 +1109,14 @@ export class Client {
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
-    const { query = "", body, signed = false, signal, root = false } = options;
+    const {
+      query = "",
+      body,
+      signed = false,
+      session = false,
+      signal,
+      root = false,
+    } = options;
 
     const bodyBytes =
       body === undefined || body === null
@@ -949,6 +1128,15 @@ export class Client {
     };
     if (body !== undefined && body !== null) {
       headers["content-type"] = "application/json";
+    }
+    if (session) {
+      if (!this.#sessionToken) {
+        throw new MissingCredentialsError(
+          "this request requires a session token; call signIn() first or pass " +
+            "sessionToken to the Client constructor",
+        );
+      }
+      headers["authorization"] = `Bearer ${this.#sessionToken}`;
     }
     if (signed) {
       if (!this.#apiKey || !this.#apiSecret) {

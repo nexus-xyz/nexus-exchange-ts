@@ -122,6 +122,53 @@ const recent = await client
 The paginator drives the cursor for you: no request is issued until the first
 page is pulled, and it stops safely on a stuck or non-advancing server cursor.
 
+### Wallet sign-in, sessions & API-key management
+
+HMAC API keys are minted from a wallet. `EthSigner` wraps an EVM private key and
+produces the wallet-authorized payloads locally — the key never leaves the
+process. Signing matches the Rust SDK byte-for-byte (EIP-191 `personal_sign` for
+login; EIP-712 `RegisterAgent` for agents) and is cross-checked against its
+known-answer vectors.
+
+```ts
+import { Client, EthSigner, Network } from "@nexus-xyz/exchange-ts";
+
+const client = new Client({ network: Network.Stable });
+const wallet = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
+
+// Exchange an EIP-191 signature for a 24h session token (stored on the client).
+await client.signIn(wallet);
+
+// Manage HMAC API keys with that session token.
+const created = await client.createApiKey(); // { key_id, secret } — secret shown ONCE
+const keys = await client.listApiKeys(); // [{ key_id, tier }]
+await client.deleteApiKey(created.key_id);
+```
+
+Session tokens authenticate only the `/keys` endpoints and expire after 24h;
+call `signIn` again to renew, or `setSessionToken(...)` to supply/clear one.
+
+Agent keys let a derived keypair sign trading requests without exposing the main
+wallet. Registration is authorized by the wallet's EIP-712 signature (no session
+needed); listing and revoking use HMAC API-key credentials:
+
+```ts
+const agent = EthSigner.fromHex(process.env.AGENT_PRIVATE_KEY!);
+await client.registerAgent(
+  wallet.registerAgent({
+    agent: agent.address,
+    chainId: 393, // exchange testnet chain id
+    expiresAtMs: Date.now() + 30 * 24 * 3600_000,
+    nonce: Date.now(),
+    label: "my-bot",
+  }),
+);
+
+// With apiKey/apiSecret configured:
+const agents = await client.listAgents();
+await client.revokeAgent(agent.address);
+```
+
 ## WebSocket streaming
 
 `createWsClient` multiplexes any number of channel subscriptions onto a single

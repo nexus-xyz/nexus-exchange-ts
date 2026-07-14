@@ -102,6 +102,31 @@ export interface LoginResponse {
   address: string;
 }
 
+/**
+ * An API-key record returned by `GET /keys`. Secrets are never included — only
+ * the key id and its rate-limit tier. (The spec ships this response as an inline
+ * example rather than a named schema, so this model is authored from that
+ * example and the reference SDKs.)
+ */
+export interface ApiKeyInfo {
+  /** Public key identifier, sent as the `x-api-key` header on signed requests. */
+  key_id: string;
+  /** The key's rate-limit tier (e.g. `"Pro"`). */
+  tier: string;
+}
+
+/**
+ * Response from `POST /keys` — a newly created HMAC API key. The `secret` is
+ * returned exactly once and is never stored or shown again; persist it
+ * immediately. (Authored from the spec's inline example and the reference SDKs.)
+ */
+export interface CreatedApiKey {
+  /** Public key identifier, used as the `x-api-key` header. */
+  key_id: string;
+  /** 32-byte hex secret — shown only here. Pair with `key_id` as `apiSecret`. */
+  secret: string;
+}
+
 // ─── Agents ─────────────────────────────────────────────────────────────────
 
 /** Request body for `POST /agents/register`. */
