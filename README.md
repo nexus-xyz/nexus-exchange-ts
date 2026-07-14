@@ -169,6 +169,25 @@ const agents = await client.listAgents();
 await client.revokeAgent(agent.address);
 ```
 
+### Bridge (deposits)
+
+`getBridgeAssets`, `createBridgeDepositAddress`, `listBridgeDepositAddresses`,
+`getBridgeDeposits`, and `getBridgeDeposit` wrap the `/bridge` Phase A surface
+(USDC/USDX). Get-or-create a per-chain deposit address (idempotent per account +
+chain), send funds to it, then poll a deposit until its `status` is `credited`:
+
+```ts
+const { chains } = await client.getBridgeAssets();
+const addr = await client.createBridgeDepositAddress(chains[0].chain);
+console.log(`send USDC/USDX to ${addr.address} on ${addr.chain}`);
+
+const [deposit] = await client.getBridgeDeposits({
+  limit: 1,
+  chain: addr.chain,
+});
+// deposit?.status: "detected" | "confirming" | "credited" | "failed"
+```
+
 ## WebSocket streaming
 
 `createWsClient` multiplexes any number of channel subscriptions onto a single
