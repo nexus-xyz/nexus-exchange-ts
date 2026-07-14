@@ -51,6 +51,14 @@ DepositResponse
 StatsSnapshot
 ThroughputSample
 ServiceHealth
-ReadyResponse
 Decimal
 TimestampMs
+BridgeAsset
+BridgeChainAssets
+BridgeAssetsResponse
+BridgeDepositAddress
+BridgeDeposit
+CreateBridgeDepositAddressRequest
+BridgeError
+CancelOnDisconnectStatus
+SetCancelOnDisconnectRequest
