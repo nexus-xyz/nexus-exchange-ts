@@ -1,0 +1,19 @@
+# Intentional ahead-of-spec enum members: values src/models.ts lists on a spec
+# enum field that the pinned spec (spec/openapi.json) does not (yet) enumerate.
+# scripts/check-spec-drift.mjs treats a listed member as an expected extra
+# rather than a value-level drift failure (invariant E).
+#
+# Format: one entry per line, `Schema.property = member`, where the member is
+# the exact wire value (unquoted). Use a bare `Schema` (no dot) for a
+# schema-level enum. Blank lines and `#` comments are ignored.
+#
+#   OrderRequest.time_in_force = PostOnly
+#
+# Every entry must stay LIVE: the spec must have an enum at that locator, the
+# SDK must still model the member there, and the spec must still lack it. The
+# moment the spec catches up or the SDK drops the value, the entry stops
+# suppressing anything and the check fails on it as stale — so this file cannot
+# accumulate dead grants. Add an entry only with a comment saying why the SDK
+# is intentionally ahead.
+#
+# (Currently empty — the SDK models no enum members beyond the pinned spec.)

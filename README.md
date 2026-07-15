@@ -235,6 +235,14 @@ vendored spec still matches the upstream spec at the pinned tag. If the upstream
 spec adds, renames, or removes a schema, the check fails until the models and
 pin are updated to match.
 
+It also validates enum members _both ways_: every `enum` in the spec must have
+exactly the same members in the matching `src/models.ts` union, so a new
+upstream value (or a stray one the spec dropped) fails the gate. Values the SDK
+deliberately ships ahead of the spec are recorded in
+[`spec/enum-allowlist.txt`](./spec/enum-allowlist.txt), and each allowlist entry
+is itself checked for staleness — it fails once the spec catches up, so the
+allowlist can't accumulate dead grants.
+
 ## Releasing
 
 Releases are automated. [release-please](https://github.com/googleapis/release-please)
