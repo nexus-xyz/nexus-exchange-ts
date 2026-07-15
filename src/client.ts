@@ -20,6 +20,7 @@ import {
   sanitizeErrorBody,
 } from "./errors.js";
 import { signRequest } from "./sign.js";
+import { API_VERSION, SDK_VERSION } from "./version.js";
 import { Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
 import type { EthSigner } from "./wallet.js";
@@ -66,8 +67,20 @@ import type {
   Withdrawal,
 } from "./models.js";
 
-/** Identifies TypeScript-SDK traffic in the exchange's per-client usage metrics. */
-export const DEFAULT_USER_AGENT = "nexus-exchange-ts/0.0.0";
+/**
+ * Default `User-Agent`, identifying TypeScript-SDK traffic (with its version)
+ * in the exchange's per-client usage metering (`nexus-exchange-<lang>/<version>`
+ * convention). Derived from {@link SDK_VERSION} so it never goes stale.
+ *
+ * Browser caveat: `User-Agent` is a forbidden header name for `fetch`, so
+ * browsers silently drop it — this default is applied on runtimes that allow it
+ * (e.g. Node). The {@link HEADER_API_VERSION} header is not forbidden and is
+ * sent everywhere.
+ */
+export const DEFAULT_USER_AGENT = `nexus-exchange-ts/${SDK_VERSION}`;
+
+/** Advisory header carrying the pinned spec tag the SDK was compiled against. */
+const HEADER_API_VERSION = "x-nexus-api-version";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -188,6 +201,22 @@ export interface ClientOptions {
    * `{ maxRetries: 0 }` to disable.
    */
   retry?: RetryOptions;
+  /**
+   * Override the `User-Agent` sent on every request. Defaults to
+   * {@link DEFAULT_USER_AGENT} (`nexus-exchange-ts/<version>`). Pass a
+   * `nexus-exchange-<lang>/<version>`-style value when embedding the SDK in
+   * another client (e.g. a CLI or MCP server) so edge usage metering can
+   * attribute traffic to it. Pass an empty string to omit the header entirely.
+   * Browsers ignore this — `User-Agent` is a forbidden `fetch` header.
+   */
+  userAgent?: string;
+  /**
+   * Override the `X-Nexus-Api-Version` sent on every request. Defaults to
+   * {@link API_VERSION} (the spec tag this SDK is pinned to). Pass an empty
+   * string to omit the header entirely. The header is advisory — the server
+   * never rejects or routes on it.
+   */
+  apiVersion?: string;
   /** Override the `fetch` implementation (e.g. inject a mock in tests). */
   fetchImpl?: typeof fetch;
   /** Override the wall clock (ms since epoch) — used for deterministic tests. */
@@ -227,6 +256,24 @@ function withQuery(path: string, query: string): string {
 /** Encode a single path segment so a slash or other reserved char can't escape it. */
 function seg(value: string): string {
   return encodeURIComponent(value);
+}
+
+/**
+ * Reject a header value that carries control characters (CR/LF/NUL/DEL etc.).
+ * `fetch` would throw on these at send time; validating the configured
+ * `User-Agent` / `X-Nexus-Api-Version` up front turns a cryptic per-request
+ * failure into a clear construction-time error and closes any header-injection
+ * / request-splitting seam from a caller-supplied override.
+ */
+function assertHeaderValue(name: string, value: string): void {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) {
+      throw new TransportError(
+        `invalid ${name} value: control characters are not allowed`,
+      );
+    }
+  }
 }
 
 /**
@@ -292,6 +339,10 @@ export class Client {
   // Mutable: {@link setSessionToken} / {@link signIn} update it after login.
   #sessionToken?: string;
   readonly #timeoutMs: number;
+  // Advisory request headers, resolved once at construction. Empty string means
+  // "omit"; see the header assembly in {@link #sendOnce}.
+  readonly #userAgent: string;
+  readonly #apiVersion: string;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
   readonly #maxRetries: number;
@@ -317,6 +368,10 @@ export class Client {
     this.#apiSecret = options.apiSecret;
     this.#sessionToken = options.sessionToken;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+    this.#apiVersion = options.apiVersion ?? API_VERSION;
+    assertHeaderValue("userAgent", this.#userAgent);
+    assertHeaderValue("apiVersion", this.#apiVersion);
     const f = options.fetchImpl ?? globalThis.fetch;
     if (typeof f !== "function") {
       throw new TransportError(
@@ -1123,9 +1178,14 @@ export class Client {
         ? new Uint8Array(0)
         : new TextEncoder().encode(JSON.stringify(body));
 
-    const headers: Record<string, string> = {
-      "user-agent": DEFAULT_USER_AGENT,
-    };
+    // Advisory identity headers on every request (both empty-string-omittable).
+    // `X-Nexus-Api-Version` reports the pinned spec tag for edge attribution;
+    // `User-Agent` identifies the client for usage metering (dropped by browser
+    // fetch, which forbids setting it). Neither is part of the HMAC canonical
+    // string, so both are unauthenticated and never trusted server-side.
+    const headers: Record<string, string> = {};
+    if (this.#userAgent) headers["user-agent"] = this.#userAgent;
+    if (this.#apiVersion) headers[HEADER_API_VERSION] = this.#apiVersion;
     if (body !== undefined && body !== null) {
       headers["content-type"] = "application/json";
     }

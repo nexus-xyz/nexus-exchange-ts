@@ -2,7 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
-import { Client, Network, baseUrlForNetwork } from "../src/client.js";
+import {
+  Client,
+  Network,
+  baseUrlForNetwork,
+  DEFAULT_USER_AGENT,
+} from "../src/client.js";
+import { SDK_VERSION, API_VERSION } from "../src/version.js";
 import {
   ApiError,
   MissingCredentialsError,
@@ -385,4 +391,69 @@ test("a non-2xx signed response throws ApiError with a sanitized body", async ()
     assert.match(err.body, /\[REDACTED\]/);
     return true;
   });
+});
+
+// -- request identity headers (ENG-5956) ------------------------------------
+
+test("DEFAULT_USER_AGENT is normalized to nexus-exchange-ts/<sdk version>", () => {
+  assert.equal(DEFAULT_USER_AGENT, `nexus-exchange-ts/${SDK_VERSION}`);
+});
+
+test("every request carries X-Nexus-Api-Version and User-Agent by default", async () => {
+  const { impl, calls } = mockFetch([]);
+  const client = new Client({
+    fetchImpl: impl,
+    baseUrl: "https://example.test",
+  });
+  await client.fetchMarketSummaries();
+  const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
+  assert.equal(headers["x-nexus-api-version"], API_VERSION);
+  assert.equal(headers["user-agent"], DEFAULT_USER_AGENT);
+});
+
+test("signed requests also carry the identity headers", async () => {
+  const { client, calls } = signedClientWithCapture();
+  await client.getAccount();
+  const c = calls[0]!;
+  assert.equal(c.headers.get("x-nexus-api-version"), API_VERSION);
+  assert.equal(c.headers.get("user-agent"), DEFAULT_USER_AGENT);
+});
+
+test("identity headers can be overridden per client", async () => {
+  const { impl, calls } = mockFetch([]);
+  const client = new Client({
+    fetchImpl: impl,
+    baseUrl: "https://example.test",
+    userAgent: "nexus-exchange-mcp/1.2.3",
+    apiVersion: "v9.9.9",
+  });
+  await client.fetchMarketSummaries();
+  const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
+  assert.equal(headers["user-agent"], "nexus-exchange-mcp/1.2.3");
+  assert.equal(headers["x-nexus-api-version"], "v9.9.9");
+});
+
+test("an empty override omits that identity header entirely", async () => {
+  const { impl, calls } = mockFetch([]);
+  const client = new Client({
+    fetchImpl: impl,
+    baseUrl: "https://example.test",
+    userAgent: "",
+    apiVersion: "",
+  });
+  await client.fetchMarketSummaries();
+  const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
+  assert.equal(headers["user-agent"], undefined);
+  assert.equal(headers["x-nexus-api-version"], undefined);
+});
+
+test("a header override with control characters is rejected at construction", () => {
+  assert.throws(
+    () => new Client({ userAgent: "evil\r\nX-Injected: 1" }),
+    TransportError,
+  );
+  assert.throws(
+    () => new Client({ apiVersion: "v1.0.0\nX-Injected: 1" }),
+    TransportError,
+  );
 });
