@@ -39,6 +39,8 @@ CreditRequest
 CreditResponse
 FaucetResponse
 RateLimitStatus
+CancelOnDisconnectStatus
+SetCancelOnDisconnectRequest
 Position
 ClosedPosition
 AgentRegistrationRequest
@@ -48,9 +50,15 @@ Withdrawal
 FundsEntry
 DepositRequest
 DepositResponse
+BridgeError
+BridgeAsset
+BridgeChainAssets
+BridgeAssetsResponse
+CreateBridgeDepositAddressRequest
+BridgeDepositAddress
+BridgeDeposit
 StatsSnapshot
 ThroughputSample
 ServiceHealth
-ReadyResponse
 Decimal
 TimestampMs
