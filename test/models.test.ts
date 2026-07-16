@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -192,4 +200,130 @@ test("spec drift check passes against the vendored spec", () => {
   execFileSync("node", [join(REPO, "scripts", "check-spec-drift.mjs")], {
     stdio: "pipe",
   });
+});
+
+// ─── Enum-member drift (invariant E, ENG-5475) ───────────────────────────────
+//
+// Run the real check inside a throwaway copy of the repo's drift inputs so a
+// single mutation (a spec enum, a models union, or the allowlist) can be
+// proven to flip the gate red — without touching the working tree. The script
+// resolves its inputs relative to its own location, so copying it under the
+// sandbox root reroutes every read (.api-version, spec/*, src/models.ts) there.
+interface DriftResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+function runDriftSandbox(opts: {
+  mutateSpec?: (spec: Record<string, unknown>) => void;
+  mutateModels?: (src: string) => string;
+  allowlist?: string;
+}): DriftResult {
+  const dir = mkdtempSync(join(tmpdir(), "spec-drift-"));
+  try {
+    mkdirSync(join(dir, "spec"));
+    mkdirSync(join(dir, "src"));
+    mkdirSync(join(dir, "scripts"));
+    copyFileSync(join(REPO, ".api-version"), join(dir, ".api-version"));
+    copyFileSync(
+      join(REPO, "spec", "schemas.txt"),
+      join(dir, "spec", "schemas.txt"),
+    );
+    copyFileSync(
+      join(REPO, "scripts", "check-spec-drift.mjs"),
+      join(dir, "scripts", "check-spec-drift.mjs"),
+    );
+
+    const spec = JSON.parse(
+      readFileSync(join(REPO, "spec", "openapi.json"), "utf8"),
+    );
+    opts.mutateSpec?.(spec);
+    writeFileSync(join(dir, "spec", "openapi.json"), JSON.stringify(spec));
+
+    let models = readFileSync(join(REPO, "src", "models.ts"), "utf8");
+    if (opts.mutateModels) models = opts.mutateModels(models);
+    writeFileSync(join(dir, "src", "models.ts"), models);
+
+    if (opts.allowlist !== undefined) {
+      writeFileSync(join(dir, "spec", "enum-allowlist.txt"), opts.allowlist);
+    } else {
+      copyFileSync(
+        join(REPO, "spec", "enum-allowlist.txt"),
+        join(dir, "spec", "enum-allowlist.txt"),
+      );
+    }
+
+    try {
+      const stdout = execFileSync(
+        "node",
+        [join(dir, "scripts", "check-spec-drift.mjs")],
+        { encoding: "utf8", stdio: "pipe" },
+      );
+      return { status: 0, stdout, stderr: "" };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return {
+        status: e.status ?? 1,
+        stdout: e.stdout?.toString() ?? "",
+        stderr: e.stderr?.toString() ?? "",
+      };
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Drop `"PostOnly"` from the spec's OrderRequest.time_in_force enum. */
+function dropPostOnlyFromSpec(spec: Record<string, unknown>): void {
+  const tif = (
+    spec.components as {
+      schemas: Record<
+        string,
+        { properties: Record<string, { enum: string[] }> }
+      >;
+    }
+  ).schemas.OrderRequest.properties.time_in_force;
+  tif.enum = tif.enum.filter((v: string) => v !== "PostOnly");
+}
+
+test("enum drift: the sandbox baseline is in sync (harness is faithful)", () => {
+  const r = runDriftSandbox({});
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+});
+
+test("enum drift: FAILS when models.ts lacks a spec enum member (SDK behind)", () => {
+  // Mirrors ENG-5058: the spec has PostOnly but the SDK union does not.
+  const r = runDriftSandbox({
+    mutateModels: (src) => src.replace(' | "PostOnly"', ""),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /behind the spec/);
+  assert.match(r.stderr, /OrderRequest\.time_in_force/);
+  assert.match(r.stderr, /PostOnly/);
+});
+
+test("enum drift: FAILS when models.ts has a member the spec does not list", () => {
+  const r = runDriftSandbox({ mutateSpec: dropPostOnlyFromSpec });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /the spec does NOT list/);
+  assert.match(r.stderr, /OrderRequest\.time_in_force/);
+  assert.match(r.stderr, /PostOnly/);
+});
+
+test("enum drift: an allowlist entry suppresses an intentional ahead-of-spec member", () => {
+  const r = runDriftSandbox({
+    mutateSpec: dropPostOnlyFromSpec,
+    allowlist: "OrderRequest.time_in_force = PostOnly\n",
+  });
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+});
+
+test("enum drift: a stale allowlist entry (spec caught up) FAILS until removed", () => {
+  // The vendored spec already lists PostOnly, so the grant is doing nothing.
+  const r = runDriftSandbox({
+    allowlist: "OrderRequest.time_in_force = PostOnly\n",
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /stale/);
+  assert.match(r.stderr, /OrderRequest\.time_in_force/);
 });
