@@ -85,7 +85,9 @@ export {
 } from "./ws/client.js";
 
 /**
- * The version of this SDK package. Kept in lockstep with package.json by
- * release-please (see release-please-config.json) — do not edit by hand.
+ * Version constants: the SDK package version ({@link SDK_VERSION}, maintained
+ * by release-please) and the pinned spec API version ({@link API_VERSION}, sent
+ * as the `X-Nexus-Api-Version` header). Defined in {@link ./version} as the
+ * single source of truth and re-exported here as part of the public API.
  */
-export const SDK_VERSION = "0.1.0"; // x-release-please-version
+export { SDK_VERSION, API_VERSION } from "./version.js";
