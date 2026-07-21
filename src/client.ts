@@ -59,7 +59,6 @@ import type {
   Position,
   PreviewResponse,
   RateLimitStatus,
-  ReadyResponse,
   StatsSnapshot,
   ThroughputSample,
   Ticker,
@@ -242,7 +241,7 @@ interface RequestOptions {
   signal?: AbortSignal;
   /**
    * Address the host root instead of the `/api/v1` base — for endpoints served
-   * directly at the origin (e.g. `GET /ready`). The URL and the signed path
+   * directly at the origin (e.g. `POST /ws-tokens`). The URL and the signed path
    * both drop the base path prefix.
    */
   root?: boolean;
@@ -359,7 +358,7 @@ export class Client {
     this.#basePath = basePathOf(this.#baseUrl);
     // The origin (scheme + host [+ port]) is the base URL with its path prefix
     // sliced off — byte-exact, same as `basePathOf`. Used for host-root routes
-    // like `/ready` that live outside the `/api/v1` base.
+    // like `/ws-tokens` that live outside the `/api/v1` base.
     this.#origin =
       this.#basePath && this.#baseUrl.endsWith(this.#basePath)
         ? this.#baseUrl.slice(0, this.#baseUrl.length - this.#basePath.length)
@@ -541,19 +540,6 @@ export class Client {
     signal?: AbortSignal;
   }): Promise<ThroughputSample[]> {
     return this.#request<ThroughputSample[]>("GET", "/stats/history", opts);
-  }
-
-  /**
-   * `GET /ready` — engine readiness: `true` once every configured market has
-   * received its first oracle price this run. Served at the host root (not under
-   * `/api/v1`), needs no auth, and returns 503 during the oracle warm-up window
-   * (surfaced as an {@link ApiError}). Distinct from liveness.
-   */
-  ready(opts?: { signal?: AbortSignal }): Promise<ReadyResponse> {
-    return this.#request<ReadyResponse>("GET", "/ready", {
-      root: true,
-      signal: opts?.signal,
-    });
   }
 
   // -- authenticated: account -----------------------------------------------
@@ -1213,7 +1199,7 @@ export class Client {
           // Sign the FULL request path the server verifies (e.g.
           // `/api/v1/orders`), i.e. the base URL's path prefix + the
           // method-relative path — not the stripped `/orders`. Root routes
-          // (e.g. `/ready`) live outside the base and sign the bare path.
+          // (e.g. `/ws-tokens`) live outside the base and sign the bare path.
           `${root ? "" : this.#basePath}${path}`,
           query,
           bodyBytes,

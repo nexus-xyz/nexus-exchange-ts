@@ -40,8 +40,28 @@ export type OrderSide = "Buy" | "Sell";
 /** Trade/fill side as reported on public trades and account fills (lowercase). */
 export type TradeSide = "buy" | "sell";
 
-/** Order type accepted by `POST /orders`. */
-export type OrderType = "Limit" | "Market";
+/**
+ * Order type accepted by `POST /orders`. `Limit` and `Market` are
+ * unconditional; the remaining six are conditional (v0.7.1):
+ *   - `StopLimit` / `StopMarket` fire when the mark crosses `trigger_price`
+ *     adversely;
+ *   - `TakeProfitLimit` / `TakeProfitMarket` fire on the favorable side;
+ *   - `TrailingStop` fires a market order once the mark retraces from its
+ *     best-seen extreme by `trailing_offset_bps`;
+ *   - `TrailingLimit` trails the same way but rests a limit order priced off the
+ *     fire price by `limit_offset_bps`.
+ *
+ * See {@link OrderRequest} for the per-type field requirements.
+ */
+export type OrderType =
+  | "Limit"
+  | "Market"
+  | "StopLimit"
+  | "StopMarket"
+  | "TakeProfitLimit"
+  | "TakeProfitMarket"
+  | "TrailingStop"
+  | "TrailingLimit";
 
 /**
  * Time-in-force accepted by `POST /orders`.
@@ -349,12 +369,44 @@ export interface OrderRequest {
   market_id: string;
   side: OrderSide;
   order_type: OrderType;
-  /** Required for `Limit` orders; omit for `Market`. */
+  /**
+   * Limit price. Required for the limit family (`Limit`, `StopLimit`,
+   * `TakeProfitLimit`); omit for market-family and trailing orders.
+   */
   price?: Decimal;
   quantity: Decimal;
   time_in_force: TimeInForce;
   /** When true, the order may only reduce an existing position. */
   reduce_only?: boolean;
+  /**
+   * **Deprecated** — use {@link OrderRequest.trigger_price} instead. Legacy
+   * trigger threshold for the stop / take-profit family, accepted only as a
+   * fallback when `trigger_price` is absent; `trigger_price` wins when both are
+   * given. Ignored for `Limit`, `Market`, and trailing orders.
+   *
+   * @deprecated
+   */
+  stop_price?: Decimal | null;
+  /**
+   * Canonical trigger threshold, required for the triggerable, non-trailing
+   * types (`StopLimit`, `StopMarket`, `TakeProfitLimit`, `TakeProfitMarket`).
+   * Not used by `Limit`, `Market`, or trailing orders.
+   */
+  trigger_price?: Decimal | null;
+  /**
+   * Trailing offset in basis points (1 bp = 0.01%). Required for `TrailingStop`
+   * and `TrailingLimit`; ignored otherwise. The trigger fires once the mark
+   * retraces from its best-seen extreme by this many bps (`0` fires at the first
+   * mark evaluation, no retracement required).
+   */
+  trailing_offset_bps?: number | null;
+  /**
+   * Fire-time limit offset in basis points (`TrailingLimit` only; required with
+   * `trailing_offset_bps`). When the trigger fires at `fire_price`, the limit
+   * rests at `fire_price * (1 ± offset)` (tick-rounded toward the tighter
+   * bound); `0` rests exactly at `fire_price`. Ignored for other types.
+   */
+  limit_offset_bps?: number | null;
 }
 
 /**
@@ -376,10 +428,10 @@ export interface Order {
   account_id: string;
   side: OrderSide;
   /**
-   * Echoed order type. `OrderType` (`Limit`/`Market`) covers everything the
-   * public `POST /orders` can create, but the spec keeps this open: an account
-   * may also hold orders placed by other clients (e.g. stop / take-profit from
-   * the web UI) whose type falls outside that set.
+   * Echoed order type. `OrderType` covers every type the public `POST /orders`
+   * can create, but the spec keeps this open: an account may also hold orders
+   * whose echoed type falls outside the request enum (e.g. an internal or future
+   * type), so listing them never fails to parse.
    */
   order_type: OpenUnion<OrderType>;
   price: Decimal;
@@ -388,6 +440,11 @@ export interface Order {
   status: OrderStatus;
   /** Echoed time-in-force; open for the same reason as {@link Order.order_type}. */
   time_in_force: OpenUnion<TimeInForce>;
+  /**
+   * Fire-time limit offset in basis points, echoed for `TrailingLimit` orders
+   * (see {@link OrderRequest.limit_offset_bps}); `null` for other order types.
+   */
+  limit_offset_bps: number | null;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }
@@ -593,6 +650,36 @@ export interface RateLimitStatus {
   reset_at_ms: number | null;
 }
 
+/**
+ * Cancel-on-disconnect (COD) status for the authenticated account
+ * (`GET /account/cancel-on-disconnect`, v0.7.1). When armed, the exchange
+ * cancels the account's resting orders after its last `/ws` connection drops.
+ */
+export interface CancelOnDisconnectStatus {
+  /** The account's own COD opt-in setting. */
+  enabled: boolean;
+  /**
+   * Whether COD will actually fire: the account opt-in AND the exchange-side
+   * feature switch. `enabled && !active` means the exchange has the feature off.
+   */
+  active: boolean;
+  /**
+   * Seconds the exchange waits after the last `/ws` disconnect before
+   * cancelling; a reconnect within the window disarms it. `null` when the
+   * feature is unavailable on this deployment.
+   */
+  grace_secs?: number | null;
+}
+
+/**
+ * Request body for `PUT /account/cancel-on-disconnect` — change the account's
+ * cancel-on-disconnect opt-in (v0.7.1).
+ */
+export interface SetCancelOnDisconnectRequest {
+  /** True to enable COD for the account, false to disable. */
+  enabled: boolean;
+}
+
 // ─── Funds (deposits / withdrawals) ──────────────────────────────────────────
 
 /** A single withdrawal record for the authenticated account (`GET /withdrawals`). */
@@ -718,13 +805,113 @@ export interface ServiceHealth {
   services: Record<string, unknown>;
 }
 
+// ─── Bridge (cross-chain deposits, v0.7.1 Phase A) ───────────────────────────
+
+/** Bridgeable asset symbol. Phase A supports USDC and USDX only. */
+export type BridgeAssetSymbol = "USDC" | "USDX";
+
+/** Lifecycle of a tracked cross-chain {@link BridgeDeposit}. */
+export type BridgeDepositStatus =
+  | "detected"
+  | "confirming"
+  | "credited"
+  | "failed";
+
+/** Error envelope returned by all non-2xx `/bridge` responses. */
+export interface BridgeError {
+  error: {
+    /** Machine-readable, stable snake_case code (e.g. `unsupported_chain`). */
+    code: string;
+    /** Human-readable description; not intended for programmatic matching. */
+    message: string;
+    /** Optional structured context for the error. */
+    details?: Record<string, unknown>;
+  };
+}
+
+/** A bridgeable asset on a specific chain (`GET /bridge/assets`). */
+export interface BridgeAsset {
+  symbol: BridgeAssetSymbol;
+  /** On-chain token decimals for this asset on this chain. */
+  decimals: number;
+  /** Minimum amount accepted for a single deposit. */
+  min_amount: Decimal;
+  /** Block confirmations required before a deposit is credited. */
+  confirmations: number;
+  /** Flat fee charged in units of the asset (may be `"0"`). */
+  fee?: Decimal;
+  /** 0x token contract address on the chain; `null` for a chain-native asset. */
+  contract_address?: string | null;
+}
+
+/** Bridgeable assets for one chain. */
+export interface BridgeChainAssets {
+  /** Chain identifier, e.g. `ethereum` or `base`. */
+  chain: string;
+  /** EVM chain ID, when applicable. */
+  chain_id?: number | null;
+  /** Assets that can be deposited from this chain (USDC, USDX). */
+  deposit_assets: BridgeAsset[];
+  /** Assets that can be withdrawn to this chain (a later phase's capability). */
+  withdraw_assets: BridgeAsset[];
+}
+
+/** Supported bridge chains and their deposit/withdraw assets (`GET /bridge/assets`). */
+export interface BridgeAssetsResponse {
+  chains: BridgeChainAssets[];
+}
+
+/** Request body for `POST /bridge/deposit-addresses`. */
+export interface CreateBridgeDepositAddressRequest {
+  /**
+   * Chain to get-or-create a deposit address on. Idempotent per
+   * `(account, chain)`: repeated calls return the same address.
+   */
+  chain: string;
+}
+
 /**
- * Engine readiness (`GET /ready`): whether every configured market has received
- * its first oracle price this run. Distinct from `/health` liveness. A latch —
- * stays `true` once warmed up even if a market's price later goes stale;
- * steady-state staleness is enforced per-order, not here.
+ * A per-account deposit address on a specific chain
+ * (`POST /bridge/deposit-addresses`).
  */
-export interface ReadyResponse {
-  /** True once every configured market has received at least one oracle price this run. */
-  ready: boolean;
+export interface BridgeDepositAddress {
+  /** Deposit address on `chain`; sending a supported asset here credits the account. */
+  address: string;
+  /** Chain this address belongs to. */
+  chain: string;
+  /** Assets creditable via this address. */
+  accepts: BridgeAssetSymbol[];
+  /** 0x-prefixed Nexus account the address credits. */
+  account_id: string;
+  created_at: TimestampMs;
+}
+
+/**
+ * A cross-chain deposit tracked by the watcher (read model;
+ * `GET /bridge/deposits`, `GET /bridge/deposits/{id}`).
+ */
+export interface BridgeDeposit {
+  /** Opaque, stable deposit identifier. */
+  id: string;
+  /** 0x-prefixed Nexus account being credited. */
+  account_id: string;
+  /** Source chain. */
+  chain: string;
+  asset: BridgeAssetSymbol;
+  /** Deposit amount in units of `asset`. */
+  amount: Decimal;
+  /** Deposit address the funds arrived at. */
+  address: string;
+  /** Lifecycle: `detected` → `confirming` → `credited` | `failed`. */
+  status: BridgeDepositStatus;
+  /** Confirmations observed so far; `null` before the tx is seen on chain. */
+  confirmations?: number | null;
+  /** Confirmations required before crediting. */
+  required_confirmations?: number | null;
+  /** Source-chain transaction hash; `null` until detected. */
+  tx_hash?: string | null;
+  created_at: TimestampMs;
+  updated_at?: TimestampMs;
+  /** Unix ms when the deposit was credited; `null` until `status` is `credited`. */
+  credited_at?: TimestampMs | null;
 }

@@ -38,10 +38,9 @@ signs and assembles its own request, with no shared mutable state and no locks.
 
 `fetchMarketSummaries`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
 `fetchTrades`, `fetchCandles`, `fetchFundingHistory`, `fetchFundingSamples`,
-`fetchMarkPrice`, `fetchMarketStatus`, `fetchStats`, `fetchStatsHistory`, and
-`ready` (host-root `GET /ready` engine-readiness probe) — covering the public
-market-data routes of the pinned spec. Each returns the corresponding
-[typed model](#typed-models).
+`fetchMarkPrice`, `fetchMarketStatus`, `fetchStats`, and `fetchStatsHistory` —
+covering the public market-data routes of the pinned spec. Each returns the
+corresponding [typed model](#typed-models).
 
 Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 `transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
