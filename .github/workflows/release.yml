@@ -12,9 +12,12 @@ name: Release
 #
 # Security posture:
 #   - Default-deny permissions at the top; each job is granted only what it needs.
-#   - The NPM_TOKEN is referenced exclusively by the publish job, which runs only
-#     on a release commit on main — never on PRs (where fork contributors could
-#     see workflow changes but can't reach repo secrets anyway).
+#   - No long-lived npm secret: the publish job authenticates via OIDC trusted
+#     publishing (a trusted publisher registered on npmjs.com for this repo +
+#     workflow). npm exchanges the Actions OIDC token for a short-lived
+#     credential at publish time -- nothing to leak, and it satisfies
+#     require-2FA-on-publish. Runs only on a release commit or manual dispatch,
+#     never on PRs (a fork PR can't assume this repo's OIDC subject anyway).
 #   - Provenance (--provenance + id-token: write) signs the published tarball so
 #     consumers can verify it was built from this repo at this commit.
 #   - pnpm install --frozen-lockfile installs exactly the lockfile; the registry
@@ -93,9 +96,14 @@ jobs:
       - run: pnpm test
       - run: pnpm run verify:pack
 
-      # --provenance: publish a signed build-provenance attestation.
-      # --access public: a scoped (@nexus-xyz/…) package is private by default.
-      # --no-git-checks: we publish from a detached tag checkout, not a branch.
-      - run: pnpm publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Publish via OIDC trusted publishing -- no long-lived npm secret. With a
+      # trusted publisher registered on npmjs.com for this repo + workflow
+      # (release.yml, environment npm-publish) and `id-token: write` above, npm
+      # exchanges the Actions OIDC token for a short-lived, 2FA-satisfying
+      # publish credential. Trusted publishing needs npm >= 11.5.1; Node 22
+      # bundles npm 10.x, so upgrade the CLI first. We publish with the npm CLI
+      # (first-class trusted-publishing support); pnpm drives install/build/test.
+      #   --provenance:    signed build-provenance attestation.
+      #   --access public: a scoped @nexus-xyz/ package is private by default.
+      - run: npm install -g npm@latest
+      - run: npm publish --provenance --access public
