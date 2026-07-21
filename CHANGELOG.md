@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.1.0...v0.1.0) (2026-07-21)
+
+
+### Features
+
+* add cursor / auto-paging helpers for list endpoints ([#30](https://github.com/nexus-xyz/nexus-exchange-ts/issues/30)) ([53e7f6a](https://github.com/nexus-xyz/nexus-exchange-ts/commit/53e7f6a9d88c32a2f776fbfbda9ca765f9366521))
+* **client:** send X-Nexus-Api-Version header + normalize User-Agent (ENG-5956) ([#40](https://github.com/nexus-xyz/nexus-exchange-ts/issues/40)) ([d834ac5](https://github.com/nexus-xyz/nexus-exchange-ts/commit/d834ac5ca2ee8dc357b9128d809f9975c2dfcd45))
+* **drift:** validate enum members against the spec, both ways (ENG-5475) ([#39](https://github.com/nexus-xyz/nexus-exchange-ts/issues/39)) ([e852843](https://github.com/nexus-xyz/nexus-exchange-ts/commit/e852843f78b9989832ad0256e782a599faa24b49))
+* funds operations — deposits, withdrawals history, faucet, margin adjust ([#31](https://github.com/nexus-xyz/nexus-exchange-ts/issues/31)) ([91c6fbb](https://github.com/nexus-xyz/nexus-exchange-ts/commit/91c6fbb937baf39f7b3487648626907bcdff4304))
+* wallet EIP-712/EIP-191 sign-in, session tokens, and API-key management ([#32](https://github.com/nexus-xyz/nexus-exchange-ts/issues/32)) ([74faf6e](https://github.com/nexus-xyz/nexus-exchange-ts/commit/74faf6e3cb1729265ebcb763d634733efd450661))
+
+
+### Bug Fixes
+
+* **release:** publish on Node 22 + manual re-publish path ([#34](https://github.com/nexus-xyz/nexus-exchange-ts/issues/34)) ([4941c86](https://github.com/nexus-xyz/nexus-exchange-ts/commit/4941c865092d06e0f924b48f682d8afe6ce521e4))
+
+
+### Reverts
+
+* restore CODEOWNERS to @Luc-Campos (undo the direct-to-main commit) ([#33](https://github.com/nexus-xyz/nexus-exchange-ts/issues/33)) ([838bd01](https://github.com/nexus-xyz/nexus-exchange-ts/commit/838bd01f14746c5a795e4e0b39c7bf811a50edb4))
+
 ## 0.1.0 (2026-07-09)
 
 ### Features
