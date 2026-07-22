@@ -728,3 +728,120 @@ export interface ReadyResponse {
   /** True once every configured market has received at least one oracle price this run. */
   ready: boolean;
 }
+
+// ─── Bridge (deposits) ───────────────────────────────────────────────────────
+//
+// The public `/bridge` Phase A surface: bridgeable chains/assets, per-account
+// deposit addresses, and the read model for the cross-chain deposits the
+// watcher tracks. Phase A is USDC + USDX deposits only. Amounts are `Decimal`
+// (string on the wire); timestamps are `TimestampMs`.
+
+/** A bridgeable asset symbol; USDC and USDX in Phase A. */
+export type BridgeAssetSymbol = OpenUnion<"USDC" | "USDX">;
+
+/** Bridge deposit lifecycle: `detected` → `confirming` → `credited` | `failed`. */
+export type BridgeDepositStatus = OpenUnion<
+  "detected" | "confirming" | "credited" | "failed"
+>;
+
+/** A bridgeable asset on a specific chain. */
+export interface BridgeAsset {
+  symbol: BridgeAssetSymbol;
+  /** On-chain token decimals for this asset on this chain. */
+  decimals: number;
+  /** Minimum amount accepted for a single deposit. */
+  min_amount: Decimal;
+  /** Block confirmations required before a deposit is credited. */
+  confirmations: number;
+  /** Flat fee charged in units of the asset (may be "0"); absent if unset. */
+  fee?: Decimal;
+  /** 0x token contract address; null for a chain-native asset. */
+  contract_address?: string | null;
+}
+
+/** Bridgeable assets for one chain. */
+export interface BridgeChainAssets {
+  /** Chain identifier, e.g. `ethereum` or `base`. */
+  chain: string;
+  /** EVM chain ID, when applicable. */
+  chain_id?: number | null;
+  /** Assets that can be deposited from this chain. */
+  deposit_assets: BridgeAsset[];
+  /** Assets that can be withdrawn to this chain (a later-phase capability). */
+  withdraw_assets: BridgeAsset[];
+}
+
+/** Supported bridge chains and their assets (`GET /bridge/assets`). */
+export interface BridgeAssetsResponse {
+  chains: BridgeChainAssets[];
+}
+
+/** A per-account deposit address on a specific chain. */
+export interface BridgeDepositAddress {
+  /** Deposit address; sending a supported asset here credits the account. */
+  address: string;
+  chain: string;
+  /** Assets creditable via this address. */
+  accepts: BridgeAssetSymbol[];
+  /** 0x-prefixed Nexus account the address credits. */
+  account_id: string;
+  created_at: TimestampMs;
+}
+
+/** A cross-chain deposit tracked by the watcher (read model). */
+export interface BridgeDeposit {
+  /** Opaque, stable deposit identifier. */
+  id: string;
+  account_id: string;
+  chain: string;
+  asset: BridgeAssetSymbol;
+  /** Deposit amount in units of `asset`. */
+  amount: Decimal;
+  /** Deposit address the funds arrived at. */
+  address: string;
+  status: BridgeDepositStatus;
+  /** Confirmations observed so far; null before the tx is seen on chain. */
+  confirmations?: number | null;
+  required_confirmations?: number | null;
+  /** Source-chain transaction hash; null until detected. */
+  tx_hash?: string | null;
+  /** Unix ms when credited; null until `status` is `credited`. */
+  credited_at?: TimestampMs | null;
+  created_at: TimestampMs;
+  updated_at?: TimestampMs;
+}
+
+/** Request body for `POST /bridge/deposit-addresses`. */
+export interface CreateBridgeDepositAddressRequest {
+  /** Chain to get-or-create a deposit address on (idempotent per account+chain). */
+  chain: string;
+}
+
+/** Error envelope returned by non-2xx `/bridge` responses. */
+export interface BridgeError {
+  error: {
+    /** Machine-readable, stable snake_case error code. */
+    code: string;
+    /** Human-readable description; not for programmatic matching. */
+    message: string;
+    /** Optional structured context. */
+    details?: Record<string, unknown>;
+  };
+}
+
+// ─── Cancel-on-disconnect (v0.7.0 surface; models only for now) ───────────────
+
+/** Cancel-on-disconnect status for the authenticated account. */
+export interface CancelOnDisconnectStatus {
+  /** The account's own COD opt-in setting. */
+  enabled?: boolean;
+  /** Whether COD will actually fire (account opt-in AND exchange switch). */
+  active?: boolean;
+  /** Grace seconds after the last `/ws` disconnect before cancelling. */
+  grace_secs?: number | null;
+}
+
+/** Cancel-on-disconnect opt-in change for the authenticated account. */
+export interface SetCancelOnDisconnectRequest {
+  enabled: boolean;
+}

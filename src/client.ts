@@ -31,8 +31,14 @@ import type {
   AgentRegistrationRequest,
   AmendOrderRequest,
   ApiKeyInfo,
+  BridgeAssetSymbol,
+  BridgeAssetsResponse,
+  BridgeDeposit,
+  BridgeDepositAddress,
+  BridgeDepositStatus,
   Candle,
   ClosedPosition,
+  CreateBridgeDepositAddressRequest,
   CreatedApiKey,
   CreditRequest,
   CreditResponse,
@@ -700,6 +706,84 @@ export class Client {
    */
   claimFaucet(opts?: { signal?: AbortSignal }): Promise<FaucetResponse> {
     return this.#request<FaucetResponse>("POST", "/faucet", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  // -- authenticated: bridge (deposits) -------------------------------------
+
+  /** `GET /bridge/assets` — bridgeable chains and their deposit/withdraw assets. */
+  getBridgeAssets(opts?: {
+    signal?: AbortSignal;
+  }): Promise<BridgeAssetsResponse> {
+    return this.#request<BridgeAssetsResponse>("GET", "/bridge/assets", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `POST /bridge/deposit-addresses` — get or create the account's deposit
+   * address on `chain`. Idempotent per `(account, chain)`: repeated calls
+   * return the same address.
+   */
+  createBridgeDepositAddress(
+    chain: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<BridgeDepositAddress> {
+    const body: CreateBridgeDepositAddressRequest = { chain };
+    return this.#request<BridgeDepositAddress>(
+      "POST",
+      "/bridge/deposit-addresses",
+      { body, signed: true, signal: opts?.signal },
+    );
+  }
+
+  /** `GET /bridge/deposit-addresses` — the account's deposit addresses. */
+  listBridgeDepositAddresses(opts?: {
+    signal?: AbortSignal;
+  }): Promise<BridgeDepositAddress[]> {
+    return this.#request<BridgeDepositAddress[]>(
+      "GET",
+      "/bridge/deposit-addresses",
+      { signed: true, signal: opts?.signal },
+    );
+  }
+
+  /**
+   * `GET /bridge/deposits` — the account's bridge deposits. All filters are
+   * optional; omit them to list every deposit. Poll a deposit (or
+   * {@link getBridgeDeposit}) until its `status` reaches `credited`.
+   */
+  getBridgeDeposits(
+    opts: {
+      limit?: number;
+      chain?: string;
+      asset?: BridgeAssetSymbol;
+      status?: BridgeDepositStatus;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<BridgeDeposit[]> {
+    const query = buildQuery({
+      limit: opts.limit,
+      chain: opts.chain,
+      asset: opts.asset,
+      status: opts.status,
+    });
+    return this.#request<BridgeDeposit[]>("GET", "/bridge/deposits", {
+      query,
+      signed: true,
+      signal: opts.signal,
+    });
+  }
+
+  /** `GET /bridge/deposits/{id}` — a single bridge deposit by id. */
+  getBridgeDeposit(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<BridgeDeposit> {
+    return this.#request<BridgeDeposit>("GET", `/bridge/deposits/${seg(id)}`, {
       signed: true,
       signal: opts?.signal,
     });
