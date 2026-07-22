@@ -728,11 +728,10 @@ export class Client {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<BridgeDeposit> {
-    return this.#request<BridgeDeposit>(
-      "GET",
-      `/bridge/deposits/${seg(id)}`,
-      { signed: true, signal: opts?.signal },
-    );
+    return this.#request<BridgeDeposit>("GET", `/bridge/deposits/${seg(id)}`, {
+      signed: true,
+      signal: opts?.signal,
+    });
   }
 
   /**
