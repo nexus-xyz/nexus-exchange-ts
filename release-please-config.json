@@ -11,7 +11,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "src/index.ts"
+          "path": "src/version.ts"
         }
       ]
     }

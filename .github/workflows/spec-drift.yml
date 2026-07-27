@@ -13,6 +13,7 @@ on:
       - ".api-version"
       - "spec/openapi.json"
       - "spec/schemas.txt"
+      - "spec/enum-allowlist.txt"
       - "src/models.ts"
       - "scripts/check-spec-drift.mjs"
       - ".github/workflows/spec-drift.yml"
@@ -22,6 +23,7 @@ on:
       - ".api-version"
       - "spec/openapi.json"
       - "spec/schemas.txt"
+      - "spec/enum-allowlist.txt"
       - "src/models.ts"
       - "scripts/check-spec-drift.mjs"
 

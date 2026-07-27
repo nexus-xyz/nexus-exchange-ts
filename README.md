@@ -240,6 +240,26 @@ serialized losslessly — parse them with a decimal library, never a JS `number`
 or you will lose precision. CCXT-shaped market-data fields (ticker, trade,
 order book) are JSON numbers, matching the wire.
 
+## Request conventions
+
+Every request carries two advisory identity headers, matching the documented
+[Nexus Exchange API request conventions](https://github.com/nexus-xyz/nexus-exchange-api):
+
+| Header                | Default                                                                    | Purpose                                                            |
+| --------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `X-Nexus-Api-Version` | the pinned spec tag (`API_VERSION`, from [`.api-version`](./.api-version)) | attribute traffic to the spec version the client was built against |
+| `User-Agent`          | `nexus-exchange-ts/<version>` (`DEFAULT_USER_AGENT`)                       | per-client usage metering                                          |
+
+Both are **advisory** — the server never rejects or routes on them, and they sit
+outside the HMAC signature (so they are unauthenticated and must never be used
+for access control). Override either per client via `userAgent` / `apiVersion`
+(e.g. when embedding the SDK in a CLI or MCP server), or pass an empty string to
+omit it.
+
+> **Browser caveat:** `User-Agent` is a [forbidden header name](https://developer.mozilla.org/docs/Glossary/Forbidden_header_name)
+> for `fetch`, so browsers silently drop it — it is applied only on runtimes that
+> allow it (e.g. Node). `X-Nexus-Api-Version` is sent everywhere.
+
 ## API version
 
 This SDK targets a released version of the Exchange API spec, pinned in
@@ -253,6 +273,14 @@ the pin, the vendored spec, the targeted schema list
 vendored spec still matches the upstream spec at the pinned tag. If the upstream
 spec adds, renames, or removes a schema, the check fails until the models and
 pin are updated to match.
+
+It also validates enum members _both ways_: every `enum` in the spec must have
+exactly the same members in the matching `src/models.ts` union, so a new
+upstream value (or a stray one the spec dropped) fails the gate. Values the SDK
+deliberately ships ahead of the spec are recorded in
+[`spec/enum-allowlist.txt`](./spec/enum-allowlist.txt), and each allowlist entry
+is itself checked for staleness — it fails once the spec catches up, so the
+allowlist can't accumulate dead grants.
 
 ## Releasing
 
