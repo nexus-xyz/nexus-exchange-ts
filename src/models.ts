@@ -40,8 +40,27 @@ export type OrderSide = "Buy" | "Sell";
 /** Trade/fill side as reported on public trades and account fills (lowercase). */
 export type TradeSide = "buy" | "sell";
 
-/** Order type accepted by `POST /orders`. */
-export type OrderType = "Limit" | "Market";
+/**
+ * Order type accepted by `POST /orders`.
+ *
+ * `Limit` and `Market` are unconditional. The remaining six are conditional and
+ * carry extra required fields (see the spec's `OrderRequest` description):
+ * `StopLimit` / `StopMarket` fire when the mark price crosses `trigger_price` in
+ * the adverse direction; `TakeProfitLimit` / `TakeProfitMarket` fire on the
+ * favorable direction; `TrailingStop` fires as a market order once the mark
+ * retraces from its best-seen extreme by `trailing_offset_bps`; `TrailingLimit`
+ * fires the same way but rests a limit order priced off the fire price by
+ * `limit_offset_bps`.
+ */
+export type OrderType =
+  | "Limit"
+  | "Market"
+  | "StopLimit"
+  | "StopMarket"
+  | "TakeProfitLimit"
+  | "TakeProfitMarket"
+  | "TrailingLimit"
+  | "TrailingStop";
 
 /**
  * Time-in-force accepted by `POST /orders`.
@@ -376,10 +395,10 @@ export interface Order {
   account_id: string;
   side: OrderSide;
   /**
-   * Echoed order type. `OrderType` (`Limit`/`Market`) covers everything the
-   * public `POST /orders` can create, but the spec keeps this open: an account
-   * may also hold orders placed by other clients (e.g. stop / take-profit from
-   * the web UI) whose type falls outside that set.
+   * Echoed order type. `OrderType` enumerates everything the public
+   * `POST /orders` accepts, but the spec types this response field as a bare
+   * `string` rather than an enum, so it stays open: a future server-side type
+   * would surface here before this SDK models it.
    */
   order_type: OpenUnion<OrderType>;
   price: Decimal;
