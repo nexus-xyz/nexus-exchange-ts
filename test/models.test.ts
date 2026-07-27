@@ -25,6 +25,11 @@ import type {
   Fill,
   AccountSummary,
   Candle,
+  CancelOnDisconnectStatus,
+  SetCancelOnDisconnectRequest,
+  BridgeAssetsResponse,
+  BridgeDepositAddress,
+  BridgeDeposit,
 } from "../src/models.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -183,6 +188,80 @@ test("open-union response fields accept known and forward-compatible values", ()
     [limit, gtc, postOnly, maker, stop, gtd, nullTaker],
     ["Limit", "GTC", "PostOnly", "maker", "StopLimit", "GTD", null],
   );
+});
+
+test("v0.7.1 surface: trailing orders, cancel-on-disconnect, bridge deposits", () => {
+  // TrailingLimit order with the new conditional-order fields.
+  const trailing: OrderRequest = {
+    market_id: "BTC-USDX-PERP",
+    side: "Sell",
+    order_type: "TrailingLimit",
+    quantity: "0.5",
+    time_in_force: "GTC",
+    trailing_offset_bps: 50,
+    limit_offset_bps: 10,
+  };
+  assert.equal(trailing.order_type, "TrailingLimit");
+
+  // Order echoes the fire-time limit offset (null for non-trailing types).
+  const order: Pick<Order, "order_type" | "limit_offset_bps"> = {
+    order_type: "TrailingLimit",
+    limit_offset_bps: 10,
+  };
+  assert.equal(order.limit_offset_bps, 10);
+
+  const cod: CancelOnDisconnectStatus = {
+    enabled: true,
+    active: false,
+    grace_secs: null,
+  };
+  const setCod: SetCancelOnDisconnectRequest = { enabled: true };
+  assert.equal(cod.active, false);
+  assert.equal(setCod.enabled, true);
+
+  const assets: BridgeAssetsResponse = {
+    chains: [
+      {
+        chain: "ethereum",
+        chain_id: 1,
+        deposit_assets: [
+          {
+            symbol: "USDC",
+            decimals: 6,
+            min_amount: "1",
+            confirmations: 12,
+            fee: "0",
+            contract_address: "0xa0b8...",
+          },
+        ],
+        withdraw_assets: [],
+      },
+    ],
+  };
+  const addr: BridgeDepositAddress = {
+    address: "0xdeadbeef",
+    chain: "ethereum",
+    accepts: ["USDC", "USDX"],
+    account_id: "0xabc",
+    created_at: 1776033911836,
+  };
+  const deposit: BridgeDeposit = {
+    id: "dep_1",
+    account_id: "0xabc",
+    chain: "ethereum",
+    asset: "USDC",
+    amount: "100",
+    address: "0xdeadbeef",
+    status: "confirming",
+    confirmations: 3,
+    required_confirmations: 12,
+    tx_hash: null,
+    created_at: 1776033911836,
+    credited_at: null,
+  };
+  assert.equal(assets.chains[0]!.deposit_assets[0]!.symbol, "USDC");
+  assert.equal(addr.accepts.length, 2);
+  assert.equal(deposit.status, "confirming");
 });
 
 test("vendored spec carries no internal hosts or ENG/Linear references", () => {

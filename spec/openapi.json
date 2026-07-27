@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Nexus Exchange API",
-    "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.",
-    "version": "0.7.0"
+    "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never rejects or routes on them, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.",
+    "version": "0.7.1"
   },
   "servers": [
     {
@@ -4542,6 +4542,29 @@
       }
     },
     "parameters": {
+      "NexusApiVersion": {
+        "name": "X-Nexus-Api-Version",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "pattern": "^v\\d+\\.\\d+\\.\\d+$",
+          "maxLength": 32
+        },
+        "example": "v0.7.0",
+        "description": "Released spec tag the client was compiled/pinned against (the client's `.api-version`), format `vMAJOR.MINOR.PATCH`. Every official client sends it on every request. Advisory and optional: the server accepts requests when it is absent, malformed, or names an unknown tag, and never rejects or routes on it. Excluded from the HMAC canonical string, so it is unauthenticated — never used for authentication, authorization, or access control. For observability and usage metering only; consumers should treat the value as untrusted and bounded."
+      },
+      "UserAgent": {
+        "name": "User-Agent",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "example": "nexus-exchange-rs/0.5.1",
+        "description": "Client identifier, format `nexus-exchange-<lang>/<version>` (e.g. `nexus-exchange-rs/0.5.1`). Advisory and optional; used by edge usage metering to segment traffic by client and version. Like all client-supplied headers it is unauthenticated and untrusted — never used for security decisions."
+      },
       "MarketId": {
         "name": "market_id",
         "in": "path",
