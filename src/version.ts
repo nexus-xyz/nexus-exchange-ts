@@ -19,4 +19,4 @@ export const SDK_VERSION = "0.1.0"; // x-release-please-version
  * header so the edge can attribute traffic to a spec version. Update it in
  * lockstep with `.api-version` whenever the pinned spec is bumped.
  */
-export const API_VERSION = "v0.6.2";
+export const API_VERSION = "v0.7.1";

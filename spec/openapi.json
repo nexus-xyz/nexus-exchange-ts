@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Nexus Exchange API",
-    "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.",
-    "version": "0.6.2"
+    "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never rejects or routes on them, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.",
+    "version": "0.7.1"
   },
   "servers": [
     {
@@ -71,6 +71,10 @@
     {
       "name": "Admin",
       "description": "Tier management (requires ADMIN_SECRET)"
+    },
+    {
+      "name": "Bridge",
+      "description": "Cross-chain deposits: bridgeable assets, per-account deposit addresses, and deposit tracking (Phase A: USDC/USDX)."
     }
   ],
   "paths": {
@@ -1069,13 +1073,41 @@
               "schema": {
                 "$ref": "#/components/schemas/OrderRequest"
               },
-              "example": {
-                "market_id": "BTC-USDX-PERP",
-                "side": "Buy",
-                "order_type": "Limit",
-                "price": "50000",
-                "quantity": "0.1",
-                "time_in_force": "GTC"
+              "examples": {
+                "limit": {
+                  "summary": "Plain limit order",
+                  "value": {
+                    "market_id": "BTC-USDX-PERP",
+                    "side": "Buy",
+                    "order_type": "Limit",
+                    "price": "50000",
+                    "quantity": "0.1",
+                    "time_in_force": "GTC"
+                  }
+                },
+                "stopLimit": {
+                  "summary": "Stop-limit — requires trigger_price and a limit price",
+                  "value": {
+                    "market_id": "BTC-USDX-PERP",
+                    "side": "Sell",
+                    "order_type": "StopLimit",
+                    "trigger_price": "48000",
+                    "price": "47900",
+                    "quantity": "0.1",
+                    "time_in_force": "GTC"
+                  }
+                },
+                "trailingStop": {
+                  "summary": "Trailing stop — market-only, requires trailing_offset_bps",
+                  "value": {
+                    "market_id": "BTC-USDX-PERP",
+                    "side": "Sell",
+                    "order_type": "TrailingStop",
+                    "trailing_offset_bps": 250,
+                    "quantity": "0.1",
+                    "time_in_force": "IOC"
+                  }
+                }
               }
             }
           }
@@ -1631,6 +1663,90 @@
         }
       }
     },
+    "/account/cancel-on-disconnect": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get cancel-on-disconnect status",
+        "description": "Returns the authenticated account's cancel-on-disconnect (COD) status. COD is an opt-in, per-account dead man's switch: when the account's last authenticated `/ws` connection drops and does not reconnect within the grace window, the exchange automatically cancels all of the account's resting orders, so a crashed client cannot leave orders exposed. `enabled` is the account's own opt-in; `active` additionally requires the exchange-side feature switch, so it reflects whether COD will actually fire; `grace_secs` is the exchange-configured reconnect window in seconds (null when the feature is unavailable). Clients that trade purely over REST and never open a `/ws` connection are not covered.",
+        "operationId": "fetchCancelOnDisconnect",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current cancel-on-disconnect status for the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOnDisconnectStatus"
+                },
+                "example": {
+                  "enabled": true,
+                  "active": true,
+                  "grace_secs": 10
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Set cancel-on-disconnect",
+        "description": "Enables or disables cancel-on-disconnect for the authenticated account. Opt-in is per account and off by default: someone who deliberately leaves a passive resting order while offline should not have a brief blip cancel it. Enable it when you want the guarantee that a dead client cannot keep orders resting — typical for market makers and algorithmic traders. Returns the resulting COD status (same shape as the GET).",
+        "operationId": "setCancelOnDisconnect",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCancelOnDisconnectRequest"
+              },
+              "example": {
+                "enabled": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The resulting cancel-on-disconnect status for the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOnDisconnectStatus"
+                },
+                "example": {
+                  "enabled": true,
+                  "active": true,
+                  "grace_secs": 10
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request body."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/positions": {
       "get": {
         "tags": [
@@ -1957,31 +2073,6 @@
         }
       }
     },
-    "/health": {
-      "get": {
-        "operationId": "health",
-        "tags": [
-          "Markets"
-        ],
-        "summary": "Health check",
-        "description": "No authentication required. Used by Fly.io health checks and uptime monitors.",
-        "responses": {
-          "200": {
-            "description": "Service health status.",
-            "content": {
-              "application/json": {
-                "example": {
-                  "events_received": 50000,
-                  "fills_total": 25000,
-                  "uptime_seconds": 3600,
-                  "connected": true
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/stats": {
       "get": {
         "tags": [
@@ -2024,39 +2115,6 @@
                   "items": {
                     "$ref": "#/components/schemas/ThroughputSample"
                   }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/ready": {
-      "get": {
-        "tags": [
-          "Markets"
-        ],
-        "summary": "Engine readiness",
-        "description": "Public — no authentication required. Returns 200 once every configured market has received its first oracle price this run, 503 while any market is still awaiting its first price (the post-bind oracle warm-up window). Distinct from /health (liveness): a feed outage must not fail liveness and trigger a restart storm. Intended for use as a readiness probe.",
-        "operationId": "fetchReadiness",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Engine is ready: every market has received its first oracle price.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadyResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Engine is not yet ready: at least one market has not received an oracle price this run.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadyResponse"
                 }
               }
             }
@@ -3874,6 +3932,100 @@
         }
       }
     },
+    "/api/v1/account/cancel-on-disconnect": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Production (direct service)"
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Get cancel-on-disconnect status",
+        "description": "Returns the authenticated account's cancel-on-disconnect (COD) status. COD is an opt-in, per-account dead man's switch: when the account's last authenticated `/ws` connection drops and does not reconnect within the grace window, the exchange automatically cancels all of the account's resting orders, so a crashed client cannot leave orders exposed. `enabled` is the account's own opt-in; `active` additionally requires the exchange-side feature switch, so it reflects whether COD will actually fire; `grace_secs` is the exchange-configured reconnect window in seconds (null when the feature is unavailable). Clients that trade purely over REST and never open a `/ws` connection are not covered.",
+        "operationId": "fetchCancelOnDisconnectV1",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current cancel-on-disconnect status for the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOnDisconnectStatus"
+                },
+                "example": {
+                  "enabled": true,
+                  "active": true,
+                  "grace_secs": 10
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Set cancel-on-disconnect",
+        "description": "Enables or disables cancel-on-disconnect for the authenticated account. Opt-in is per account and off by default: someone who deliberately leaves a passive resting order while offline should not have a brief blip cancel it. Enable it when you want the guarantee that a dead client cannot keep orders resting — typical for market makers and algorithmic traders. Returns the resulting COD status (same shape as the GET).",
+        "operationId": "setCancelOnDisconnectV1",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCancelOnDisconnectRequest"
+              },
+              "example": {
+                "enabled": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The resulting cancel-on-disconnect status for the account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOnDisconnectStatus"
+                },
+                "example": {
+                  "enabled": true,
+                  "active": true,
+                  "grace_secs": 10
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request body."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/api/v1/positions": {
       "servers": [
         {
@@ -4057,6 +4209,248 @@
           }
         }
       }
+    },
+    "/api/v1/bridge/assets": {
+      "get": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "List bridgeable chains and assets",
+        "description": "Returns the supported chains and, per chain, the depositable assets (USDC, USDX) and withdrawable assets (USDX) with their decimals, minimum amounts, required confirmations, and fees. Public catalog — no authentication required.",
+        "operationId": "getBridgeAssets",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Supported bridge chains and assets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeAssetsResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/deposit-addresses": {
+      "post": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "Get or create a deposit address",
+        "description": "Get-or-create a deposit address for the authenticated account on a chain. Idempotent per `(account, chain)`: repeated calls return the same address rather than allocating a new one.",
+        "operationId": "createBridgeDepositAddress",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBridgeDepositAddressRequest"
+              },
+              "example": {
+                "chain": "ethereum"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account's deposit address for the chain (existing or newly created).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeDepositAddress"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BridgeBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "List deposit addresses",
+        "description": "List the authenticated account's deposit addresses across chains.",
+        "operationId": "listBridgeDepositAddresses",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's deposit addresses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BridgeDepositAddress"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/deposits": {
+      "get": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "List bridge deposits",
+        "description": "List the authenticated account's cross-chain deposits, newest first. The watcher creates and advances these records.",
+        "operationId": "listBridgeDeposits",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 100
+            },
+            "description": "Maximum records to return."
+          },
+          {
+            "name": "chain",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter by source chain."
+          },
+          {
+            "name": "asset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "USDC",
+                "USDX"
+              ]
+            },
+            "description": "Filter by deposited asset."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "detected",
+                "confirming",
+                "credited",
+                "failed"
+              ]
+            },
+            "description": "Filter by deposit status."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bridge deposits, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BridgeDeposit"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/deposits/{id}": {
+      "get": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "Get a bridge deposit",
+        "description": "Fetch a single cross-chain deposit by id. Only deposits owned by the authenticated account are returned.",
+        "operationId": "getBridgeDeposit",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Deposit identifier."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deposit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeDeposit"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/BridgeNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4125,9 +4519,52 @@
             }
           }
         }
+      },
+      "BridgeBadRequest": {
+        "description": "The request was invalid (e.g. unsupported chain or asset, amount below minimum).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BridgeError"
+            }
+          }
+        }
+      },
+      "BridgeNotFound": {
+        "description": "The resource does not exist, or is not owned by the authenticated account.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BridgeError"
+            }
+          }
+        }
       }
     },
     "parameters": {
+      "NexusApiVersion": {
+        "name": "X-Nexus-Api-Version",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "pattern": "^v\\d+\\.\\d+\\.\\d+$",
+          "maxLength": 32
+        },
+        "example": "v0.7.0",
+        "description": "Released spec tag the client was compiled/pinned against (the client's `.api-version`), format `vMAJOR.MINOR.PATCH`. Every official client sends it on every request. Advisory and optional: the server accepts requests when it is absent, malformed, or names an unknown tag, and never rejects or routes on it. Excluded from the HMAC canonical string, so it is unauthenticated — never used for authentication, authorization, or access control. For observability and usage metering only; consumers should treat the value as untrusted and bounded."
+      },
+      "UserAgent": {
+        "name": "User-Agent",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "example": "nexus-exchange-rs/0.5.1",
+        "description": "Client identifier, format `nexus-exchange-<lang>/<version>` (e.g. `nexus-exchange-rs/0.5.1`). Advisory and optional; used by edge usage metering to segment traffic by client and version. Like all client-supplied headers it is unauthenticated and untrusted — never used for security decisions."
+      },
       "MarketId": {
         "name": "market_id",
         "in": "path",
@@ -4585,6 +5022,7 @@
       },
       "OrderRequest": {
         "type": "object",
+        "description": "Order placement request. Supports plain `Limit` / `Market` orders and six conditional order types (`StopLimit`, `StopMarket`, `TakeProfitLimit`, `TakeProfitMarket`, `TrailingStop`, `TrailingLimit`). Field requirements depend on `order_type`:\n\n- **Limit-family** (`Limit`, `StopLimit`, `TakeProfitLimit`) require a limit `price`.\n- **Triggerable, non-trailing** orders (`StopLimit`, `StopMarket`, `TakeProfitLimit`, `TakeProfitMarket`) require a `trigger_price` (the legacy `stop_price` field is accepted as a fallback when `trigger_price` is absent).\n- **`TrailingStop`** is market-only — it fires as a market order — and requires `trailing_offset_bps`. It does not take a limit `price` or a `trigger_price` (the trigger anchor is derived from the mark price and the offset).\n- **`TrailingLimit`** trails like `TrailingStop` but fires a limit order instead of a market order. It requires both `trailing_offset_bps` (the trailing trigger) and `limit_offset_bps` (the fire-time limit offset). It does not take `price`, `trigger_price`, or `stop_price`; the limit price is computed at fire time from the mark that crossed the offset.",
         "required": [
           "market_id",
           "side",
@@ -4605,14 +5043,21 @@
           },
           "order_type": {
             "type": "string",
+            "description": "Order type. `Limit` and `Market` are unconditional. The remaining six are conditional: `StopLimit` / `StopMarket` fire when the mark price crosses `trigger_price` in the adverse direction; `TakeProfitLimit` / `TakeProfitMarket` fire on the favorable direction; `TrailingStop` fires as a market order when the mark retraces from its best-seen extreme by `trailing_offset_bps`; `TrailingLimit` fires the same way but rests a limit order priced off the fire price by `limit_offset_bps`. See the schema description for per-type field requirements.",
             "enum": [
               "Limit",
-              "Market"
+              "Market",
+              "StopLimit",
+              "StopMarket",
+              "TakeProfitLimit",
+              "TakeProfitMarket",
+              "TrailingStop",
+              "TrailingLimit"
             ]
           },
           "price": {
             "$ref": "#/components/schemas/Decimal",
-            "description": "Required for Limit orders"
+            "description": "Limit price. Required for limit-family orders (`Limit`, `StopLimit`, `TakeProfitLimit`); omit for market-family and trailing orders."
           },
           "quantity": {
             "$ref": "#/components/schemas/Decimal"
@@ -4629,6 +5074,46 @@
           },
           "reduce_only": {
             "type": "boolean"
+          },
+          "stop_price": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "deprecated": true,
+            "description": "**Deprecated** — use `trigger_price` instead. Legacy trigger threshold for the stop / take-profit family. Accepted as a fallback only when `trigger_price` is absent; when both are supplied, `trigger_price` wins. Ignored for `Limit`, `Market`, `TrailingStop`, and `TrailingLimit` orders."
+          },
+          "trigger_price": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Canonical trigger threshold for triggerable, non-trailing orders (`StopLimit`, `StopMarket`, `TakeProfitLimit`, `TakeProfitMarket`), which require it (the legacy `stop_price` field is accepted as a fallback when this is omitted). Not used by `Limit`, `Market`, `TrailingStop`, or `TrailingLimit` orders."
+          },
+          "trailing_offset_bps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Trailing offset in basis points (1 bp = 0.01%). Required for `TrailingStop` and `TrailingLimit` orders; ignored for all other order types. The trailing trigger fires once the mark price retraces from its best-seen extreme by this many basis points: `TrailingStop` fires a market order, `TrailingLimit` fires a limit order priced by `limit_offset_bps`. A value of `0` is accepted and fires the trigger at the first mark-price evaluation after placement (no retracement required)."
+          },
+          "limit_offset_bps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9999,
+            "description": "Offset in basis points for the fired limit price (`TrailingLimit` only; required together with `trailing_offset_bps`). When the trailing trigger fires at `fire_price`, the injected limit order rests at `fire_price` * (1 + offset) for buys / * (1 - offset) for sells, tick-rounded toward the tighter bound. A value of 0 rests the limit exactly at `fire_price`. Ignored for other order types."
           }
         }
       },
@@ -4750,6 +5235,13 @@
           "order_type": {
             "type": "string"
           },
+          "limit_offset_bps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Fire-time limit offset in basis points, echoed for `TrailingLimit` orders (see the `OrderRequest.limit_offset_bps` placement field); null for other order types."
+          },
           "price": {
             "$ref": "#/components/schemas/Decimal"
           },
@@ -4870,6 +5362,44 @@
             "description": "Unix timestamp in milliseconds when the bucket refills back to `limit`; `0` when it is already full. Null for the unlimited tier."
           }
         }
+      },
+      "CancelOnDisconnectStatus": {
+        "type": "object",
+        "description": "Cancel-on-disconnect status for the authenticated account.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "The account's own COD opt-in setting."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Whether COD will actually fire for this account: the account opt-in AND the exchange-side feature switch. When `enabled` is true but `active` is false, the exchange has the feature switched off and no cancel fires on disconnect."
+          },
+          "grace_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Seconds the exchange waits after the last `/ws` disconnect before cancelling; a reconnect within the window disarms the cancel. Null when the feature is unavailable on this deployment."
+          }
+        },
+        "required": [
+          "enabled",
+          "active"
+        ]
+      },
+      "SetCancelOnDisconnectRequest": {
+        "type": "object",
+        "description": "Cancel-on-disconnect opt-in change for the authenticated account.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "True to enable COD for the account, false to disable."
+          }
+        },
+        "required": [
+          "enabled"
+        ]
       },
       "Position": {
         "type": "object",
@@ -5159,19 +5689,6 @@
           }
         }
       },
-      "ReadyResponse": {
-        "type": "object",
-        "description": "Engine readiness: whether every configured market has received its first oracle price this run. Distinct from /health liveness. A latch — stays true once warmed up even if a market's price later goes stale; steady-state staleness is enforced per-order, not here.",
-        "properties": {
-          "ready": {
-            "type": "boolean",
-            "description": "True once every configured market has received at least one oracle price this run."
-          }
-        },
-        "required": [
-          "ready"
-        ]
-      },
       "EquityPoint": {
         "type": "object",
         "description": "One equity sample (balance + unrealized PnL) for the account, 5s cadence.",
@@ -5242,7 +5759,7 @@
           },
           "order_type": {
             "type": "string",
-            "description": "limit | market | stop_* | take_profit_* | trailing_stop"
+            "description": "limit | market | stop_* | take_profit_* | trailing_stop | trailing_limit"
           },
           "price": {
             "oneOf": [
@@ -5506,6 +6023,287 @@
           "early_access_allowed": {
             "type": "boolean",
             "description": "Present only when the early-access gate is active."
+          }
+        }
+      },
+      "BridgeError": {
+        "type": "object",
+        "description": "Error envelope returned by all non-2xx /v1/bridge responses.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Machine-readable, stable error code (snake_case), e.g. `unsupported_chain`, `amount_below_minimum`, `deposit_not_found`."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable description; not intended for programmatic matching."
+              },
+              "details": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Optional structured context for the error."
+              }
+            }
+          }
+        }
+      },
+      "BridgeAsset": {
+        "type": "object",
+        "description": "A bridgeable asset on a specific chain.",
+        "required": [
+          "symbol",
+          "decimals",
+          "min_amount",
+          "confirmations"
+        ],
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "enum": [
+              "USDC",
+              "USDX"
+            ],
+            "description": "Asset symbol. Phase A supports USDC and USDX only (USDT is out of scope for this cut)."
+          },
+          "decimals": {
+            "type": "integer",
+            "description": "On-chain token decimals for this asset on this chain."
+          },
+          "min_amount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Minimum amount accepted for a single deposit."
+          },
+          "confirmations": {
+            "type": "integer",
+            "description": "Block confirmations required before a deposit is credited."
+          },
+          "fee": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Flat fee charged in units of the asset (may be \"0\")."
+          },
+          "contract_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "0x token contract address on the chain; null for a chain-native representation."
+          }
+        }
+      },
+      "BridgeChainAssets": {
+        "type": "object",
+        "description": "Bridgeable assets for one chain.",
+        "required": [
+          "chain",
+          "deposit_assets",
+          "withdraw_assets"
+        ],
+        "properties": {
+          "chain": {
+            "type": "string",
+            "description": "Chain identifier, e.g. `ethereum` or `base`."
+          },
+          "chain_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "EVM chain ID, when applicable."
+          },
+          "deposit_assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BridgeAsset"
+            },
+            "description": "Assets that can be deposited from this chain (USDC, USDX)."
+          },
+          "withdraw_assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BridgeAsset"
+            },
+            "description": "Assets that can be withdrawn to this chain (USDX). Withdrawal endpoints are a later phase; this lists the eventual capability."
+          }
+        }
+      },
+      "BridgeAssetsResponse": {
+        "type": "object",
+        "description": "Supported bridge chains and their deposit/withdraw assets.",
+        "required": [
+          "chains"
+        ],
+        "properties": {
+          "chains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BridgeChainAssets"
+            }
+          }
+        }
+      },
+      "CreateBridgeDepositAddressRequest": {
+        "type": "object",
+        "required": [
+          "chain"
+        ],
+        "properties": {
+          "chain": {
+            "type": "string",
+            "description": "Chain to get-or-create a deposit address on. The operation is idempotent per `(account, chain)`: repeated calls return the same address."
+          }
+        }
+      },
+      "BridgeDepositAddress": {
+        "type": "object",
+        "description": "A per-account deposit address on a specific chain.",
+        "required": [
+          "address",
+          "chain",
+          "accepts",
+          "account_id",
+          "created_at"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Deposit address on `chain` for the authenticated account. Sending a supported asset here credits the account."
+          },
+          "chain": {
+            "type": "string",
+            "description": "Chain this address belongs to."
+          },
+          "accepts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "USDC",
+                "USDX"
+              ]
+            },
+            "description": "Assets creditable via this address."
+          },
+          "account_id": {
+            "type": "string",
+            "description": "0x-prefixed Nexus account the address credits."
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/TimestampMs"
+          }
+        }
+      },
+      "BridgeDeposit": {
+        "type": "object",
+        "description": "A cross-chain deposit tracked by the watcher (read model).",
+        "required": [
+          "id",
+          "account_id",
+          "chain",
+          "asset",
+          "amount",
+          "address",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Opaque, stable deposit identifier."
+          },
+          "account_id": {
+            "type": "string",
+            "description": "0x-prefixed Nexus account being credited."
+          },
+          "chain": {
+            "type": "string",
+            "description": "Source chain."
+          },
+          "asset": {
+            "type": "string",
+            "enum": [
+              "USDC",
+              "USDX"
+            ],
+            "description": "Deposited asset."
+          },
+          "amount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Deposit amount in units of `asset`."
+          },
+          "address": {
+            "type": "string",
+            "description": "Deposit address the funds arrived at."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "detected",
+              "confirming",
+              "credited",
+              "failed"
+            ],
+            "description": "Lifecycle: `detected` → `confirming` → `credited` | `failed`."
+          },
+          "confirmations": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Confirmations observed so far; null before the tx is seen on chain."
+          },
+          "required_confirmations": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Confirmations required before crediting."
+          },
+          "tx_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source-chain transaction hash; null until detected."
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "credited_at": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TimestampMs"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Unix ms when the deposit was credited; null until `status` is `credited`."
           }
         }
       }
