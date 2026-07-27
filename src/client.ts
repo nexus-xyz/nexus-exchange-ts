@@ -25,7 +25,9 @@ import { Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
 import type { EthSigner } from "./wallet.js";
 import type {
+  AccountFees,
   AccountPortfolioSummary,
+  AccountState,
   AccountSummary,
   AgentInfo,
   AgentRegistrationRequest,
@@ -56,6 +58,8 @@ import type {
   OrderRequest,
   OrderResponse,
   OrderResult,
+  PortfolioHistory,
+  PortfolioWindow,
   Position,
   PreviewResponse,
   RateLimitStatus,
@@ -562,6 +566,39 @@ export class Client {
     });
   }
 
+  /**
+   * `GET /account/state` — consolidated account state in one call: the portfolio
+   * summary aggregates plus all open positions.
+   *
+   * Prefer this over pairing {@link getAccountSummary} with {@link getPositions}:
+   * both halves come from a single coherent read, so
+   * `summary.open_positions_count` always matches `positions.length` and the two
+   * can't disagree the way two separate round-trips can. Fails closed with a
+   * `502` {@link ApiError} when the engine-authoritative margin view is
+   * unavailable, rather than reporting a local estimate.
+   */
+  getAccountState(opts?: { signal?: AbortSignal }): Promise<AccountState> {
+    return this.#request<AccountState>("GET", "/account/state", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `GET /account/fees` — the account's effective fee schedule: maker/taker rate
+   * in bps, fee tier, rolling 30-day volume, and active discounts.
+   *
+   * This is the forward-looking *schedule* rate, not a realized per-fill
+   * average, and its scope is given by the response's `schedule` field. Note
+   * `maker_fee_bps` may be negative (a rebate).
+   */
+  getAccountFees(opts?: { signal?: AbortSignal }): Promise<AccountFees> {
+    return this.#request<AccountFees>("GET", "/account/fees", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
   /** `GET /account/equity-history` — equity samples for the account. */
   getEquityHistory(
     opts: {
@@ -575,6 +612,38 @@ export class Client {
       signed: true,
       signal: opts.signal,
     });
+  }
+
+  /**
+   * `GET /account/portfolio-history` — equity, cumulative trading PnL, and
+   * cumulative traded volume for the account, downsampled over `window` and
+   * returned **oldest first**.
+   *
+   * The richer superset of {@link getEquityHistory} (equity only, ~1h window);
+   * both derive equity from the same source, so the series never disagree.
+   *
+   * Omit `window` to take the server's `day` default — always read
+   * `window`/`cadence_ms` off the response rather than assuming what was served.
+   * `limit` is clamped server-side to the window's capacity (day 288, week 168,
+   * month 120, all 366), not rejected.
+   */
+  getPortfolioHistory(
+    opts: {
+      window?: PortfolioWindow;
+      limit?: number;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<PortfolioHistory> {
+    const query = buildQuery({ window: opts.window, limit: opts.limit });
+    return this.#request<PortfolioHistory>(
+      "GET",
+      "/account/portfolio-history",
+      {
+        query,
+        signed: true,
+        signal: opts.signal,
+      },
+    );
   }
 
   /** `GET /positions` — open positions for the authenticated account. */

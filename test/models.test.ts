@@ -30,6 +30,11 @@ import type {
   BridgeAssetsResponse,
   BridgeDepositAddress,
   BridgeDeposit,
+  AccountState,
+  AccountFees,
+  PortfolioHistory,
+  PortfolioWindow,
+  Position,
 } from "../src/models.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,6 +74,7 @@ test("v0.6.0 /api/v1 models accept representative wire shapes", () => {
       filled_qty: "0",
       status: "Open",
       time_in_force: "PostOnly",
+      limit_offset_bps: null,
       created_at: 1,
       updated_at: 1,
     },
@@ -99,6 +105,7 @@ test("v0.6.0 /api/v1 models accept representative wire shapes", () => {
     open_orders_count: 2,
     margin_used: "100",
     available_margin: "900",
+    withdrawable: "900",
   };
 
   // Narrowing the batch-result discriminated union works on `outcome`.
@@ -121,6 +128,7 @@ test("Order, Ticker, Fill, AccountSummary, Candle accept wire shapes", () => {
     filled_qty: "0",
     status: "Open",
     time_in_force: "GTC",
+    limit_offset_bps: null,
     created_at: 1776033911836,
     updated_at: 1776033911836,
   };
@@ -272,6 +280,159 @@ test("vendored spec carries no internal hosts or ENG/Linear references", () => {
       `vendored spec must not contain ${forbidden}`,
     );
   }
+});
+
+// ─── Portfolio parity (spec v0.7.2, ENG-6458) ────────────────────────────────
+
+test("enriched Position carries nullable risk detail with paired error reasons", () => {
+  // Fully-populated case.
+  const populated: Position = {
+    market_id: "BTC-USDX-PERP",
+    side: "Long",
+    size: "0.5",
+    entry_price: "84000.00",
+    unrealized_pnl: "125.00",
+    realized_pnl: "0",
+    liquidation_price: "76000.00",
+    leverage: null,
+    leverage_error: "margin_state_not_mirrored",
+    notional_value: "42125.00",
+    notional_value_error: null,
+    roe: "0.0297",
+    roe_error: null,
+    margin_used: "4212.50",
+    margin_used_error: null,
+    max_leverage: 20,
+    max_leverage_error: null,
+    funding_paid: "1.25",
+  };
+  // Degraded case: every derived field null, each with a machine-readable reason.
+  const degraded: Position = {
+    ...populated,
+    notional_value: null,
+    notional_value_error: "mark_price_unavailable",
+    roe: null,
+    roe_error: "margin_used_zero",
+    margin_used: null,
+    margin_used_error: "margin_rate_unavailable",
+    max_leverage: null,
+    max_leverage_error: "market_params_unavailable",
+    funding_paid: "0",
+  };
+
+  // `leverage` is currently always null upstream — the reason must be readable
+  // so callers can distinguish "not computed" from "genuinely zero".
+  assert.equal(populated.leverage, null);
+  assert.equal(populated.leverage_error, "margin_state_not_mirrored");
+  // Nullable, not zero-defaulted: arithmetic on a missing value must not
+  // silently produce 0.
+  assert.equal(degraded.notional_value, null);
+  assert.equal(degraded.roe_error, "margin_used_zero");
+  // Paid-positive funding sign, always present.
+  assert.equal(populated.funding_paid, "1.25");
+  assert.equal(degraded.funding_paid, "0");
+  // Error codes are an open union — an unknown upstream reason still assigns.
+  const future: Position["roe_error"] = "some_new_upstream_reason";
+  assert.equal(future, "some_new_upstream_reason");
+});
+
+test("AccountState pairs the summary with positions from one coherent read", () => {
+  const state: AccountState = {
+    summary: {
+      collateral: "1000",
+      total_equity: "1010",
+      total_unrealized_pnl: "10",
+      total_realized_pnl_24h: "0",
+      total_volume_24h: "5000",
+      open_positions_count: 1,
+      open_orders_count: 0,
+      margin_used: "100",
+      available_margin: "900",
+      withdrawable: "900",
+    },
+    positions: [
+      {
+        market_id: "BTC-USDX-PERP",
+        side: "Long",
+        size: "0.5",
+        entry_price: "84000.00",
+        unrealized_pnl: "10",
+        realized_pnl: "0",
+        liquidation_price: "76000.00",
+        leverage: null,
+        leverage_error: "margin_state_not_mirrored",
+        notional_value: "42125.00",
+        notional_value_error: null,
+        roe: "0.0024",
+        roe_error: null,
+        margin_used: "100",
+        margin_used_error: null,
+        max_leverage: 20,
+        max_leverage_error: null,
+        funding_paid: "0",
+      },
+    ],
+  };
+
+  // The endpoint's coherence guarantee, asserted on the shape callers rely on.
+  assert.equal(state.summary.open_positions_count, state.positions.length);
+  // `withdrawable` is clamped at zero upstream — never surfaced negative.
+  assert.equal(state.summary.withdrawable, "900");
+});
+
+test("PortfolioHistory keeps money as decimal strings and echoes the window", () => {
+  const history: PortfolioHistory = {
+    window: "month",
+    cadence_ms: 21600000,
+    points: [
+      {
+        timestamp_ms: 1776033900000,
+        equity: "1000.50",
+        pnl: "-25.25",
+        volume: "50000.00",
+      },
+    ],
+  };
+
+  assert.equal(history.window, "month");
+  // Monetary series are lossless decimal strings, unlike EquityPoint.equity
+  // (a JSON number) — the difference callers must not conflate.
+  assert.equal(typeof history.points[0]!.equity, "string");
+  assert.equal(history.points[0]!.pnl, "-25.25");
+
+  // The window is a CLOSED set — the spec rejects anything else with 400.
+  const windows: PortfolioWindow[] = ["day", "week", "month", "all"];
+  assert.equal(windows.length, 4);
+});
+
+test("AccountFees accepts a negative maker rebate and open tier/schedule", () => {
+  const fees: AccountFees = {
+    maker_fee_bps: -2,
+    taker_fee_bps: 5,
+    tier: "base",
+    schedule: "standard",
+    volume_30d: "101005.00",
+    volume_30d_estimated: false,
+    discounts: [],
+  };
+
+  // A negative maker fee is a rebate, not an error.
+  assert.ok(fees.maker_fee_bps < 0);
+  assert.equal(fees.tier, "base");
+  // `tier`/`schedule` are open strings — the fee model is still a draft, so a
+  // future value must not break compilation.
+  const futureTier: AccountFees["tier"] = "vip_1";
+  const futureSchedule: AccountFees["schedule"] = "fx";
+  assert.equal(futureTier, "vip_1");
+  assert.equal(futureSchedule, "fx");
+
+  // FeeDiscount is an open record: unknown-valued so callers must narrow, and
+  // upstream can add fields additively without a breaking change.
+  const withDiscount: AccountFees = {
+    ...fees,
+    discounts: [{ kind: "referral", basis_points: 1 }],
+  };
+  assert.equal(withDiscount.discounts[0]!.kind, "referral");
 });
 
 test("spec drift check passes against the vendored spec", () => {

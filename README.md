@@ -87,12 +87,69 @@ await client.cancelOrder(order.id);
 Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account (`getAccount`, `getAccountSummary`,
-`getEquityHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
+`getAccountState`, `getAccountFees`, `getEquityHistory`,
+`getPortfolioHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
 `createDeposit`, `getDeposits`, `getWithdrawals`, `claimFaucet`, `adjustMargin`);
 positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
 `placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
+
+### Portfolio
+
+`getAccountState` returns the whole account in one call — the summary aggregates
+plus every open position — built from a single coherent read, so
+`summary.open_positions_count` always matches `positions.length`. Prefer it over
+pairing `getAccountSummary` with `getPositions`.
+
+```ts
+const { summary, positions } = await client.getAccountState();
+// `withdrawable` is free margin floored at zero: exactly what can leave the
+// account, already net of initial margin and open-order reservations.
+console.log(summary.withdrawable, positions.length);
+
+// Per-position risk detail. Every derived field is nullable and carries a
+// paired `*_error` reason — null means "not computed", never zero.
+for (const p of positions) {
+  console.log(p.market_id, p.notional_value ?? p.notional_value_error);
+  console.log(p.roe ?? p.roe_error, p.margin_used, p.max_leverage);
+  // Paid-positive: > 0 means this position has paid funding.
+  console.log(p.funding_paid);
+}
+```
+
+`getPortfolioHistory` returns equity, cumulative trading PnL, and cumulative
+traded volume over a `window`, oldest first. Omit `window` to take the server's
+`day` default, and read `window`/`cadence_ms` off the response rather than
+assuming what was served.
+
+| window  | cadence | max points | span |
+| ------- | ------- | ---------- | ---- |
+| `day`   | 5 min   | 288        | 24 h |
+| `week`  | 1 h     | 168        | 7 d  |
+| `month` | 6 h     | 120        | 30 d |
+| `all`   | 1 d     | 366        | ~1 y |
+
+```ts
+const history = await client.getPortfolioHistory({ window: "week" });
+for (const p of history.points) {
+  // Decimal strings — parse with a decimal type, never a float. (Note
+  // `EquityPoint.equity` from `getEquityHistory` is a JSON number instead.)
+  console.log(p.timestamp_ms, p.equity, p.pnl, p.volume);
+}
+```
+
+`getAccountFees` reports the effective fee schedule. `maker_fee_bps` may be
+negative — that's a rebate, not an error — and `tier` / `schedule` are open
+strings that will gain values when the fee model lands, so don't switch
+exhaustively on them.
+
+```ts
+const fees = await client.getAccountFees();
+console.log(fees.maker_fee_bps, fees.taker_fee_bps, fees.tier, fees.schedule);
+// True when the rolling window may undercount (source fill buffer was full).
+console.log(fees.volume_30d, fees.volume_30d_estimated);
+```
 
 ## Pagination
 

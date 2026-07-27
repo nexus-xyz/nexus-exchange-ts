@@ -443,3 +443,104 @@ test("a header override with control characters is rejected at construction", ()
     TransportError,
   );
 });
+
+// ─── Portfolio parity (spec v0.7.2, ENG-6458) ────────────────────────────────
+
+test("getAccountState hits /account/state and decodes summary + positions", async () => {
+  const state = {
+    summary: { total_equity: "1000.00", withdrawable: "250.00" },
+    positions: [{ market_id: "BTC-USDX-PERP", funding_paid: "0" }],
+  };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(state), { status: 200 }),
+  );
+  const got = await client.getAccountState();
+
+  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/state");
+  assert.equal(calls[0]!.method, "GET");
+  // Signed: the consolidated snapshot is account-scoped.
+  assert.equal(calls[0]!.headers.get("x-api-key"), "nx_test");
+  assert.equal(got.summary.withdrawable, "250.00");
+  assert.equal(got.positions.length, 1);
+});
+
+test("getAccountFees decodes a negative maker rebate and open tier/schedule", async () => {
+  const fees = {
+    maker_fee_bps: -2,
+    taker_fee_bps: 5,
+    tier: "base",
+    schedule: "standard",
+    volume_30d: "101005.00",
+    volume_30d_estimated: false,
+    discounts: [],
+  };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(fees), { status: 200 }),
+  );
+  const got = await client.getAccountFees();
+
+  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/fees");
+  // A rebate is negative — it must survive decoding, not be clamped or dropped.
+  assert.equal(got.maker_fee_bps, -2);
+  assert.equal(got.volume_30d_estimated, false);
+  assert.deepEqual(got.discounts, []);
+});
+
+test("getPortfolioHistory omits the window param entirely when not given", async () => {
+  const body = { window: "day", cadence_ms: 300000, points: [] };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(body), { status: 200 }),
+  );
+  const got = await client.getPortfolioHistory();
+
+  // No `window=`/`limit=` — the server applies its documented `day` default,
+  // rather than the SDK hard-coding a default that could drift from the spec.
+  assert.equal(
+    calls[0]!.url,
+    "http://localhost:9090/api/v1/account/portfolio-history",
+  );
+  // The served window is authoritative and echoed back.
+  assert.equal(got.window, "day");
+  assert.equal(got.cadence_ms, 300000);
+});
+
+test("getPortfolioHistory signs the exact query string it sends", async () => {
+  const body = {
+    window: "week",
+    cadence_ms: 3600000,
+    points: [
+      {
+        timestamp_ms: 1_700_000_000_000,
+        equity: "1000.50",
+        pnl: "-25.25",
+        volume: "50000.00",
+      },
+    ],
+  };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(body), { status: 200 }),
+  );
+  const got = await client.getPortfolioHistory({ window: "week", limit: 168 });
+
+  const c = calls[0]!;
+  // Insertion order is preserved, so the canonical query and the wire query are
+  // byte-identical — a mismatch here would make every request fail HMAC checks.
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/account/portfolio-history?window=week&limit=168",
+  );
+  const ts = c.headers.get("x-timestamp")!;
+  const expected = referenceSignature(
+    ts,
+    "GET",
+    "/api/v1/account/portfolio-history",
+    "window=week&limit=168",
+    Buffer.alloc(0),
+  );
+  assert.equal(c.headers.get("x-signature"), expected);
+
+  // Monetary fields stay lossless decimal strings — never coerced to a float.
+  assert.equal(got.points[0]!.equity, "1000.50");
+  assert.equal(got.points[0]!.pnl, "-25.25");
+  assert.equal(typeof got.points[0]!.volume, "string");
+});
