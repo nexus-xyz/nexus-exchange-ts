@@ -320,6 +320,40 @@ function buildQuery(
 }
 
 /**
+ * Reject a `limit` outside the bounds its spec parameter schema declares, before
+ * the request is signed and sent.
+ *
+ * `minimum`/`maximum` on a query parameter are normative constraints on the
+ * *request*, so a conforming client must not send an out-of-range value. Where
+ * the spec also says the server clamps rather than rejects, that describes how
+ * the server tolerates non-conforming input — it is not licence for the client
+ * to send it. Catching it here turns a signed round trip that can only ever
+ * return `400` into an immediate, local error naming the bound.
+ *
+ * Note `String(v)` in {@link buildQuery} would otherwise forward `NaN` and
+ * `Infinity` as the literal query values `limit=NaN` / `limit=Infinity`; both
+ * fail `Number.isInteger`, so they are rejected here.
+ *
+ * Throws a plain `RangeError` rather than a `NexusExchangeError`: this is a
+ * caller bug caught locally, not an API or transport failure, so it must not be
+ * caught by `catch (e) { if (e.transient) retry() }` handling — retrying an
+ * out-of-range argument can never succeed.
+ */
+function assertLimitInRange(
+  limit: number | undefined,
+  min: number,
+  max: number,
+): void {
+  if (limit === undefined) return;
+  if (!Number.isInteger(limit) || limit < min || limit > max) {
+    throw new RangeError(
+      `limit must be an integer in [${min}, ${max}] (the spec's parameter ` +
+        `schema for this endpoint); got ${limit}`,
+    );
+  }
+}
+
+/**
  * Combine an optional caller signal with a fresh timeout signal, so a request
  * aborts on whichever fires first and never hangs indefinitely. Falls back
  * gracefully if `AbortSignal.any` is unavailable.
@@ -624,16 +658,29 @@ export class Client {
    *
    * Omit `window` to take the server's `day` default — always read
    * `window`/`cadence_ms` off the response rather than assuming what was served.
-   * `limit` is clamped server-side to the window's capacity (day 288, week 168,
-   * month 120, all 366), not rejected.
+   *
+   * `limit` is bounded by the spec's parameter schema to an integer in
+   * `[1, 366]`; anything else rejects with a {@link RangeError} locally rather
+   * than spending a signed round trip on a guaranteed `400`. Within that range
+   * the server clamps further to the selected window's capacity (day 288, week
+   * 168, month 120, all 366) instead of rejecting, so a `limit` larger than the
+   * window holds is fine — read `points.length` off the response.
+   *
+   * The returned promise **rejects** with `RangeError`; it is not thrown
+   * synchronously. `async` here is load-bearing for that: every other failure
+   * mode of every method on this client (including `MissingCredentialsError`,
+   * likewise a caller bug) arrives as a rejection, so a caller who writes
+   * `client.getPortfolioHistory(…).catch(…)` without `await` must not get an
+   * exception through a second channel that the `.catch` cannot see.
    */
-  getPortfolioHistory(
+  async getPortfolioHistory(
     opts: {
       window?: PortfolioWindow;
       limit?: number;
       signal?: AbortSignal;
     } = {},
   ): Promise<PortfolioHistory> {
+    assertLimitInRange(opts.limit, 1, 366);
     const query = buildQuery({ window: opts.window, limit: opts.limit });
     return this.#request<PortfolioHistory>(
       "GET",
@@ -885,19 +932,36 @@ export class Client {
   // `for await (const item of …)`. Set the per-page limit with `.pageSize(n)`
   // and cap total pages with `.maxPages(n)`.
   //
-  // The underlying REST endpoints currently accept only a `limit` and return a
-  // bare array with no next-page cursor, so today a paginator resolves to a
-  // single page. The seam is deliberate: once the server starts returning a
-  // cursor, `#pageFetcherFrom` will thread it through `PageRequest.cursor` and
-  // these same methods auto-page across every page with no change to callers.
+  // KNOWN GAP — every paginator below resolves to a SINGLE page.
+  //
+  // This used to be a faithful description of the server: the endpoints took
+  // only a `limit` and returned a bare array with no cursor. As of the vendored
+  // spec v0.7.2 that is no longer true. All five paginated GETs — `/fills`,
+  // `/orders/history`, `/positions/closed`, `/account/equity-history`, and
+  // `/markets/{market_id}/trades` — now accept the shared `cursor` query
+  // parameter and return the next page's token in the `X-Next-Cursor` response
+  // header. `#pageFetcherFrom` does not thread it yet, so `.all()` returns only
+  // the first page and reports `isLastPage === true`: on an account with more
+  // history than one page fits, these methods UNDER-REPORT SILENTLY.
+  //
+  // Threading `X-Next-Cursor` through `PageRequest.cursor` is the tracked
+  // follow-up (it needs `#request` to surface response headers, which it does
+  // not today). The seam below is where it lands, with no change to callers.
+  // Until then, prefer the non-paginated methods with an explicit `limit` when
+  // completeness matters.
 
   /**
    * Adapt a `limit`-only list endpoint into a {@link FetchPage} for a
-   * {@link Paginator}. The endpoint returns a bare array today (no server
-   * cursor), so each fetched page is terminal (`nextCursor: null`); the
-   * paginator therefore resolves to a single page. `fetchArray` receives the
-   * per-page limit (or `undefined` when none was configured) and the abort
-   * signal so cancellation still flows through auto-paging.
+   * {@link Paginator}. `fetchArray` receives the per-page limit (or `undefined`
+   * when none was configured) and the abort signal so cancellation still flows
+   * through auto-paging.
+   *
+   * Every page is reported terminal (`nextCursor: null`) because the decoded
+   * body is all we have here — `#request` returns `T` and discards the response
+   * headers, so the `X-Next-Cursor` that spec v0.7.2 added is not reachable from
+   * this seam. See the KNOWN GAP note above: this is the single line that makes
+   * the paginators stop after one page, and the one to change once headers are
+   * plumbed through.
    */
   #pageFetcherFrom<T>(
     fetchArray: (

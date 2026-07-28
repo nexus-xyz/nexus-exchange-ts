@@ -38,25 +38,46 @@ const client = new Client({ network, apiKey, apiSecret });
 // One coherent read: the summary aggregates and every open position together,
 // so open_positions_count can't disagree with positions.length.
 const { summary, positions } = await client.getAccountState();
+// `withdrawable` arrived in v0.7.2 and the schema guarantees no property, so an
+// older deployment omits it. Never coalesce that to "0" — "not reported" and
+// "nothing withdrawable" are different answers and only one is safe to act on.
+const withdrawable = summary.withdrawable ?? "<not reported by this server>";
 console.log(
-  `equity=${summary.total_equity}  withdrawable=${summary.withdrawable}  ` +
+  `equity=${summary.total_equity}  withdrawable=${withdrawable}  ` +
     `margin_used=${summary.margin_used}  positions=${positions.length}`,
 );
 
-// Each derived risk field is nullable and pairs with a `*_error` reason. Show
-// the reason instead of the value when it's absent — null is "not computed",
-// never zero.
+/**
+ * Render one derived risk field. Each has three distinct states, and collapsing
+ * them is how you end up printing `<undefined>` (or worse, `0`):
+ *   - a value  — computed and authoritative
+ *   - `null`   — reported, not computable; the paired `*_error` says why
+ *   - absent   — this server predates v0.7.2 and does not report the field
+ */
+const detail = (
+  value: string | number | null | undefined,
+  reason: string | null | undefined,
+): string =>
+  value === null || value === undefined
+    ? reason
+      ? `<${reason}>`
+      : "<not reported>"
+    : // Explicit, so a legitimate numeric 0 (max_leverage) still prints as "0"
+      // rather than being swallowed by a falsy check.
+      String(value);
+
 for (const p of positions) {
-  const notional = p.notional_value ?? `<${p.notional_value_error}>`;
-  const roe = p.roe ?? `<${p.roe_error}>`;
-  const marginUsed = p.margin_used ?? `<${p.margin_used_error}>`;
-  const maxLev = p.max_leverage ?? `<${p.max_leverage_error}>`;
-  const lev = p.leverage ?? `<${p.leverage_error}>`;
+  const notional = detail(p.notional_value, p.notional_value_error);
+  const roe = detail(p.roe, p.roe_error);
+  const marginUsed = detail(p.margin_used, p.margin_used_error);
+  const maxLev = detail(p.max_leverage, p.max_leverage_error);
+  const lev = detail(p.leverage, p.leverage_error);
   console.log(
     `  ${p.market_id}  ${p.side} ${p.size} @ ${p.entry_price}\n` +
       `    notional=${notional}  roe=${roe}  margin_used=${marginUsed}\n` +
       // Paid-positive: a positive value means this position has PAID funding.
-      `    leverage=${lev}  max_leverage=${maxLev}  funding_paid=${p.funding_paid}`,
+      `    leverage=${lev}  max_leverage=${maxLev}  ` +
+      `funding_paid=${p.funding_paid ?? "<not reported>"}`,
   );
 }
 

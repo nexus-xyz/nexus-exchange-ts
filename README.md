@@ -118,6 +118,16 @@ for (const p of positions) {
 }
 ```
 
+The fields v0.7.2 added — `withdrawable` and the per-position risk detail — are
+typed **optional**, because the schemas mark nothing as required and a server
+older than v0.7.2 omits them outright. So each has three states, and they are
+worth keeping apart: a value, `null` (reported but not computable — read the
+paired `*_error`), or `undefined` (this server does not report the field at all).
+`?? fallback` collapses the last two, which is usually what you want; reach for
+`=== undefined` to tell an old server apart from a degraded field. Never coalesce
+a missing `withdrawable` to `"0"` — "not reported" and "nothing withdrawable" are
+different answers and only one of them is safe to act on.
+
 `getPortfolioHistory` returns equity, cumulative trading PnL, and cumulative
 traded volume over a `window`, oldest first. Omit `window` to take the server's
 `day` default, and read `window`/`cadence_ms` off the response rather than
@@ -129,6 +139,11 @@ assuming what was served.
 | `week`  | 1 h     | 168        | 7 d  |
 | `month` | 6 h     | 120        | 30 d |
 | `all`   | 1 d     | 366        | ~1 y |
+
+`limit` is optional and bounded by the spec to an integer in `[1, 366]`; the SDK
+rejects anything else with a `RangeError` before signing, rather than spending a
+round trip on a guaranteed `400`. Within range the server clamps further to the
+window's capacity above, so asking for more points than a window holds is fine.
 
 ```ts
 const history = await client.getPortfolioHistory({ window: "week" });
@@ -177,6 +192,16 @@ const recent = await client
 
 The paginator drives the cursor for you: no request is issued until the first
 page is pulled, and it stops safely on a stuck or non-advancing server cursor.
+
+> [!WARNING]
+> **These paginators currently stop after the first page.** Spec v0.7.2 added a
+> `cursor` query parameter and an `X-Next-Cursor` response header to all five
+> endpoints, but the SDK does not thread the cursor yet, so `.all()` returns the
+> first page and reports `isLastPage === true` rather than raising. On an account
+> with more history than one page holds, that under-reports **silently**. Until
+> it lands, use the non-paginated methods (`getFills`, `getOrderHistory`,
+> `getEquityHistory`, `getClosedPositions`, `fetchTrades`) with an explicit
+> `limit` when completeness matters.
 
 ### Wallet sign-in, sessions & API-key management
 

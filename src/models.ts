@@ -553,6 +553,25 @@ export type PositionFieldError = OpenUnion<
  * is derived from inputs the indexer may not have, and each carries a paired
  * `*_error` field naming the reason when it is `null`. Always null-check before
  * doing arithmetic — a missing mark price yields `null`, not `0`.
+ *
+ * Those v0.7.2 fields are also **optional**, which is a distinct thing from
+ * nullable and worth reading carefully:
+ *
+ * - `undefined` — the server did not report the field at all. Every deployment
+ *   older than v0.7.2 behaves this way, and the spec permits it: this schema has
+ *   **no `required` array**, so no property is contractually guaranteed.
+ * - `null` — reported, but not computable. Read the paired `*_error` for why.
+ * - a value — computed and authoritative.
+ *
+ * `?? fallback` collapses the first two, which is usually what you want. Reach
+ * for `=== undefined` only to tell an old server apart from a degraded field.
+ *
+ * The seven pre-v0.7.2 properties are left non-optional despite the same missing
+ * `required` array. That is deliberate and narrow: re-typing them now would turn
+ * every existing `position.size` read into a compile error, and unlike the new
+ * fields there is no deployment in which they are actually absent. Aligning the
+ * whole schema (and the sibling SDKs, which disagree three ways here) wants one
+ * cross-SDK decision, not a unilateral change buried in a feature PR.
  */
 export interface Position {
   market_id: string;
@@ -571,24 +590,24 @@ export interface Position {
    * `1 / initial_margin_rate` or infer it from {@link margin_used} — that
    * collapses to a per-market constant, not the real leverage.
    */
-  leverage: number | null;
+  leverage?: number | null;
   /** Why {@link leverage} is `null`, or `null` when it is populated. */
-  leverage_error: PositionFieldError | null;
+  leverage_error?: PositionFieldError | null;
   /**
    * Position notional value (`|size| × mark price`) as a decimal string, or
    * `null` when the mark price is unavailable (see {@link notional_value_error}).
    */
-  notional_value: Decimal | null;
+  notional_value?: Decimal | null;
   /** Why {@link notional_value} is `null`, or `null` when it is populated. */
-  notional_value_error: PositionFieldError | null;
+  notional_value_error?: PositionFieldError | null;
   /**
    * Return on initial margin (`unrealized_pnl / margin_used`) as a decimal
    * string, or `null` when an input is unavailable or margin is zero (see
    * {@link roe_error}).
    */
-  roe: Decimal | null;
+  roe?: Decimal | null;
   /** Why {@link roe} is `null`, or `null` when it is populated. */
-  roe_error: PositionFieldError | null;
+  roe_error?: PositionFieldError | null;
   /**
    * Initial-margin requirement held against this position
    * (`notional_value × initial_margin_rate`, under the engine's cross-margin
@@ -596,25 +615,29 @@ export interface Position {
    * {@link margin_used_error}). Isolated/custom margin allocations are not
    * mirrored by the indexer.
    */
-  margin_used: Decimal | null;
+  margin_used?: Decimal | null;
   /** Why {@link margin_used} is `null`, or `null` when it is populated. */
-  margin_used_error: PositionFieldError | null;
+  margin_used_error?: PositionFieldError | null;
   /**
    * Maximum leverage allowed for this market, matching `max_leverage` on
    * {@link MarketRiskParams}, or `null` when market params are unavailable (see
    * {@link max_leverage_error}).
    */
-  max_leverage: number | null;
+  max_leverage?: number | null;
   /** Why {@link max_leverage} is `null`, or `null` when it is populated. */
-  max_leverage_error: PositionFieldError | null;
+  max_leverage_error?: PositionFieldError | null;
   /**
    * Cumulative funding paid on this position, as a decimal string.
    *
    * Sign is **paid-positive**: positive means the position has *paid* funding,
-   * negative means it has *received* funding. Always present — `"0"` when no
-   * funding has accrued. Bounded by the funding history the indexer retains.
+   * negative means it has *received* funding. Bounded by the funding history the
+   * indexer retains.
+   *
+   * Never `null`: a v0.7.2+ server always reports a value, using `"0"` when no
+   * funding has accrued. `undefined` therefore means only one thing here — the
+   * server predates v0.7.2 — and it must not be read as "no funding paid".
    */
-  funding_paid: Decimal;
+  funding_paid?: Decimal;
 }
 
 /** A closed position record (`GET /positions/closed`). */
@@ -654,8 +677,17 @@ export interface AccountPortfolioSummary {
    * prefer this over {@link available_margin} when deciding what to withdraw.
    * Derived from the authoritative margin view: the endpoint fails closed with
    * `502` rather than reporting a local estimate when that view is unavailable.
+   *
+   * **Optional**, and the distinction matters here more than anywhere else on
+   * this schema: added in spec v0.7.2, so a deployment older than that omits it
+   * entirely, and this schema has no `required` array to guarantee otherwise.
+   * `undefined` means "this server does not report withdrawable balance" — do
+   * **not** coalesce it to `"0"`, which reads as "nothing is withdrawable" and
+   * is indistinguishable from a genuinely empty account. Fail the operation or
+   * fall back to {@link available_margin} explicitly, and note the fail-closed
+   * `502` guarantee above only covers a server that implements the field at all.
    */
-  withdrawable: Decimal;
+  withdrawable?: Decimal;
   /** Present only when the early-access gate is active. */
   early_access_allowed?: boolean;
 }
@@ -815,6 +847,16 @@ export interface AccountFees {
    * `true` when {@link volume_30d} may **undercount**: the source fill buffer was
    * at capacity, so some older in-window fills may have been evicted. `false`
    * when the full 30-day window is covered.
+   *
+   * Typed non-optional because the spec lists it in `AccountFees.required` —
+   * unlike the `Position` / `AccountPortfolioSummary` fields, which have no
+   * `required` array and are therefore optional here.
+   *
+   * Beware the asymmetry if you harden against a *non-conforming* server that
+   * omits it: `undefined` is **falsy**, so a plain `if (fees.volume_30d_estimated)`
+   * silently treats a missing field as a positive claim of full 30-day coverage —
+   * the unsafe direction. Test `fees.volume_30d_estimated === false` when you
+   * need that claim, and treat anything else as possibly-estimated.
    */
   volume_30d_estimated: boolean;
   /**
