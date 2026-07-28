@@ -27,29 +27,71 @@ function findReleaseAs(node: unknown, path = "$"): string[] {
   return [];
 }
 
-// `release-as` forces every release to one literal version. It is a ONE-SHOT
-// override — committing it freezes the version permanently, so release-please
-// re-proposes an already-published version forever and no later release can be
-// cut. That bug stalled this repo at 0.1.0 (ENG-7413) and nexus-exchange-cli
-// before it (ENG-4341), so it is worth a standing guard rather than a comment.
+/**
+ * Effective releaser config per package: root keys are defaults, and a matching
+ * key in a `packages` entry overrides them.
+ *
+ * Both sides are the same shape upstream — the root composes
+ * `allOf: [{$ref: ReleaserConfigOptions}]` and `packages`'
+ * `additionalProperties` is that identical `$ref` — so every option is valid in
+ * either place and the per-package one wins. Any check that reads only the root
+ * can therefore be defeated by an override, which is why this resolves the merge
+ * rather than reading the root directly.
+ */
+function effectiveConfigs(
+  config: unknown,
+): { name: string; options: Record<string, unknown> }[] {
+  const { packages, ...root } = config as {
+    packages?: Record<string, Record<string, unknown>>;
+  } & Record<string, unknown>;
+  const entries = Object.entries(packages ?? {});
+  // No `packages` at all would mean nothing is released, but resolve the root on
+  // its own rather than vacuously passing.
+  if (entries.length === 0) return [{ name: "<root>", options: root }];
+  return entries.map(([name, pkg]) => ({ name, options: { ...root, ...pkg } }));
+}
+
+// `release-as` forces every release to one literal version. It is NOT one-shot:
+// as config it is persistent by design, which is exactly why it froze this repo
+// — release-please re-proposed an already-published version forever and no later
+// release could be cut. (The one-shot form is the `Release-As:` *commit footer*;
+// to seed a first version, `initial-version` sets a starting point without the
+// stickiness.) That bug stalled this repo at 0.1.0 (ENG-7413) and
+// nexus-exchange-cli before it (ENG-4341), so it earns a standing guard.
 test("release-please-config.json pins no release-as (ENG-7413, ENG-4341)", () => {
   const found = findReleaseAs(readJson("release-please-config.json"));
   assert.deepEqual(
     found,
     [],
-    `release-as must never be committed — it freezes the version and blocks ` +
-      `every later release. Found at: ${found.join(", ")}. If you need a ` +
-      `one-off version, use the release-please "Release-As:" commit footer.`,
+    `release-as must never be committed — it is persistent config, so it ` +
+      `freezes the version and blocks every later release. Found at: ` +
+      `${found.join(", ")}. For a one-off version use the "Release-As:" ` +
+      `commit footer; to seed a first version use "initial-version".`,
   );
 });
 
 // Without these, a 0.x repo would take release-please's default semantics and
 // silently stop following the pre-1.0 policy documented in AGENTS.md: breaking
-// changes bump the minor slot, features and fixes bump the patch slot.
-test("the pre-1.0 bump policy stays configured", () => {
-  const cfg = readJson("release-please-config.json") as Record<string, unknown>;
-  assert.equal(cfg["bump-minor-pre-major"], true);
-  assert.equal(cfg["bump-patch-for-minor-pre-major"], true);
+// changes bump the minor slot, features and fixes bump the patch slot. Checked
+// per package, not at the root: `packages["."]["bump-minor-pre-major"] = false`
+// would leave a root-only assertion green while the policy was off, and the next
+// breaking change would then propose 1.0.0 to npm.
+test("the pre-1.0 bump policy stays configured for every package", () => {
+  const configs = effectiveConfigs(readJson("release-please-config.json"));
+  assert.ok(configs.length > 0, "no packages resolved from the config");
+  for (const { name, options } of configs) {
+    assert.equal(
+      options["bump-minor-pre-major"],
+      true,
+      `bump-minor-pre-major must be true for package "${name}" (root default ` +
+        `or its own override) — otherwise a breaking change proposes 1.0.0`,
+    );
+    assert.equal(
+      options["bump-patch-for-minor-pre-major"],
+      true,
+      `bump-patch-for-minor-pre-major must be true for package "${name}"`,
+    );
+  }
 });
 
 // release-please bumps the version in three places at once (package.json, the
@@ -66,7 +108,14 @@ test("package.json, the release manifest, and SDK_VERSION agree", () => {
   const sdkVersion = /export const SDK_VERSION = "([^"]+)"/.exec(src);
 
   assert.ok(sdkVersion, "could not parse SDK_VERSION from src/version.ts");
-  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  // Prerelease and build metadata allowed: a `0.2.0-rc.1` is a legitimate
+  // release-please output, and a stricter pattern would fail CI on a correct
+  // state. The point of this assertion is that the version is semver-shaped at
+  // all, not which channel it is on.
+  assert.match(
+    pkg.version,
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+  );
   assert.equal(
     manifest["."],
     pkg.version,
