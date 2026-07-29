@@ -38,6 +38,12 @@ export {
   Network,
   baseUrlForNetwork,
   DEFAULT_USER_AGENT,
+  // Per-endpoint `limit` (page size) maxima for the cursor-paginated endpoints.
+  TRADES_LIMIT_MAX,
+  FILLS_LIMIT_MAX,
+  ORDER_HISTORY_LIMIT_MAX,
+  CLOSED_POSITIONS_LIMIT_MAX,
+  EQUITY_HISTORY_LIMIT_MAX,
   type ClientOptions,
 } from "./client.js";
 
@@ -46,6 +52,7 @@ export {
   ApiError,
   TransportError,
   MissingCredentialsError,
+  InvalidRequestError,
   sanitizeErrorBody,
 } from "./errors.js";
 

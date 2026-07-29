@@ -14,6 +14,7 @@
 
 import {
   ApiError,
+  InvalidRequestError,
   MissingCredentialsError,
   NexusExchangeError,
   TransportError,
@@ -21,7 +22,7 @@ import {
 } from "./errors.js";
 import { signRequest } from "./sign.js";
 import { API_VERSION, SDK_VERSION } from "./version.js";
-import { Page, Paginator } from "./pagination.js";
+import { Cursor, Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
 import type { EthSigner } from "./wallet.js";
 import type {
@@ -80,6 +81,43 @@ export const DEFAULT_USER_AGENT = `nexus-exchange-ts/${SDK_VERSION}`;
 
 /** Advisory header carrying the pinned spec tag the SDK was compiled against. */
 const HEADER_API_VERSION = "x-nexus-api-version";
+
+/**
+ * Response header carrying the opaque cursor for the next page of a paginated
+ * list endpoint.
+ *
+ * Present **only when more results exist**; absent on the last page. The body of
+ * a paginated list endpoint stays a bare JSON array, so pagination state rides
+ * exclusively in this header — reading it is the only way to page.
+ */
+const HEADER_NEXT_CURSOR = "x-next-cursor";
+
+/**
+ * Largest `limit` (page size) each cursor-paginated list endpoint's request
+ * schema permits. Checked client-side, so a request the schema forbids is never
+ * signed or sent.
+ *
+ * These are **per endpoint and not interchangeable** — a page size that is valid
+ * on `/orders/history` is out of range on `/positions/closed`. Note also what is
+ * *not* here: the spec's `maximum: 366` belongs to `/account/portfolio-history`,
+ * which has no `cursor` parameter and is not paginated; applying it to these
+ * endpoints would reject valid requests, and on `/account/equity-history` it
+ * would sit below that endpoint's own default of 720.
+ */
+export const TRADES_LIMIT_MAX = 1000;
+/** @see {@link TRADES_LIMIT_MAX} */
+export const FILLS_LIMIT_MAX = 1000;
+/** @see {@link TRADES_LIMIT_MAX} */
+export const ORDER_HISTORY_LIMIT_MAX = 500;
+/** @see {@link TRADES_LIMIT_MAX} */
+export const CLOSED_POSITIONS_LIMIT_MAX = 200;
+/**
+ * `/account/equity-history`'s maximum, which is also that endpoint's **default**
+ * — one page already spans the whole ~1h/5s window.
+ *
+ * @see {@link TRADES_LIMIT_MAX}
+ */
+export const EQUITY_HISTORY_LIMIT_MAX = 720;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -255,6 +293,46 @@ function withQuery(path: string, query: string): string {
 /** Encode a single path segment so a slash or other reserved char can't escape it. */
 function seg(value: string): string {
   return encodeURIComponent(value);
+}
+
+/**
+ * Read the next-page cursor out of a response's `X-Next-Cursor` header.
+ *
+ * `null` when the header is absent — the spec's end-of-results signal, not an
+ * error — and also when it is present but blank. A blank cursor cannot be sent
+ * back meaningfully: passing it on as `cursor=` would re-request the first page
+ * forever, so it counts as absent (which terminates the walk).
+ */
+function nextCursorFrom(headers: Headers): Cursor | null {
+  const raw = headers.get(HEADER_NEXT_CURSOR)?.trim();
+  return raw ? new Cursor(raw) : null;
+}
+
+/**
+ * Validate a page size against the endpoint's own spec maximum, before the
+ * request is built (and, on a signed route, before it is signed).
+ *
+ * `maximum` is a constraint on the *request*, so a conforming client does not
+ * send past it — this throws rather than relying on the server to clamp or
+ * reject. The bound is passed in per call site because the paginated maxima
+ * differ per endpoint (see {@link TRADES_LIMIT_MAX}).
+ *
+ * The lower bound is the SDK's own: the endpoints declare no `minimum`, but
+ * `limit=0` would return an empty page, which on a cursor-paginated endpoint
+ * reads as "no more results" and would silently end a walk at zero items.
+ */
+function checkPageSize(
+  limit: number | null | undefined,
+  maximum: number,
+  endpoint: string,
+): number | undefined {
+  if (limit === null || limit === undefined) return undefined;
+  if (!Number.isInteger(limit) || limit < 1 || limit > maximum) {
+    throw new InvalidRequestError(
+      `${endpoint} limit must be an integer between 1 and ${maximum} (got ${limit})`,
+    );
+  }
+  return limit;
 }
 
 /**
@@ -457,11 +535,13 @@ export class Client {
   }
 
   /** `GET /markets/{market_id}/trades` — recent public trades (newest first). */
-  fetchTrades(
+  async fetchTrades(
     marketId: string,
     opts: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<Trade[]> {
-    const query = buildQuery({ limit: opts.limit });
+    const query = buildQuery({
+      limit: checkPageSize(opts.limit, TRADES_LIMIT_MAX, "trades"),
+    });
     return this.#request<Trade[]>("GET", `/markets/${seg(marketId)}/trades`, {
       query,
       signal: opts.signal,
@@ -563,13 +643,19 @@ export class Client {
   }
 
   /** `GET /account/equity-history` — equity samples for the account. */
-  getEquityHistory(
+  async getEquityHistory(
     opts: {
       limit?: number;
       signal?: AbortSignal;
     } = {},
   ): Promise<EquityPoint[]> {
-    const query = buildQuery({ limit: opts.limit });
+    const query = buildQuery({
+      limit: checkPageSize(
+        opts.limit,
+        EQUITY_HISTORY_LIMIT_MAX,
+        "account/equity-history",
+      ),
+    });
     return this.#request<EquityPoint[]>("GET", "/account/equity-history", {
       query,
       signed: true,
@@ -585,21 +671,50 @@ export class Client {
     });
   }
 
-  /** `GET /positions/closed` — closed-position records for the account. */
-  getClosedPositions(opts?: {
-    signal?: AbortSignal;
-  }): Promise<ClosedPosition[]> {
+  /**
+   * `GET /positions/closed` — closed-position records for the account.
+   *
+   * Returns the first page only; use {@link getClosedPositionsPaginated} to walk
+   * the whole history. `limit` bounds the page and must be in
+   * `1..`{@link CLOSED_POSITIONS_LIMIT_MAX}; omit it for the server's default of
+   * 100.
+   */
+  async getClosedPositions(
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ClosedPosition[]> {
+    const query = buildQuery({
+      limit: checkPageSize(
+        opts.limit,
+        CLOSED_POSITIONS_LIMIT_MAX,
+        "positions/closed",
+      ),
+    });
     return this.#request<ClosedPosition[]>("GET", "/positions/closed", {
+      query,
       signed: true,
-      signal: opts?.signal,
+      signal: opts.signal,
     });
   }
 
-  /** `GET /fills` — trade executions for the authenticated account. */
-  getFills(opts?: { signal?: AbortSignal }): Promise<Fill[]> {
+  /**
+   * `GET /fills` — trade executions for the authenticated account.
+   *
+   * Returns the first page only; use {@link getFillsPaginated} to walk the whole
+   * fill history. `limit` bounds the page and must be in
+   * `1..`{@link FILLS_LIMIT_MAX}; omit it for the server's default of 100. (The
+   * spec has documented `limit` on this route since v0.7.1 and the SDK was
+   * sending none at all, so a caller could not even ask for a bigger first page.)
+   */
+  async getFills(
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<Fill[]> {
+    const query = buildQuery({
+      limit: checkPageSize(opts.limit, FILLS_LIMIT_MAX, "fills"),
+    });
     return this.#request<Fill[]>("GET", "/fills", {
+      query,
       signed: true,
-      signal: opts?.signal,
+      signal: opts.signal,
     });
   }
 
@@ -762,13 +877,19 @@ export class Client {
   }
 
   /** `GET /orders/history` — terminal-status (filled/cancelled/rejected/expired) orders. */
-  getOrderHistory(
+  async getOrderHistory(
     opts: {
       limit?: number;
       signal?: AbortSignal;
     } = {},
   ): Promise<OrderHistoryEntry[]> {
-    const query = buildQuery({ limit: opts.limit });
+    const query = buildQuery({
+      limit: checkPageSize(
+        opts.limit,
+        ORDER_HISTORY_LIMIT_MAX,
+        "orders/history",
+      ),
+    });
     return this.#request<OrderHistoryEntry[]>("GET", "/orders/history", {
       query,
       signed: true,
@@ -816,30 +937,49 @@ export class Client {
   // `for await (const item of …)`. Set the per-page limit with `.pageSize(n)`
   // and cap total pages with `.maxPages(n)`.
   //
-  // The underlying REST endpoints currently accept only a `limit` and return a
-  // bare array with no next-page cursor, so today a paginator resolves to a
-  // single page. The seam is deliberate: once the server starts returning a
-  // cursor, `#pageFetcherFrom` will thread it through `PageRequest.cursor` and
-  // these same methods auto-page across every page with no change to callers.
+  // The five endpoints below carry an opaque `cursor` query parameter and
+  // advertise the next page in the `X-Next-Cursor` response header. Absent
+  // header means the last page — not an error, and not a reason to retry. An
+  // empty page that still carries a cursor is NOT the end. A server that hands
+  // back the cursor it was given cannot advance, and `Paginator` stops rather
+  // than re-issuing the identical request forever.
 
   /**
-   * Adapt a `limit`-only list endpoint into a {@link FetchPage} for a
-   * {@link Paginator}. The endpoint returns a bare array today (no server
-   * cursor), so each fetched page is terminal (`nextCursor: null`); the
-   * paginator therefore resolves to a single page. `fetchArray` receives the
-   * per-page limit (or `undefined` when none was configured) and the abort
-   * signal so cancellation still flows through auto-paging.
+   * Build a {@link FetchPage} for a cursor-paginated list endpoint: send the
+   * page size as `limit` and the paginator's cursor as `cursor`, then read the
+   * next cursor back off the `X-Next-Cursor` response header.
+   *
+   * The cursor is passed through verbatim (it is opaque, and only the query
+   * encoder touches it), so on a signed route what is signed equals what is
+   * sent — every page of a walk is independently signed. The page size is
+   * checked against this endpoint's own spec maximum before the request is
+   * built, since {@link Paginator.pageSize} is a builder that cannot report an
+   * error; an out-of-range value therefore surfaces on the first page fetch,
+   * before anything is signed or sent.
    */
-  #pageFetcherFrom<T>(
-    fetchArray: (
-      limit: number | undefined,
-      signal?: AbortSignal,
-    ) => Promise<T[]>,
-    signal?: AbortSignal,
+  #pageFetcher<T>(
+    path: string,
+    opts: {
+      endpoint: string;
+      limitMax: number;
+      signed?: boolean;
+      signal?: AbortSignal;
+    },
   ): FetchPage<T> {
     return async (req) => {
-      const items = await fetchArray(req.limit ?? undefined, signal);
-      return new Page<T>(items, null);
+      const limit = checkPageSize(req.limit, opts.limitMax, opts.endpoint);
+      const query = buildQuery({
+        limit,
+        cursor: req.cursor?.toString(),
+      });
+      const { value, headers } = await this.#requestWithHeaders<T[]>(
+        "GET",
+        path,
+        { query, signed: opts.signed, signal: opts.signal },
+      );
+      // A 204 / empty body decodes to `undefined`; an empty page is a legitimate
+      // response (and, with a cursor, not even the last one).
+      return new Page<T>(value ?? [], nextCursorFrom(headers));
     };
   }
 
@@ -852,67 +992,91 @@ export class Client {
    *   // …
    * }
    * ```
+   *
+   * `.pageSize(n)` must be in `1..`{@link TRADES_LIMIT_MAX}.
    */
   fetchTradesPaginated(
     marketId: string,
     opts: { signal?: AbortSignal } = {},
   ): Paginator<Trade> {
     return new Paginator(
-      this.#pageFetcherFrom<Trade>(
-        (limit, signal) => this.fetchTrades(marketId, { limit, signal }),
-        opts.signal,
-      ),
+      this.#pageFetcher<Trade>(`/markets/${seg(marketId)}/trades`, {
+        endpoint: "trades",
+        limitMax: TRADES_LIMIT_MAX,
+        signal: opts.signal,
+      }),
     );
   }
 
-  /** `GET /fills` as an auto-paging {@link Paginator} of account trade executions. */
+  /**
+   * `GET /fills` as an auto-paging {@link Paginator} of account trade
+   * executions. `.pageSize(n)` must be in `1..`{@link FILLS_LIMIT_MAX}.
+   */
   getFillsPaginated(opts: { signal?: AbortSignal } = {}): Paginator<Fill> {
     return new Paginator(
-      this.#pageFetcherFrom<Fill>(
-        // `getFills` takes no `limit` today; the paginator's page size is a
-        // no-op until the endpoint accepts one, but the surface is uniform.
-        (_limit, signal) => this.getFills({ signal }),
-        opts.signal,
-      ),
+      this.#pageFetcher<Fill>("/fills", {
+        endpoint: "fills",
+        limitMax: FILLS_LIMIT_MAX,
+        signed: true,
+        signal: opts.signal,
+      }),
     );
   }
 
   /**
    * `GET /orders/history` as an auto-paging {@link Paginator} of terminal-status
-   * (filled/cancelled/rejected/expired) orders.
+   * (filled/cancelled/rejected/expired) orders. `.pageSize(n)` must be in
+   * `1..`{@link ORDER_HISTORY_LIMIT_MAX} — lower than the 1000 fills and trades
+   * allow.
    */
   getOrderHistoryPaginated(
     opts: { signal?: AbortSignal } = {},
   ): Paginator<OrderHistoryEntry> {
     return new Paginator(
-      this.#pageFetcherFrom<OrderHistoryEntry>(
-        (limit, signal) => this.getOrderHistory({ limit, signal }),
-        opts.signal,
-      ),
+      this.#pageFetcher<OrderHistoryEntry>("/orders/history", {
+        endpoint: "orders/history",
+        limitMax: ORDER_HISTORY_LIMIT_MAX,
+        signed: true,
+        signal: opts.signal,
+      }),
     );
   }
 
-  /** `GET /account/equity-history` as an auto-paging {@link Paginator} of equity samples. */
+  /**
+   * `GET /account/equity-history` as an auto-paging {@link Paginator} of equity
+   * samples. `.pageSize(n)` must be in `1..`{@link EQUITY_HISTORY_LIMIT_MAX},
+   * which is also the endpoint's default — one page usually spans the whole
+   * window.
+   */
   getEquityHistoryPaginated(
     opts: { signal?: AbortSignal } = {},
   ): Paginator<EquityPoint> {
     return new Paginator(
-      this.#pageFetcherFrom<EquityPoint>(
-        (limit, signal) => this.getEquityHistory({ limit, signal }),
-        opts.signal,
-      ),
+      this.#pageFetcher<EquityPoint>("/account/equity-history", {
+        endpoint: "account/equity-history",
+        limitMax: EQUITY_HISTORY_LIMIT_MAX,
+        signed: true,
+        signal: opts.signal,
+      }),
     );
   }
 
-  /** `GET /positions/closed` as an auto-paging {@link Paginator} of closed-position records. */
+  /**
+   * `GET /positions/closed` as an auto-paging {@link Paginator} of
+   * closed-position records. `.pageSize(n)` must be in
+   * `1..`{@link CLOSED_POSITIONS_LIMIT_MAX} — the smallest of the five maxima,
+   * so a long history takes proportionally more pages.
+   */
   getClosedPositionsPaginated(
     opts: { signal?: AbortSignal } = {},
   ): Paginator<ClosedPosition> {
     return new Paginator(
-      this.#pageFetcherFrom<ClosedPosition>(
-        (_limit, signal) => this.getClosedPositions({ signal }),
-        opts.signal,
-      ),
+      this.#pageFetcher<ClosedPosition>("/positions/closed", {
+        endpoint: "positions/closed",
+        limitMax: CLOSED_POSITIONS_LIMIT_MAX,
+        signed: true,
+        signal: opts.signal,
+      }),
     );
   }
 
@@ -1123,6 +1287,23 @@ export class Client {
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
+    return (await this.#requestWithHeaders<T>(method, path, options)).value;
+  }
+
+  /**
+   * {@link #request}, also returning the response headers.
+   *
+   * Paginated list endpoints advertise the next page **only** in the
+   * `X-Next-Cursor` response header (their body stays a bare array), so the
+   * paginated readers need the headers that `#request` discards. Everything else
+   * — signing, routing, retry, error decoding — is shared, so a paginated request
+   * behaves exactly like any other.
+   */
+  async #requestWithHeaders<T>(
+    method: string,
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<{ value: T; headers: Headers }> {
     const retryable = IDEMPOTENT_METHODS.has(method.toUpperCase());
     let attempt = 0;
     for (;;) {
@@ -1149,7 +1330,7 @@ export class Client {
     method: string,
     path: string,
     options: RequestOptions = {},
-  ): Promise<T> {
+  ): Promise<{ value: T; headers: Headers }> {
     const {
       query = "",
       body,
@@ -1263,9 +1444,9 @@ export class Client {
     }
 
     const text = await res.text();
-    if (!text) return undefined as T;
+    if (!text) return { value: undefined as T, headers: res.headers };
     try {
-      return JSON.parse(text) as T;
+      return { value: JSON.parse(text) as T, headers: res.headers };
     } catch (err) {
       throw new TransportError(
         `failed to parse response body as JSON: ${

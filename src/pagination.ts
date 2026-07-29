@@ -2,12 +2,22 @@
  * Cursor / time auto-paging for list endpoints.
  *
  * List endpoints accept a `limit` and return a page of results plus a cursor
- * pointing at the next page. Rather than make callers hold and re-submit that
- * cursor by hand, the SDK exposes a {@link Paginator} that drives the cursor for
- * you: ask it for the next {@link Page}, iterate every item with
- * {@link Paginator.all}, or consume it item-by-item with `for await (…)` — a
- * `Paginator` is itself an async-iterable (the idiomatic TS analog of the Rust
- * SDK's `into_stream`).
+ * pointing at the next page, carried in the `X-Next-Cursor` response header.
+ * Rather than make callers hold and re-submit that cursor by hand, the SDK
+ * exposes a {@link Paginator} that drives the cursor for you: ask it for the next
+ * {@link Page}, iterate every item with {@link Paginator.all}, or consume it
+ * item-by-item with `for await (…)` — a `Paginator` is itself an async-iterable
+ * (the idiomatic TS analog of the Rust SDK's `into_stream`).
+ *
+ * The `Client` methods that return one are `fetchTradesPaginated`,
+ * `getFillsPaginated`, `getOrderHistoryPaginated`, `getClosedPositionsPaginated`
+ * and `getEquityHistoryPaginated` — the five cursor-paginated GETs.
+ *
+ * Termination: an **absent** `X-Next-Cursor` means the last page (not an error,
+ * and not a reason to retry); an **empty page that still carries a cursor is not
+ * the end**, so a sparse window does not truncate the walk; and a server that
+ * hands back the *same* cursor it was given cannot advance, so the paginator
+ * returns that page and stops rather than re-issuing one request forever.
  *
  * The paginator is generic over how a single page is fetched, so the same
  * machinery serves both cursor-based and time-windowed endpoints: a
