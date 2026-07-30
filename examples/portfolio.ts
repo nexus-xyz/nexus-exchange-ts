@@ -8,7 +8,19 @@
 import { Client, Network } from "../src/index.js";
 import type { PortfolioWindow } from "../src/index.js";
 
-const netArg = process.argv[process.argv.indexOf("--network") + 1];
+/**
+ * Read `--flag <value>` from argv, or `undefined` when the flag is absent.
+ *
+ * `process.argv[process.argv.indexOf(flag) + 1]` on its own is a trap: a
+ * missing flag gives `-1 + 1 === 0`, which reads back `process.argv[0]` — the
+ * node executable path — as though the user had passed it as the value.
+ */
+function flagValue(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  return i === -1 ? undefined : process.argv[i + 1];
+}
+
+const netArg = flagValue("--network");
 const network =
   netArg === "beta"
     ? Network.Beta
@@ -19,9 +31,9 @@ const network =
 // Validate against the closed set rather than forwarding an arbitrary string —
 // the server rejects anything else with 400 (`invalid_window`).
 const WINDOWS: PortfolioWindow[] = ["day", "week", "month", "all"];
-const windowArg = process.argv[process.argv.indexOf("--window") + 1];
+const windowArg = flagValue("--window");
 const window = WINDOWS.find((w) => w === windowArg);
-if (windowArg && !window) {
+if (windowArg !== undefined && !window) {
   console.error(`--window must be one of: ${WINDOWS.join(", ")}`);
   process.exit(1);
 }
