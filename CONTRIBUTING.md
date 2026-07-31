@@ -33,6 +33,27 @@ these pass locally before opening a pull request.
   PR titles (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, …).
 - All changes are reviewed by a code owner before merging.
 
+### How a PR lands
+
+Squash-and-merge is the only method enabled, and the source branch is deleted on
+merge, so one PR is always exactly one commit on `main`.
+
+**That commit's subject is your PR title.** It is the string
+[release-please](https://github.com/googleapis/release-please) parses to pick the
+next version and the changelog section, so a title it cannot parse contributes
+nothing to the bump and files the change under "Other". This is why the
+conventional-commit rule above is about the title and not only the commits on
+your branch.
+
+**Declare a breaking change with `!` before the colon** — `feat!:`,
+`feat(client)!: …`. A `BREAKING CHANGE:` footer also works, but only in a
+**commit** body: the squash commit's body is assembled from the commit messages
+on the branch and never from the PR description, so a footer written only in the
+PR description is dropped at merge. With `bump-minor-pre-major` set in
+`release-please-config.json`, a declared break is a minor bump and an undeclared
+one silently ships as a patch — so the `!` is the difference between `0.x.0` and
+`0.x.y`.
+
 ## API version and the spec
 
 This SDK targets a released version of the Exchange API spec, pinned in
