@@ -22,6 +22,14 @@ jobs:
       - run: pnpm run format:check
       - run: pnpm run lint
       - run: pnpm run typecheck
+      # `typecheck` covers only src/ — it is the build config, which emits dist/
+      # from rootDir: src. This is what checks test/ and examples/ (ENG-7726);
+      # without it `pnpm test` runs through tsx, which strips types without
+      # checking them, so a type-invalid fixture or a broken shipped example
+      # keeps CI green. It is also the only thing pinning the hand-written models
+      # to the spec's field TYPES — check:drift compares schema names and enum
+      # members, never a property's type.
+      - run: pnpm run typecheck:test
       - run: pnpm run build
       # Prove the artifact pnpm would publish installs and imports cleanly — the
       # same check the release workflow re-runs before `pnpm publish`.

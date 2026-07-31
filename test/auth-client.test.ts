@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
 import { Client, Network } from "../src/client.js";
+import type { ClientOptions } from "../src/client.js";
 import { EthSigner } from "../src/wallet.js";
 import { MissingCredentialsError, TransportError } from "../src/errors.js";
 
@@ -20,7 +21,11 @@ interface Captured {
 
 /** Stub a client's fetch, capturing outgoing requests and returning `responder`. */
 function clientWithCapture(
-  options: Parameters<typeof Client>[0],
+  // `ClientOptions`, not `Parameters<typeof Client>[0]`: `Client` is a class, so
+  // `Parameters<T>` (which wants a callable) resolved to `never` — meaning this
+  // helper type-checked NOTHING about the options every caller below passes it.
+  // Matches how test/client.test.ts already types the same thing.
+  options: ClientOptions,
   responder: () => Response | Promise<Response> = () =>
     new Response("{}", { status: 200 }),
 ): { client: Client; calls: Captured[] } {
