@@ -329,20 +329,44 @@ This SDK targets a released version of the Exchange API spec, pinned in
 The spec lives in
 [`nexus-xyz/nexus-exchange-api`](https://github.com/nexus-xyz/nexus-exchange-api).
 
-A drift check (`pnpm run check:drift`, run in CI) keeps four things in lockstep:
+A drift check (`pnpm run check:drift`, run in CI on **every** pull request) keeps
 the pin, the vendored spec, the targeted schema list
-([`spec/schemas.txt`](./spec/schemas.txt)), and the models — and verifies the
-vendored spec still matches the upstream spec at the pinned tag. If the upstream
-spec adds, renames, or removes a schema, the check fails until the models and
-pin are updated to match.
+([`spec/schemas.txt`](./spec/schemas.txt)), the operations manifest
+([`endpoints.txt`](./endpoints.txt)), and the hand-written client and models in
+lockstep. If the upstream spec adds, renames, or removes a schema, an enum
+member, or an operation, the check fails until the SDK and the pin are updated to
+match. It also verifies the vendored spec still **byte-matches** the upstream
+spec at the pinned tag, so the vendored copy can't be hand-edited into agreeing
+with itself.
 
-It also validates enum members _both ways_: every `enum` in the spec must have
-exactly the same members in the matching `src/models.ts` union, so a new
-upstream value (or a stray one the spec dropped) fails the gate. Values the SDK
-deliberately ships ahead of the spec are recorded in
-[`spec/enum-allowlist.txt`](./spec/enum-allowlist.txt), and each allowlist entry
-is itself checked for staleness — it fails once the spec catches up, so the
-allowlist can't accumulate dead grants.
+The invariants that matter most run _both ways_:
+
+- **enum members** — every `enum` in the spec must have exactly the same members
+  in the matching `src/models.ts` union, so a new upstream value (or a stray one
+  the spec dropped) fails the gate. Values the SDK deliberately ships ahead of
+  the spec are recorded in
+  [`spec/enum-allowlist.txt`](./spec/enum-allowlist.txt).
+- **operations** — every line in [`endpoints.txt`](./endpoints.txt) must exist in
+  the spec, and the set must equal the REST operations `src/client.ts` actually
+  implements. So the manifest can neither claim coverage the code lacks nor miss
+  a wrapper someone added, and a mis-prefixed path fails rather than quietly
+  overstating coverage. Spec operations the SDK deliberately does not target are
+  recorded in [`spec/uncovered-ops.txt`](./spec/uncovered-ops.txt), so new
+  upstream surface can't land unnoticed.
+
+Every allowlist entry is itself checked for staleness — it fails once the spec
+catches up or the code moves on, so no list can accumulate dead grants. The
+checker is itself tested: `test/models.test.ts` defeats each invariant in a
+throwaway copy of the drift inputs and asserts the gate goes red, since a green
+run is only worth what proves it can fail.
+
+Spec releases are picked up automatically: `spec-autobump` polls for a newer
+release (and is poked by the spec repo on publish), classifies the delta with
+[oasdiff](https://github.com/oasdiff/oasdiff), re-vendors the spec, and opens a
+labelled PR — `spec-autobump` for a non-breaking delta, `breaking ·
+needs-SDK-update` for one that needs SDK changes. To re-vendor by hand, run
+`pnpm run bump:spec vX.Y.Z`; never edit [`spec/openapi.json`](./spec/openapi.json)
+directly.
 
 ## Releasing
 
