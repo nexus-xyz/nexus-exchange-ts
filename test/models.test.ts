@@ -457,6 +457,9 @@ interface DriftResult {
 function runDriftSandbox(opts: {
   mutateSpec?: (spec: Record<string, unknown>) => void;
   mutateModels?: (src: string) => string;
+  mutateClient?: (src: string) => string;
+  mutateEndpoints?: (text: string) => string;
+  mutateUncovered?: (text: string) => string;
   allowlist?: string;
 }): DriftResult {
   const dir = mkdtempSync(join(tmpdir(), "spec-drift-"));
@@ -483,6 +486,24 @@ function runDriftSandbox(opts: {
     let models = readFileSync(join(REPO, "src", "models.ts"), "utf8");
     if (opts.mutateModels) models = opts.mutateModels(models);
     writeFileSync(join(dir, "src", "models.ts"), models);
+
+    // Operations inputs (invariants F/G/H). Copied through the same mutation
+    // seam as the schema inputs so a single edit — a mis-prefixed manifest line,
+    // a wrapper the manifest doesn't know about — can be proven to flip the gate.
+    let client = readFileSync(join(REPO, "src", "client.ts"), "utf8");
+    if (opts.mutateClient) client = opts.mutateClient(client);
+    writeFileSync(join(dir, "src", "client.ts"), client);
+
+    let endpoints = readFileSync(join(REPO, "endpoints.txt"), "utf8");
+    if (opts.mutateEndpoints) endpoints = opts.mutateEndpoints(endpoints);
+    writeFileSync(join(dir, "endpoints.txt"), endpoints);
+
+    let uncovered = readFileSync(
+      join(REPO, "spec", "uncovered-ops.txt"),
+      "utf8",
+    );
+    if (opts.mutateUncovered) uncovered = opts.mutateUncovered(uncovered);
+    writeFileSync(join(dir, "spec", "uncovered-ops.txt"), uncovered);
 
     if (opts.allowlist !== undefined) {
       writeFileSync(join(dir, "spec", "enum-allowlist.txt"), opts.allowlist);
@@ -566,4 +587,197 @@ test("enum drift: a stale allowlist entry (spec caught up) FAILS until removed",
   assert.equal(r.status, 1);
   assert.match(r.stderr, /stale/);
   assert.match(r.stderr, /OrderRequest\.time_in_force/);
+});
+
+// ─── Operations drift (invariants F/G/H, ENG-7963) ───────────────────────────
+//
+// The schema invariants above never look at which *routes* the SDK calls, so
+// until these landed a wrapper could be added, removed, or pointed at a path no
+// released spec contains and CI would stay green. That is not hypothetical: it is
+// exactly how nexus-exchange-py's endpoints.txt came to list six operations no
+// spec has ever defined, five of them a path-prefix mistake (ENG-7958). Each test
+// below defeats one invariant and asserts the gate goes red.
+
+/** Drop a line from a `METHOD /path` manifest. */
+function withoutOp(text: string, op: string): string {
+  const lines = text.split("\n");
+  const kept = lines.filter((l) => l.trim() !== op);
+  assert.equal(
+    kept.length,
+    lines.length - 1,
+    `expected exactly one ${JSON.stringify(op)} line to remove`,
+  );
+  return kept.join("\n");
+}
+
+/** Replace `find` with `replacement` exactly once, asserting it was there. */
+function replaceOnce(src: string, find: string, replacement: string): string {
+  const parts = src.split(find);
+  assert.equal(
+    parts.length,
+    2,
+    `expected exactly one occurrence of ${JSON.stringify(find)}`,
+  );
+  return parts.join(replacement);
+}
+
+test("ops drift: FAILS when endpoints.txt lists an operation the spec lacks", () => {
+  // The py bug in miniature: right operation, path the spec does not define. The
+  // client is untouched, so only the manifest -> spec direction can catch it.
+  const r = runDriftSandbox({
+    mutateEndpoints: (t) =>
+      replaceOnce(t, "GET /api/v1/tickers\n", "GET /api/v1/tickerz\n"),
+  });
+  assert.equal(r.status, 1);
+  assert.match(
+    r.stderr,
+    /operation\(s\) in endpoints\.txt are NOT in the spec/,
+  );
+  assert.match(r.stderr, /GET \/api\/v1\/tickerz/);
+});
+
+test("ops drift: FAILS when the spec gains an operation neither list knows", () => {
+  const r = runDriftSandbox({
+    mutateSpec: (spec) => {
+      (spec.paths as Record<string, unknown>)["/api/v1/brand-new"] = {
+        get: {},
+      };
+    },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /neither targeted by endpoints\.txt nor recorded/);
+  assert.match(r.stderr, /GET \/api\/v1\/brand-new/);
+});
+
+test("ops drift: FAILS on an uncovered-ops entry the spec no longer defines", () => {
+  const r = runDriftSandbox({
+    mutateSpec: (spec) => {
+      delete (spec.paths as Record<string, unknown>)["/admin/tiers"];
+    },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /uncovered-ops\.txt entr\(ies\) the spec no longer/);
+  assert.match(r.stderr, /GET \/admin\/tiers/);
+});
+
+test("ops drift: FAILS on an uncovered-ops entry that is now targeted", () => {
+  const r = runDriftSandbox({
+    mutateEndpoints: (t) => `${t}GET /markets\n`,
+  });
+  assert.equal(r.status, 1);
+  assert.match(
+    r.stderr,
+    /uncovered-ops\.txt entr\(ies\) that ARE now targeted/,
+  );
+  assert.match(r.stderr, /GET \/markets/);
+});
+
+test("ops drift: FAILS when a wrapper exists but endpoints.txt doesn't list it", () => {
+  const r = runDriftSandbox({
+    mutateEndpoints: (t) => withoutOp(t, "GET /api/v1/stats/history"),
+  });
+  assert.equal(r.status, 1);
+  assert.match(
+    r.stderr,
+    /implemented in src\/client\.ts but NOT in endpoints\.txt/,
+  );
+  assert.match(r.stderr, /GET \/api\/v1\/stats\/history/);
+});
+
+test("ops drift: FAILS when endpoints.txt lists an operation no wrapper implements", () => {
+  // `GET /markets` is a real spec operation the client has no method for, so the
+  // manifest cannot be allowed to claim it.
+  const r = runDriftSandbox({
+    mutateEndpoints: (t) => `${t}GET /markets\n`,
+    mutateUncovered: (t) => withoutOp(t, "GET /markets"),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no implementing method in src\/client\.ts/);
+  assert.match(r.stderr, /GET \/markets/);
+});
+
+test("ops drift: FAILS on a CODE_ONLY_OPS entry the client no longer implements", () => {
+  const r = runDriftSandbox({
+    mutateClient: (src) =>
+      replaceOnce(src, '"POST", "/faucet"', '"POST", "/faucet-renamed"'),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /CODE_ONLY_OPS entr\(ies\) no longer implemented/);
+  assert.match(r.stderr, /POST \/api\/v1\/faucet/);
+});
+
+test("ops drift: FAILS on a CODE_ONLY_OPS entry the spec has caught up on", () => {
+  // The grant is real — the client does implement it — but it is no longer
+  // *code-only*, so it belongs in endpoints.txt where invariant F covers it.
+  const r = runDriftSandbox({
+    mutateSpec: (spec) => {
+      (spec.paths as Record<string, unknown>)["/api/v1/faucet"] = { post: {} };
+    },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /CODE_ONLY_OPS entr\(ies\) the spec now defines/);
+  assert.match(r.stderr, /POST \/api\/v1\/faucet/);
+});
+
+test("ops drift: FAILS when a NON_REST_TARGETS entry is missing from endpoints.txt", () => {
+  // The allowlist only suppresses entries that are actually targeted; dropping
+  // the line would otherwise quietly stop counting the WebSocket upgrade.
+  const r = runDriftSandbox({
+    mutateEndpoints: (t) => withoutOp(t, "GET /ws"),
+    mutateUncovered: (t) => `${t}GET /ws\n`,
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /NON_REST_TARGETS entr\(ies\) not listed/);
+  assert.match(r.stderr, /GET \/ws/);
+});
+
+// The three below are not drift findings but *parser* failures: the operations
+// check derives the implemented set by reading literals at the `this.#request`
+// call sites, and the failure mode that matters is undercounting — a checker
+// reporting green over a real gap is worse than no checker. So each of these
+// aborts loudly instead of quietly parsing fewer operations.
+
+test("ops drift: a path built into a local variable ABORTS the check", () => {
+  const r = runDriftSandbox({
+    mutateClient: (src) =>
+      replaceOnce(
+        src,
+        'return this.#request<StatsSnapshot>("GET", "/stats", opts);',
+        'const p = "/stats";\n    return this.#request<StatsSnapshot>("GET", p, opts);',
+      ),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /inline path literal/);
+});
+
+test("ops drift: an unreadable options argument ABORTS the check", () => {
+  // `root: true` decides whether the call targets /api/v1 or the host root, so
+  // an expression the parser can't see through would mis-attribute the path.
+  const r = runDriftSandbox({
+    mutateClient: (src) =>
+      replaceOnce(
+        src,
+        'return this.#request<StatsSnapshot>("GET", "/stats", opts);',
+        'return this.#request<StatsSnapshot>("GET", "/stats", makeOpts(opts));',
+      ),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /inline object literal or a bare identifier/);
+});
+
+test("ops drift: a renamed request helper ABORTS instead of reporting zero ops", () => {
+  const r = runDriftSandbox({
+    mutateClient: (src) => src.replaceAll("this.#request", "this.#send"),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /parsed zero/);
+});
+
+test("ops drift: networks disagreeing on their base path ABORT the check", () => {
+  const r = runDriftSandbox({
+    mutateClient: (src) =>
+      replaceOnce(src, "http://localhost:9090/api/v1", "http://localhost:9090"),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /disagree on their base path/);
 });

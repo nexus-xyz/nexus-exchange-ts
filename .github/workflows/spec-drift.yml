@@ -1,31 +1,29 @@
 name: Spec drift
 
-# Keeps the pinned API version, the vendored spec, the targeted schema list, and
-# the hand-written models in lockstep (scripts/check-spec-drift.mjs), and proves
-# the vendored spec still matches the authoritative upstream spec at the pinned
-# tag. The upstream spec is fetched from the raw-at-tag URL (uncounted — the
-# release asset download_count is reserved as an external adoption signal) and
-# cached by the pinned version so a normal run does no network.
+# Keeps the pinned API version, the vendored spec, the targeted schema list, the
+# operations manifest, and the hand-written client/models in lockstep
+# (scripts/check-spec-drift.mjs), and proves the vendored spec still byte-matches
+# the authoritative upstream spec at the pinned tag.
+#
+# Runs on EVERY pull request, deliberately with no `paths` filter (ENG-7963).
+# A filtered version of this job looks correct and does nothing in the two cases
+# that matter most:
+#   * a pin-only bump PR — the pin *is* the change, and a filter keyed on the
+#     spec file would skip the check that decides whether the bump is safe;
+#   * a code-only PR that adds a client method for an operation nobody added to
+#     endpoints.txt — invariant H exists to fail that, so it has to run.
+# The checker is dependency-free and finishes in well under a second, so there is
+# nothing to buy by narrowing it.
+#
+# Network: the invariants themselves are hermetic — they read the vendored
+# spec/openapi.json, never the network, so they cannot go red because GitHub was
+# slow. Only the tag-match step below reaches upstream, and it is cached by the
+# pinned version, so a normal run does no network at all.
 
 on:
   pull_request:
-    paths:
-      - ".api-version"
-      - "spec/openapi.json"
-      - "spec/schemas.txt"
-      - "spec/enum-allowlist.txt"
-      - "src/models.ts"
-      - "scripts/check-spec-drift.mjs"
-      - ".github/workflows/spec-drift.yml"
   push:
     branches: [main]
-    paths:
-      - ".api-version"
-      - "spec/openapi.json"
-      - "spec/schemas.txt"
-      - "spec/enum-allowlist.txt"
-      - "src/models.ts"
-      - "scripts/check-spec-drift.mjs"
 
 permissions:
   contents: read
@@ -40,7 +38,11 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Check vendored spec is in sync
+      # The checker's own red-tests (each invariant defeated in a sandboxed copy
+      # of the drift inputs) live in test/models.test.ts and run in the CI `test`
+      # job, which already has the toolchain for them. This job stays
+      # dependency-free — node and nothing else — so it starts in seconds.
+      - name: Check pin, spec, schemas, models, and operations are in sync
         run: node scripts/check-spec-drift.mjs
 
       - name: Read pinned spec version
@@ -73,5 +75,30 @@ jobs:
             "https://raw.githubusercontent.com/nexus-xyz/nexus-exchange-api/${SPEC_TAG}/openapi.json" \
             -o openapi.upstream.json
 
-      - name: Check SDK against upstream spec at the pinned tag
-        run: node scripts/check-spec-drift.mjs openapi.upstream.json
+      # Ported from the monorepo's `eng-exchange-api-vendored-check.yml`
+      # tag-match job. Vendoring buys hermetic CI and byte-pinning, but it opens
+      # one hole rs structurally cannot have: someone can edit spec/openapi.json
+      # by hand and make every invariant above go green against a spec that no
+      # release ever contained. This closes it — the vendored file must be the
+      # released bytes, not merely a file that parses.
+      #
+      # Byte-exact, not jq-normalized: .prettierignore already excludes
+      # spec/openapi.json precisely so it stays verbatim, so there is no
+      # formatting difference to tolerate, and byte-pinning is the property being
+      # claimed. Re-vendor with `pnpm run bump:spec <tag>`, never by hand.
+      - name: Vendored spec byte-matches the released tag
+        env:
+          SPEC_TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          if ! cmp -s spec/openapi.json openapi.upstream.json; then
+            echo "::error::spec/openapi.json does not byte-match nexus-exchange-api@${SPEC_TAG}."
+            echo "::error::Do not hand-edit the vendored spec. Re-vendor from the released tag:"
+            echo "::error::  pnpm run bump:spec ${SPEC_TAG}"
+            diff <(node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync("spec/openapi.json","utf8")),null,2))') \
+                 <(node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync("openapi.upstream.json","utf8")),null,2))') \
+              | head -40 || true
+            exit 1
+          fi
+          echo "Vendored spec byte-matches nexus-exchange-api@${SPEC_TAG}."
+          # Byte-equality makes re-running the checker against openapi.upstream.json
+          # identical to the hermetic run above, so it is not repeated here.

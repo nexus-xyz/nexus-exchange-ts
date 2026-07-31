@@ -23,6 +23,12 @@ The TypeScript SDK for the Nexus Exchange API.
 ## API contract
 
 - The pinned `nexus-exchange-api` version is checked by
-  `scripts/check-spec-drift.mjs`; keep the SDK in sync when the spec bumps.
+  `scripts/check-spec-drift.mjs`, which runs on every PR; keep the SDK in sync
+  when the spec bumps.
+- The pin is both `.api-version` and the byte-exact `spec/openapi.json`. Move it
+  only with `pnpm run bump:spec vX.Y.Z` — never hand-edit the vendored spec.
+- Adding a client method means adding its operation to `endpoints.txt`; the drift
+  check reads the `this.#request(...)` call sites and fails on either side of the
+  mismatch. Pass the method/path as inline literals so it can.
 - Pre-1.0 versioning (release-please): the SDK stays in `0.x` until a deliberate
   1.0 — minor on breaking changes, patch on features and fixes.

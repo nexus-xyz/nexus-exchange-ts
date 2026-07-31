@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
  * Spec drift check — keeps `.api-version`, the vendored spec, the targeted
- * schema list, and the hand-written models all in lockstep. Mirrors the Rust
- * SDK's scripts/check_spec_drift.py, adapted to a *vendored* spec.
+ * schema list, the operations manifest, and the hand-written client/models all
+ * in lockstep. Mirrors the Rust SDK's scripts/check_spec_drift.py, adapted to a
+ * *vendored* spec.
  *
- * Five independent invariants are enforced (all must hold):
+ * Eight independent invariants are enforced (all must hold). A–E are
+ * schema-level; F–H are the operations half (ENG-7963), mirroring B/C/D for the
+ * REST surface the client actually implements:
  *
  *   A. .api-version <-> vendored spec version
  *      `.api-version` (validated to look like vX.Y.Z) must equal the vendored
@@ -40,11 +43,46 @@
  *          the SDK drops the member, and a stale entry fails until removed, so
  *          the allowlist cannot accumulate dead grants.
  *
+ *   F. endpoints.txt -> spec                          (the operations analogue of B)
+ *      Every operation the SDK targets (endpoints.txt) must exist in the spec.
+ *      A miss means a removed/renamed/typo'd operation — including the
+ *      path-prefix class of typo that left nexus-exchange-py's manifest listing
+ *      six operations no released spec has ever contained (ENG-7958).
+ *
+ *   G. spec -> endpoints.txt U spec/uncovered-ops.txt  (the operations analogue of C)
+ *      Every operation in the spec must be either targeted (endpoints.txt) or
+ *      recorded as deliberately not targeted (spec/uncovered-ops.txt). Unlike
+ *      the schema list, 100% operation coverage is not a goal — the spec carries
+ *      admin routes, deprecated routes, and legacy-gateway twins of operations
+ *      the SDK reaches through `/api/v1`. What G buys is C's real property: new
+ *      upstream surface cannot land unnoticed. Entries in uncovered-ops.txt are
+ *      checked for staleness both ways (gone from the spec, or now targeted), so
+ *      that file cannot rot into a list of things that no longer exist.
+ *
+ *   H. src/client.ts <-> endpoints.txt                (the operations analogue of D)
+ *      The manifest must not claim coverage the code lacks, nor miss coverage
+ *      the code has. The REST operations the client actually implements are
+ *      derived from the `this.#request(METHOD, path, opts)` call sites in
+ *      src/client.ts and must EQUAL the endpoints.txt set, modulo two named
+ *      allowlists:
+ *        - CODE_ONLY_OPS    — implemented but absent from the pinned spec, so
+ *          deliberately kept OUT of endpoints.txt (listing them would fail F).
+ *        - NON_REST_TARGETS — targeted without a REST helper call, so invisible
+ *          to the code parser (`GET /ws`, opened by src/ws/client.ts).
+ *      Both allowlists carry the staleness checks the enum allowlist has: an
+ *      entry the code no longer implements, or one the spec has since caught up
+ *      on, fails until it is removed.
+ *
  * Usage: check-spec-drift.mjs [path-to-openapi.json]
  *   Defaults to the vendored spec/openapi.json. CI also runs it against the
  *   spec freshly fetched from the pinned upstream tag.
  *
  * Pure fs + string parsing: no network, no shell, no eval, no dependencies.
+ *
+ * Every invariant here has a test in test/models.test.ts that defeats it in a
+ * throwaway copy of the repo's drift inputs and asserts the gate goes red — a
+ * green run from a checker nothing has ever proven can fail is worth very
+ * little. Add one alongside any invariant you add.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -366,6 +404,423 @@ function enumDrift(spec, modelsSrc, allowlist) {
   };
 }
 
+// ─── Operations invariants F/G/H (ENG-7963) ──────────────────────────────────
+//
+// The schema invariants above never look at the *routes* the SDK calls, so for
+// a long time nothing in CI noticed a wrapper being added, removed, or pointed
+// at a path no released spec contains. These three close that gap. The unit of
+// comparison is an operation string, `"METHOD /path"`, with every `{...}` path
+// placeholder collapsed to `{}` when comparing against code (the client builds
+// paths from template holes, so placeholder *names* exist only in the spec and
+// the manifest — matching is by position).
+
+const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Operations `src/client.ts` implements that the pinned spec does not define, so
+ * they are deliberately kept OUT of endpoints.txt — listing them there would
+ * (correctly) fail invariant F. This is the operations analogue of
+ * spec/enum-allowlist.txt, and it is checked for staleness the same way: an
+ * entry the client no longer implements, or one the spec has since caught up on,
+ * fails until it is removed (invariant H).
+ *
+ * Every entry here is an `/api/v1` path. The exchange serves the dual-stack
+ * `/api/v1` surface as sibling mounts of the legacy root routes (ENG-4737), and
+ * this SDK's base URL *is* `…/api/v1` — so a method that does not pass
+ * `root: true` necessarily targets `/api/v1/<path>`. The spec has only caught up
+ * on part of that surface, hence this list.
+ *
+ * Two distinct situations live here; do not collapse them:
+ */
+const CODE_ONLY_OPS = new Set([
+  // (1) Ahead of the spec. The indexer mounts these under `/api/v1` explicitly
+  // (`funds_extra_v1_routes` — nexus `eng/apps/exchange/backend/services/
+  // indexer/src/api.rs`), so the SDK reaches a route that exists; the spec just
+  // documents only its legacy-root twin. Move each into endpoints.txt once the
+  // spec ships the `/api/v1` variant.
+  "GET /api/v1/deposits", // getDeposits
+  "POST /api/v1/deposits", // createDeposit
+  "GET /api/v1/withdrawals", // getWithdrawals
+  "POST /api/v1/faucet", // claimFaucet
+
+  // (2) SUSPECTED WRONG PATH — tracked in ENG-8463, not an intentional
+  // ahead-of-spec grant. Unlike the four above, these two have no `/api/v1`
+  // sibling mount: they are engine routes reached through the indexer's
+  // catch-all, which forwards the request path to the engine *unstripped*
+  // (`proxy_to`, same file), and the engine registers only the bare
+  // `/account/deposit` / `/account/margin`. So these calls most likely 404 and
+  // the methods should pass `root: true` like the other host-root routes. That
+  // is a behavioural fix to two money-moving endpoints and wants its own
+  // change; recorded here so the discrepancy is visible and staleness-checked
+  // rather than silently absent.
+  "POST /api/v1/account/deposit", // deposit
+  "POST /api/v1/account/margin", // adjustMargin
+]);
+
+/**
+ * Operations listed in endpoints.txt that are reached WITHOUT a
+ * `this.#request(...)` call, so the code parser cannot (and should not) see
+ * them. `GET /ws` is the WebSocket upgrade: src/ws/client.ts opens it against
+ * the caller-supplied `url` + `path` (default `/ws`) with a `WebSocket`
+ * constructor, never a REST helper.
+ */
+const NON_REST_TARGETS = new Set(["GET /ws"]);
+
+/** Collapse every `{placeholder}` to a bare `{}` so matching is positional. */
+function normalizeOpPath(path) {
+  return path.replace(/\{[^}]*\}/g, "{}");
+}
+
+/** The `METHOD /path` operations the spec defines, as a Set of strings. */
+function specOperations(spec) {
+  const out = new Set();
+  for (const [path, methods] of Object.entries(spec?.paths ?? {})) {
+    if (!methods || typeof methods !== "object") continue;
+    for (const method of Object.keys(methods)) {
+      const upper = method.toUpperCase();
+      if (HTTP_METHODS.has(upper)) out.add(`${upper} ${path}`);
+    }
+  }
+  if (out.size === 0) fail("the spec defines no operations under `paths`");
+  return out;
+}
+
+/**
+ * Parse a `METHOD /path`-per-line manifest (endpoints.txt, uncovered-ops.txt)
+ * into [{op, line}]. Blank lines and `#` comments are skipped; a malformed line,
+ * an unknown method, or a duplicate fails hard, exactly like spec/schemas.txt.
+ */
+function parseOpsManifest(label, text) {
+  const out = [];
+  const seen = new Map();
+  text.split("\n").forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) return;
+    const parts = line.split(/\s+/);
+    if (parts.length !== 2) {
+      fail(
+        `${label}:${i + 1}: expected 'METHOD /path', got ${JSON.stringify(line)}`,
+      );
+    }
+    const [method, path] = parts;
+    if (!HTTP_METHODS.has(method)) {
+      fail(
+        `${label}:${i + 1}: unknown HTTP method ${JSON.stringify(method)} (want one of ${[...HTTP_METHODS].join(", ")}, uppercase)`,
+      );
+    }
+    if (!path.startsWith("/")) {
+      fail(
+        `${label}:${i + 1}: path must start with '/', got ${JSON.stringify(path)}`,
+      );
+    }
+    const op = `${method} ${path}`;
+    if (seen.has(op)) {
+      fail(
+        `${label}:${i + 1}: duplicate operation ${JSON.stringify(op)} (first seen on line ${seen.get(op)})`,
+      );
+    }
+    seen.set(op, i + 1);
+    out.push({ op, line: i + 1 });
+  });
+  return out;
+}
+
+/**
+ * The base path every non-`root` request is sent under, read out of
+ * `NETWORK_BASE_URL` in src/client.ts rather than hardcoded here — the prefix is
+ * what turns a method-relative path into the spec path, so a checker that
+ * hardcoded it would go on comparing the old paths after a base-URL change and
+ * report green over every one of them. Every network must agree on the path
+ * (they differ only in host), and the result must be non-empty; anything else
+ * fails loudly.
+ */
+function clientBasePath(src) {
+  const table = /const\s+NETWORK_BASE_URL[^=]*=\s*\{([\s\S]*?)\n\}/.exec(src);
+  if (!table) {
+    fail(
+      "could not find `NETWORK_BASE_URL` in src/client.ts; the base-URL table moved or changed shape — update clientBasePath()",
+    );
+  }
+  const paths = new Set();
+  for (const [, url] of table[1].matchAll(/"(https?:\/\/[^"]+)"/g)) {
+    paths.add(new URL(url).pathname.replace(/\/+$/, ""));
+  }
+  if (paths.size === 0) {
+    fail(
+      "parsed zero base URLs from `NETWORK_BASE_URL` in src/client.ts — update clientBasePath()",
+    );
+  }
+  if (paths.size > 1) {
+    fail(
+      `the networks in \`NETWORK_BASE_URL\` disagree on their base path (${[...paths].map((p) => JSON.stringify(p)).join(", ")}); the drift check needs one prefix to derive spec paths from method-relative ones`,
+    );
+  }
+  const [base] = paths;
+  if (!base) {
+    fail(
+      "`NETWORK_BASE_URL` carries no base path; if the SDK moved to host-root requests, drop the prefixing in implementedOps()",
+    );
+  }
+  return base;
+}
+
+// Every REST call in src/client.ts goes through the single private helper
+// `this.#request(method, path, options?)`, so — unlike the Rust SDK's several
+// typed helpers — there is exactly one call shape to parse. The parser depends
+// on two conventions at those call sites, and ENFORCES both with a loud failure
+// rather than best-effort guessing, because the failure mode that matters is
+// *undercounting* (a checker reporting green over a real gap is worse than no
+// checker):
+//
+//   1. the method and path are inline literals — `"GET"` and either `"/orders"`
+//      or a template literal `` `/orders/${seg(id)}` `` — never built into a
+//      local variable first;
+//   2. the options argument, when present, is either an inline object literal
+//      or a bare identifier forwarded from the method's own `opts` parameter.
+//      `root: true` (which drops the `/api/v1` prefix) is only ever set in an
+//      inline literal, so an expression the parser cannot see through would
+//      silently attribute the call to the wrong path.
+const REQUEST_CALL = "this.#request";
+
+/**
+ * Split a balanced argument list starting at `src[open]` (which must be the
+ * `(`), returning `{ args, end }` with top-level comma-separated argument text.
+ * Tracks nesting for `()[]{}` and skips string / template literals so a comma,
+ * brace, or paren inside one cannot end an argument early.
+ */
+function splitArgs(src, open) {
+  const args = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      // Skip the literal. Template literals may nest `${ … }` holes containing
+      // further literals, so track the hole depth while scanning.
+      const quote = ch;
+      i++;
+      let holes = 0;
+      for (; i < src.length; i++) {
+        if (src[i] === "\\") {
+          i++;
+          continue;
+        }
+        if (quote === "`" && src[i] === "$" && src[i + 1] === "{") {
+          holes++;
+          i++;
+          continue;
+        }
+        if (holes > 0 && src[i] === "}") {
+          holes--;
+          continue;
+        }
+        if (holes === 0 && src[i] === quote) break;
+      }
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+      if (depth === 0) {
+        const tail = src.slice(start, i).trim();
+        if (tail) args.push(tail);
+        return { args, end: i };
+      }
+      continue;
+    }
+    if (ch === "," && depth === 1) {
+      args.push(src.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  fail(
+    `unterminated \`${REQUEST_CALL}(\` argument list in src/client.ts (starting at offset ${open})`,
+  );
+}
+
+/** The value of a plain `"..."` / `'...'` string literal, or null. */
+function stringLiteral(expr) {
+  const m = /^"([^"\\]*)"$|^'([^'\\]*)'$/.exec(expr);
+  return m ? (m[1] ?? m[2]) : null;
+}
+
+/**
+ * The path a literal path argument resolves to, with template holes collapsed
+ * to `{}`; null when the argument is not an inline literal at all.
+ */
+function literalPath(expr) {
+  const plain = stringLiteral(expr);
+  if (plain !== null) return plain;
+  if (expr.startsWith("`") && expr.endsWith("`")) {
+    return expr.slice(1, -1).replace(/\$\{[^}]*\}/g, "{}");
+  }
+  return null;
+}
+
+/**
+ * Derive the `METHOD /full-path` operations src/client.ts implements from its
+ * `this.#request(...)` call sites, prefixing `basePath` unless the call opts out
+ * with `root: true`. Placeholders are normalized to `{}`.
+ */
+function implementedOps(src, basePath = clientBasePath(src)) {
+  const ops = new Set();
+  let searched = 0;
+  let count = 0;
+  for (;;) {
+    const at = src.indexOf(REQUEST_CALL, searched);
+    if (at === -1) break;
+    searched = at + REQUEST_CALL.length;
+
+    // Skip past an optional type argument (`<Record<string, Ticker>>`) to reach
+    // the `(` that opens the call. Angle brackets nest; anything else between
+    // the callee and the paren means this is not a call site (e.g. prose in a
+    // comment), so it is skipped rather than guessed at.
+    let i = searched;
+    while (i < src.length && /\s/.test(src[i])) i++;
+    if (src[i] === "<") {
+      let angles = 0;
+      for (; i < src.length; i++) {
+        if (src[i] === "<") angles++;
+        else if (src[i] === ">" && --angles === 0) {
+          i++;
+          break;
+        }
+      }
+      while (i < src.length && /\s/.test(src[i])) i++;
+    }
+    if (src[i] !== "(") continue;
+
+    const line = src.slice(0, at).split("\n").length;
+    const { args, end } = splitArgs(src, i);
+    searched = end;
+    count++;
+
+    const method = stringLiteral(args[0] ?? "");
+    if (method === null || !HTTP_METHODS.has(method)) {
+      fail(
+        `src/client.ts:${line}: \`${REQUEST_CALL}\` must take an inline uppercase method literal as its first argument (got ${JSON.stringify(args[0] ?? "")}); the drift parser reads it to derive the implemented operation set`,
+      );
+    }
+    const path = literalPath(args[1] ?? "");
+    if (path === null || !path.startsWith("/")) {
+      fail(
+        `src/client.ts:${line}: \`${REQUEST_CALL}\` must take an inline path literal ("/orders" or \`/orders/\${…}\`) as its second argument (got ${JSON.stringify(args[1] ?? "")}); a path built into a local variable first would be invisible here and silently undercount the implemented set`,
+      );
+    }
+
+    const opts = args[2];
+    let root = false;
+    if (opts !== undefined) {
+      if (opts.startsWith("{")) {
+        root = /\broot\s*:\s*true\b/.test(opts);
+      } else if (!/^[A-Za-z_$][\w$]*$/.test(opts)) {
+        fail(
+          `src/client.ts:${line}: the options argument to \`${REQUEST_CALL}\` must be an inline object literal or a bare identifier (got ${JSON.stringify(opts)}); \`root: true\` decides whether the call targets ${JSON.stringify(basePath)} or the host root, so an expression the parser cannot see through would attribute the call to the wrong path`,
+        );
+      }
+    }
+
+    ops.add(`${method} ${normalizeOpPath(root ? path : basePath + path)}`);
+  }
+
+  if (count === 0) {
+    fail(
+      `parsed zero \`${REQUEST_CALL}(\` call sites from src/client.ts — the request helper was renamed or restructured; update implementedOps()`,
+    );
+  }
+  return ops;
+}
+
+/**
+ * Invariants F/G/H. Returns `{ findings, summary }`: `findings` is a list of
+ * `{ label, items }` groups for main() to report and count, `summary` a line
+ * for the run header. Pure — every input is passed in, so the self-test can
+ * defeat each invariant in isolation.
+ */
+function operationsDrift({
+  specOps,
+  targeted,
+  uncovered,
+  implemented,
+  codeOnly = CODE_ONLY_OPS,
+  nonRest = NON_REST_TARGETS,
+}) {
+  const targetedOps = targeted.map((e) => e.op);
+  const targetedSet = new Set(targetedOps);
+  const uncoveredSet = new Set(uncovered.map((e) => e.op));
+  const norm = (op) => {
+    const [method, path] = op.split(" ");
+    return `${method} ${normalizeOpPath(path)}`;
+  };
+  const targetedNorm = new Set(targetedOps.map(norm));
+  const findings = [];
+  const add = (label, items) => {
+    if (items.length > 0) findings.push({ label, items });
+  };
+
+  // F. endpoints.txt -> spec.
+  add(
+    "operation(s) in endpoints.txt are NOT in the spec (removed/renamed/typo — check the path prefix):",
+    targeted
+      .filter((e) => !specOps.has(e.op))
+      .map((e) => `${e.op} (line ${e.line})`),
+  );
+
+  // G. spec -> endpoints.txt U uncovered-ops.txt, both ways.
+  add(
+    "spec operation(s) neither targeted by endpoints.txt nor recorded in spec/uncovered-ops.txt (target them, or record why the SDK deliberately does not):",
+    [...specOps].filter((op) => !targetedSet.has(op) && !uncoveredSet.has(op)),
+  );
+  add(
+    "spec/uncovered-ops.txt entr(ies) the spec no longer defines (the operation was removed or renamed; drop the line):",
+    uncovered
+      .filter((e) => !specOps.has(e.op))
+      .map((e) => `${e.op} (line ${e.line})`),
+  );
+  add(
+    "spec/uncovered-ops.txt entr(ies) that ARE now targeted by endpoints.txt (remove them from uncovered-ops.txt — they are covered):",
+    uncovered
+      .filter((e) => targetedSet.has(e.op))
+      .map((e) => `${e.op} (line ${e.line})`),
+  );
+
+  // H. src/client.ts <-> endpoints.txt, modulo the two allowlists.
+  add(
+    "operation(s) implemented in src/client.ts but NOT in endpoints.txt (add them, or add to CODE_ONLY_OPS if the spec does not define them yet):",
+    [...implemented].filter((op) => !targetedNorm.has(op) && !codeOnly.has(op)),
+  );
+  add(
+    "endpoints.txt entr(ies) with no implementing method in src/client.ts (remove them, or add to NON_REST_TARGETS if reached without a REST call):",
+    targeted
+      .filter((e) => !implemented.has(norm(e.op)) && !nonRest.has(e.op))
+      .map((e) => `${e.op} (line ${e.line})`),
+  );
+  add(
+    "CODE_ONLY_OPS entr(ies) no longer implemented in src/client.ts (remove them from the allowlist):",
+    [...codeOnly].filter((op) => !implemented.has(op)),
+  );
+  add(
+    "CODE_ONLY_OPS entr(ies) the spec now defines (move them into endpoints.txt — they are no longer code-only):",
+    [...codeOnly].filter((op) => specOps.has(op)),
+  );
+  add(
+    "NON_REST_TARGETS entr(ies) that ARE implemented as a REST call in src/client.ts (remove them from the allowlist):",
+    [...nonRest].filter((op) => implemented.has(norm(op))),
+  );
+  add(
+    "NON_REST_TARGETS entr(ies) not listed in endpoints.txt (the allowlist only suppresses entries that are actually targeted; add the line or drop the grant):",
+    [...nonRest].filter((op) => !targetedSet.has(op)),
+  );
+
+  return {
+    findings,
+    summary: `SDK targets ${targeted.length} of ${specOps.size} spec operation(s); ${uncovered.length} recorded as not targeted, ${codeOnly.size} implemented ahead of the spec.`,
+  };
+}
+
 function main() {
   const specPath = process.argv[2]
     ? resolve(process.argv[2])
@@ -388,15 +843,32 @@ function main() {
   const specSet = new Set(specSchemas);
   const targetedSet = new Set(targeted);
 
+  const clientSrc = read(join(REPO, "src", "client.ts"));
+  const basePath = clientBasePath(clientSrc);
+  const ops = operationsDrift({
+    specOps: specOperations(spec),
+    targeted: parseOpsManifest(
+      "endpoints.txt",
+      read(join(REPO, "endpoints.txt")),
+    ),
+    uncovered: parseOpsManifest(
+      "spec/uncovered-ops.txt",
+      read(join(REPO, "spec", "uncovered-ops.txt")),
+    ),
+    implemented: implementedOps(clientSrc, basePath),
+  });
+
   console.log(`Pinned API version : ${pin}`);
   console.log(`Vendored spec      : ${specPath}`);
   console.log(`Spec version       : v${specVersion}`);
+  console.log(`Client base path   : ${basePath}`);
   console.log(
     `SDK targets ${targeted.length} schema(s); spec has ${specSchemas.length}.`,
   );
   console.log(
     `Checked ${enums.enumCount} spec enum(s) against models.ts (${allowlist.length} allowlisted member(s)).`,
   );
+  console.log(ops.summary);
 
   let failures = 0;
   const report = (label, items) => {
@@ -450,12 +922,15 @@ function main() {
     enums.staleAllowlist,
   );
 
+  // F/G/H. endpoints.txt <-> spec <-> src/client.ts (operations).
+  for (const { label, items } of ops.findings) report(label, items);
+
   if (failures > 0) {
     console.error(`\n${failures} drift error(s).`);
     process.exit(1);
   }
   console.log(
-    "\nOK: pin, vendored spec, schemas.txt, models.ts, and enum members are all in sync.",
+    "\nOK: pin, vendored spec, schemas.txt, models.ts, enum members, and the operations manifest are all in sync.",
   );
 }
 
