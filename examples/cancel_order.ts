@@ -5,17 +5,11 @@
 //   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/cancel_order.ts <ORDER_ID>
 //   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/cancel_order.ts --all
 
-import { Client, Network } from "../src/index.js";
+import { Client } from "../src/index.js";
+import { networkOptions } from "./_network.js";
 
 const argv = process.argv.slice(2);
-const netIdx = argv.indexOf("--network");
-const netArg = argv[netIdx + 1];
-const network =
-  netArg === "beta"
-    ? Network.Beta
-    : netArg === "local"
-      ? Network.Local
-      : Network.Stable;
+const net = networkOptions();
 
 const apiKey = process.env.NEXUS_API_KEY;
 const apiSecret = process.env.NEXUS_API_SECRET;
@@ -24,13 +18,14 @@ if (!apiKey || !apiSecret) {
   process.exit(1);
 }
 
-const client = new Client({ network, apiKey, apiSecret });
+const client = new Client({ ...net, apiKey, apiSecret });
 
 if (argv.includes("--all")) {
   await client.cancelAllOrders();
   console.log("cancelled all open orders");
 } else {
   // Skip the token right after `--network` — that's its value, not an order id.
+  const netIdx = argv.indexOf("--network");
   const orderId = argv.find(
     (a, i) => !a.startsWith("--") && (netIdx < 0 || i !== netIdx + 1),
   );

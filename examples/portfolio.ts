@@ -5,33 +5,19 @@
 // Run with:
 //   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/portfolio.ts [--network beta] [--window week]
 
-import { Client, Network } from "../src/index.js";
+import { Client } from "../src/index.js";
 import type { PortfolioWindow } from "../src/index.js";
+// `flag` is the same trap-free lookup this file used to define locally: a
+// missing flag gives `-1 + 1 === 0`, which reads back `process.argv[0]` — the
+// node executable path — as though the user had passed it as the value.
+import { flag, networkOptions } from "./_network.js";
 
-/**
- * Read `--flag <value>` from argv, or `undefined` when the flag is absent.
- *
- * `process.argv[process.argv.indexOf(flag) + 1]` on its own is a trap: a
- * missing flag gives `-1 + 1 === 0`, which reads back `process.argv[0]` — the
- * node executable path — as though the user had passed it as the value.
- */
-function flagValue(flag: string): string | undefined {
-  const i = process.argv.indexOf(flag);
-  return i === -1 ? undefined : process.argv[i + 1];
-}
-
-const netArg = flagValue("--network");
-const network =
-  netArg === "beta"
-    ? Network.Beta
-    : netArg === "local"
-      ? Network.Local
-      : Network.Stable;
+const net = networkOptions();
 
 // Validate against the closed set rather than forwarding an arbitrary string —
 // the server rejects anything else with 400 (`invalid_window`).
 const WINDOWS: PortfolioWindow[] = ["day", "week", "month", "all"];
-const windowArg = flagValue("--window");
+const windowArg = flag("--window");
 const window = WINDOWS.find((w) => w === windowArg);
 if (windowArg !== undefined && !window) {
   console.error(`--window must be one of: ${WINDOWS.join(", ")}`);
@@ -45,7 +31,7 @@ if (!apiKey || !apiSecret) {
   process.exit(1);
 }
 
-const client = new Client({ network, apiKey, apiSecret });
+const client = new Client({ ...net, apiKey, apiSecret });
 
 // One coherent read: the summary aggregates and every open position together,
 // so open_positions_count can't disagree with positions.length.

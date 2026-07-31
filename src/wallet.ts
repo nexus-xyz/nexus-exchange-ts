@@ -52,11 +52,23 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+const U256_MAX = (1n << 256n) - 1n;
+
 /** Left-pad a non-negative integer into a 32-byte big-endian ABI word (`uint256`). */
 function u256(value: number | bigint): Uint8Array {
   let v = BigInt(value);
   if (v < 0n) {
     throw new NexusExchangeError("uint256 value must be non-negative");
+  }
+  // Reject rather than wrap. The write loop stops after 32 bytes, so an
+  // oversized value would silently truncate modulo 2^256 — `2^256 + 5` and `5`
+  // encode to identical words, which would mean two different signing inputs
+  // producing the same digest. A loud failure is the only safe answer inside a
+  // signature.
+  if (v > U256_MAX) {
+    throw new NexusExchangeError(
+      `uint256 value ${v} does not fit in 32 bytes (max ${U256_MAX})`,
+    );
   }
   const out = new Uint8Array(32);
   for (let i = 31; i >= 0 && v > 0n; i--) {
@@ -64,6 +76,68 @@ function u256(value: number | bigint): Uint8Array {
     v >>= 8n;
   }
   return out;
+}
+
+/**
+ * Validate an EIP-712 domain chain id before it reaches a signature.
+ *
+ * The signing domain is per-network and server-authoritative, published by
+ * `GET /metadata`. A client that cannot obtain a chain id must **refuse to
+ * sign** rather than guess or default: a wrong domain either fails verification
+ * or, worse, produces a signature that is valid on a *different* network.
+ *
+ * `0` is rejected for exactly that reason. It is not a real chain id, but it is
+ * the value a missing one collapses to — `Number(undefined ?? 0)`, an unset env
+ * var, a `chain_id: null` from `/metadata` coerced with `?? 0`. Signing with a
+ * zero domain is indistinguishable from signing with a guessed one.
+ */
+function assertChainId(chainId: number | bigint): void {
+  if (typeof chainId === "number" && !Number.isSafeInteger(chainId)) {
+    throw new NexusExchangeError(
+      `chainId must be a safe integer or bigint, got ${chainId}; pass a bigint ` +
+        `for values above Number.MAX_SAFE_INTEGER`,
+    );
+  }
+  const v = BigInt(chainId);
+  if (v <= 0n) {
+    throw new NexusExchangeError(
+      `chainId must be a positive integer, got ${v}. It is per-network and ` +
+        `server-authoritative — read \`signing_domain.chain_id\` from ` +
+        `GET /metadata for the network you are connected to, and refuse to ` +
+        `sign if it is unavailable rather than defaulting to 0.`,
+    );
+  }
+}
+
+/**
+ * Validate a `uint64` field that is both **signed over and sent on the wire**.
+ *
+ * `expires_at` and `nonce` are JSON numbers in the request body, but the EIP-712
+ * digest is built from the exact `number | bigint` the caller passed. Those two
+ * representations must agree, and above `Number.MAX_SAFE_INTEGER` they stop
+ * agreeing silently: `nonce: 9007199254740993n` signs `…93` while the body
+ * carries `Number(…93n)` = `…92`. The server then rebuilds the digest from the
+ * value it received and verification fails — a confusing rejection whose cause
+ * is invisible on the wire.
+ *
+ * So refuse anything that does not round-trip through a JSON number, rather than
+ * emitting a payload that provably cannot verify. This also converts the raw
+ * `RangeError` that `BigInt()` throws for a fractional input into the SDK's own
+ * error type.
+ */
+function assertWireSafeUint(value: number | bigint, field: string): void {
+  const ok =
+    typeof value === "bigint"
+      ? value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)
+      : Number.isSafeInteger(value) && value >= 0;
+  if (ok) return;
+  throw new NexusExchangeError(
+    `${field} must be a non-negative integer no greater than ` +
+      `Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER}), got ${value}. ` +
+      `It is signed into the EIP-712 digest and also sent as a JSON number, so ` +
+      `a value that does not round-trip would sign one number and transmit ` +
+      `another, and the signature could not verify.`,
+  );
 }
 
 /** Right-align a 20-byte address into a 32-byte ABI word (`address`). */
@@ -109,6 +183,12 @@ function registerAgentDigest(
   nonce: number | bigint,
   chainId: number | bigint,
 ): Uint8Array {
+  // Before any hashing: a bad domain silently yields a signature for the wrong
+  // network rather than an error at signing time, and a non-round-tripping
+  // expiry/nonce signs a different number than the body transmits.
+  assertChainId(chainId);
+  assertWireSafeUint(expiresAtMs, "expiresAtMs");
+  assertWireSafeUint(nonce, "nonce");
   const enc = (s: string) => new TextEncoder().encode(s);
 
   const domainTypeHash = keccak_256(
@@ -145,18 +225,34 @@ export interface RegisterAgentOptions {
   /** Agent Ethereum address to authorize (`0x`-prefixed, 20 bytes). */
   agent: string;
   /**
-   * The EIP-712 domain chain id (the exchange's testnet chain id). Part of the
-   * signed payload, so it must match what the server verifies against.
+   * The EIP-712 domain chain id. Part of the signed payload, so it must match
+   * what the server verifies against.
+   *
+   * **Per-network and server-authoritative.** Read
+   * `signing_domain.chain_id` from `GET /metadata` for the network you are
+   * connected to; this SDK deliberately does not default it, because a wrong
+   * domain either fails verification or produces a signature valid on a
+   * *different* network. If you cannot obtain it, refuse to sign — do not pass
+   * `0`, which is rejected for that reason.
+   *
+   * Do not assume a Nexus L1 chain id: mainnet is the real-funds exchange
+   * running against Ethereum Mainnet via the USDX bridge, not a Nexus L1 chain.
    */
   chainId: number | bigint;
   /**
    * Expiry as Unix milliseconds. The server expects it in `[now+1d, now+90d]`.
    * When omitted the server defaults to `now+30d`, but signing requires a
    * concrete value, so this is required here.
+   *
+   * Must round-trip through a JSON number (a non-negative integer up to
+   * `Number.MAX_SAFE_INTEGER`) — it is both signed and transmitted, so a value
+   * that does not is rejected rather than signed as one number and sent as
+   * another.
    */
   expiresAtMs: number | bigint;
   /**
    * Monotonic nonce. The current Unix timestamp in ms is a safe starting value.
+   * Same round-tripping constraint as {@link expiresAtMs}.
    */
   nonce: number | bigint;
   /** Optional human-readable label for the agent (e.g. `"my-bot"`). */

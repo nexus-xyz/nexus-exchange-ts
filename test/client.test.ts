@@ -5,6 +5,9 @@ import { createHash, createHmac } from "node:crypto";
 import {
   Client,
   Network,
+  NETWORKS,
+  API_BASE_PATH,
+  networkConfig,
   baseUrlForNetwork,
   DEFAULT_USER_AGENT,
 } from "../src/client.js";
@@ -14,6 +17,7 @@ import { SDK_VERSION, API_VERSION } from "../src/version.js";
 import {
   ApiError,
   MissingCredentialsError,
+  NexusExchangeError,
   TransportError,
 } from "../src/errors.js";
 
@@ -35,15 +39,236 @@ function mockFetch(
   return { impl, calls };
 }
 
-test("network base URLs are the direct-indexer /api/v1 hosts", () => {
+// ── Network axis (ENG-6453) ──────────────────────────────────────────────────
+
+test("live network base URLs are the direct-indexer hosts", () => {
   assert.equal(
-    baseUrlForNetwork(Network.Stable),
+    baseUrlForNetwork(Network.Testnet),
     "https://exchange.nexus.xyz/api/v1",
   );
   assert.equal(
-    baseUrlForNetwork(Network.Beta),
-    "https://beta.exchange.nexus.xyz/api/v1",
+    baseUrlForNetwork(Network.Local),
+    "http://localhost:9090/api/v1",
   );
+});
+
+// scripts/check-spec-drift.mjs reads API_BASE_PATH as the prefix every non-root
+// request composes, and derives the operations it compares against the spec from
+// it (invariant H). If a network base stopped ending with it, the checker would
+// keep reporting green while the client signed different paths.
+test("every live network base URL is built from API_BASE_PATH", () => {
+  assert.equal(API_BASE_PATH, "/api/v1");
+  for (const [network, config] of Object.entries(NETWORKS)) {
+    if (config.baseUrl === null) continue;
+    assert.ok(
+      config.baseUrl.endsWith(API_BASE_PATH),
+      `${network} base URL ${config.baseUrl} must end with ${API_BASE_PATH}`,
+    );
+  }
+});
+
+// A wsUrl pointing at a different host than baseUrl would mint a token on one
+// origin and spend it on another. Client.wsUrl derives from the REST origin, so
+// this pins the declared map values against that derivation.
+test("each network's declared wsUrl matches its base URL's origin", () => {
+  for (const [network, config] of Object.entries(NETWORKS)) {
+    if (config.baseUrl === null) {
+      assert.equal(config.wsUrl, null, `${network} must not declare a wsUrl`);
+      continue;
+    }
+    const restOrigin = new URL(config.baseUrl).origin;
+    const derived = new Client({
+      network: network as Network,
+      fetchImpl: async () => new Response("{}"),
+    }).wsUrl;
+    assert.equal(
+      config.wsUrl,
+      derived,
+      `${network}: declared wsUrl ${config.wsUrl} disagrees with ${derived} (REST origin ${restOrigin})`,
+    );
+    assert.equal(new URL(derived).host, new URL(restOrigin).host);
+  }
+});
+
+test("the default network is testnet play funds, never mainnet", () => {
+  const client = new Client({ fetchImpl: async () => new Response("{}") });
+  assert.equal(client.network, Network.Testnet);
+  assert.equal(client.isRealFunds, false);
+  assert.equal(client.networkConfig.funds, "play");
+  assert.equal(client.baseUrl, "https://exchange.nexus.xyz/api/v1");
+});
+
+// Mainnet is real funds with no resolvable host and a different path
+// composition, so it must fail closed rather than ship a guess that breaks only
+// where it cannot be rehearsed.
+test("selecting mainnet without an explicit baseUrl refuses", () => {
+  assert.throws(
+    () => new Client({ network: Network.Mainnet }),
+    (err: unknown) => {
+      assert.ok(err instanceof NexusExchangeError);
+      assert.match(err.message, /REAL-FUNDS/);
+      assert.match(err.message, /baseUrl/);
+      return true;
+    },
+  );
+  assert.throws(() => baseUrlForNetwork(Network.Mainnet), NexusExchangeError);
+  assert.equal(NETWORKS[Network.Mainnet].baseUrl, null);
+  assert.equal(NETWORKS[Network.Mainnet].funds, "real");
+  assert.equal(NETWORKS[Network.Mainnet].faucet, false);
+});
+
+test("mainnet is reachable only by opting in with an explicit baseUrl", () => {
+  const client = new Client({
+    network: Network.Mainnet,
+    baseUrl: "https://api.internal.example/api/v1",
+    fetchImpl: async () => new Response("{}"),
+  });
+  assert.equal(client.network, Network.Mainnet);
+  // The override changes the target, never the funds classification.
+  assert.equal(client.isRealFunds, true);
+  assert.equal(client.wsUrl, "wss://api.internal.example");
+});
+
+// This is a published JS package, so a plain string reaches here from untyped
+// callers, JSON.parse, or an env var. An unknown network must be refused, not
+// assumed to be play money.
+test("an unrecognized network is refused rather than assumed play funds", () => {
+  for (const bogus of ["mainnet-2", "stable", "beta", "", "MAINNET"]) {
+    assert.throws(
+      () => new Client({ network: bogus as Network }),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /unrecognized network/);
+        assert.match(err.message, /real funds/);
+        return true;
+      },
+      `expected ${JSON.stringify(bogus)} to be refused`,
+    );
+  }
+  // `networkConfig` refuses on its own, not only via the constructor.
+  assert.throws(() => networkConfig("nope" as Network), /unrecognized network/);
+  // Inherited properties must not satisfy the lookup.
+  assert.throws(
+    () => networkConfig("toString" as Network),
+    /unrecognized network/,
+  );
+});
+
+// Beta is a testnet base, not a network: it keeps testnet's funds
+// classification and signing domain while retargeting the host.
+test("beta is reachable as a baseUrl override on testnet", () => {
+  const client = new Client({
+    network: Network.Testnet,
+    baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+    fetchImpl: async () => new Response("{}"),
+  });
+  assert.equal(client.network, Network.Testnet);
+  assert.equal(client.isRealFunds, false);
+  assert.equal(client.baseUrl, "https://beta.exchange.nexus.xyz/api/v1");
+  // wsUrl follows the override — the stream cannot end up on the default host.
+  assert.equal(client.wsUrl, "wss://beta.exchange.nexus.xyz");
+});
+
+// The map is module-level shared state. Without freezing, one caller could
+// retarget every client constructed afterwards — including onto a real-funds
+// host — from anywhere in the process.
+test("the NETWORKS map and its entries are frozen", () => {
+  assert.ok(Object.isFrozen(NETWORKS));
+  for (const config of Object.values(NETWORKS)) {
+    assert.ok(Object.isFrozen(config));
+    assert.ok(Object.isFrozen(config.signingDomain));
+  }
+  assert.throws(() => {
+    (NETWORKS as unknown as Record<string, unknown>)[Network.Testnet] = {
+      baseUrl: "https://evil.example",
+    };
+  }, TypeError);
+  assert.equal(
+    baseUrlForNetwork(Network.Testnet),
+    "https://exchange.nexus.xyz/api/v1",
+  );
+});
+
+// `baseUrl: ""` is the dangerous one: it is not nullish, so `??` lets it win
+// over the network default, and every request URL then becomes relative — which
+// in a browser resolves against the hosting page's origin and would send the
+// signed x-api-key / x-signature headers there.
+test("a relative or non-HTTP baseUrl is refused at construction", () => {
+  for (const baseUrl of [
+    "",
+    "not-a-url",
+    "/relative/api/v1",
+    "//evil.example",
+  ]) {
+    assert.throws(
+      () => new Client({ baseUrl }),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /absolute http\(s\) URL/);
+        return true;
+      },
+      `expected ${JSON.stringify(baseUrl)} to be refused`,
+    );
+  }
+  assert.throws(
+    () => new Client({ baseUrl: "ftp://h/x" }),
+    /must use http:\/\/ or https:\/\//,
+  );
+  // A legitimate absolute override still works.
+  assert.equal(
+    new Client({
+      baseUrl: "https://example.test/api/v1/",
+      fetchImpl: async () => new Response("{}"),
+    }).baseUrl,
+    "https://example.test/api/v1",
+  );
+});
+
+// No route this SDK implements is served under the legacy `/api/exchange`
+// gateway, so such a base can only be a misconfiguration — and a likely one:
+// the Python SDK's `base_url` *is* the gateway base, so pasting it here is the
+// natural cross-SDK mistake. Unguarded it would send, and HMAC-sign,
+// `/api/exchange/api/v1/orders`.
+test("a legacy /api/exchange gateway baseUrl is refused at construction", () => {
+  for (const baseUrl of [
+    "https://exchange.nexus.xyz/api/exchange",
+    "https://exchange.nexus.xyz/api/exchange/",
+    // The shape the MCP server strips defensively (nexus-exchange-api#41).
+    "https://exchange.nexus.xyz/api/exchange/api/v1",
+  ]) {
+    assert.throws(
+      () => new Client({ baseUrl }),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /must not point at the legacy/);
+        // The message must name the value to use instead.
+        assert.match(err.message, /"https:\/\/exchange\.nexus\.xyz\/api\/v1"/);
+        return true;
+      },
+      `expected ${JSON.stringify(baseUrl)} to be refused`,
+    );
+  }
+  // Not fooled by the host merely being named `exchange`, nor by an `exchange`
+  // path segment that is not the `/api/exchange` gateway prefix.
+  for (const baseUrl of [
+    "https://exchange.nexus.xyz/api/v1",
+    "https://h/exchange/api/v1",
+  ]) {
+    assert.doesNotThrow(
+      () => new Client({ baseUrl, fetchImpl: async () => new Response("{}") }),
+      `expected ${JSON.stringify(baseUrl)} to be accepted`,
+    );
+  }
+});
+
+// chainId is per-network and server-authoritative; the SDK must not publish a
+// value that could be mistaken for one.
+test("signing domains publish no chain id", () => {
+  for (const config of Object.values(NETWORKS)) {
+    assert.equal(config.signingDomain.name, "Nexus Exchange");
+    assert.equal(config.signingDomain.version, "1");
+    assert.equal(config.signingDomain.chainId, null);
+  }
 });
 
 test("fetchMarketSummaries hits /markets/summary and decodes the body", async () => {

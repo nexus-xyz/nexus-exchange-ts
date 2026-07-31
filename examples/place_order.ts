@@ -8,7 +8,8 @@
 // Run with:
 //   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/place_order.ts --network beta
 
-import { Client, Network } from "../src/index.js";
+import { Client } from "../src/index.js";
+import { networkOptions } from "./_network.js";
 import type { OrderRequest } from "../src/index.js";
 
 const argv = process.argv.slice(2);
@@ -17,13 +18,7 @@ const opt = (name: string) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 
-const netArg = opt("--network");
-const network =
-  netArg === "beta"
-    ? Network.Beta
-    : netArg === "local"
-      ? Network.Local
-      : Network.Stable;
+const net = networkOptions();
 
 const apiKey = process.env.NEXUS_API_KEY;
 const apiSecret = process.env.NEXUS_API_SECRET;
@@ -32,7 +27,7 @@ if (!apiKey || !apiSecret) {
   process.exit(1);
 }
 
-const client = new Client({ network, apiKey, apiSecret });
+const client = new Client({ ...net, apiKey, apiSecret });
 
 const marketId =
   opt("--market") ?? (await client.fetchMarketSummaries())[0]?.market_id;

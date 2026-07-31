@@ -773,11 +773,52 @@ test("ops drift: a renamed request helper ABORTS instead of reporting zero ops",
   assert.match(r.stderr, /parsed zero/);
 });
 
-test("ops drift: networks disagreeing on their base path ABORT the check", () => {
+// The base path used to be reconciled across the per-network base URLs, which
+// stopped being the right invariant with the network axis (ENG-6453): the
+// networks deliberately no longer share a prefix — mainnet has no live base at
+// all — so agreement would fail on a correct map. It now reads the single
+// `API_BASE_PATH` constant, and these three pin that it still cannot be fooled.
+
+test("ops drift: a renamed API_BASE_PATH ABORTS instead of assuming a prefix", () => {
   const r = runDriftSandbox({
     mutateClient: (src) =>
-      replaceOnce(src, "http://localhost:9090/api/v1", "http://localhost:9090"),
+      replaceOnce(
+        src,
+        'export const API_BASE_PATH = "/api/v1";',
+        'export const API_BASE_PATH_RENAMED = "/api/v1";',
+      ),
   });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /disagree on their base path/);
+  assert.match(r.stderr, /could not find/);
+  assert.match(r.stderr, /API_BASE_PATH/);
+});
+
+test("ops drift: a changed API_BASE_PATH is detected, not silently accepted", () => {
+  // Every targeted operation would move, so the check must go red rather than
+  // keep comparing the old paths.
+  const r = runDriftSandbox({
+    mutateClient: (src) =>
+      replaceOnce(
+        src,
+        'export const API_BASE_PATH = "/api/v1";',
+        'export const API_BASE_PATH = "/v1";',
+      ),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /endpoints\.txt/);
+});
+
+test("ops drift: a malformed API_BASE_PATH ABORTS the check", () => {
+  for (const bad of ["", "api/v1", "/api/v1/"]) {
+    const r = runDriftSandbox({
+      mutateClient: (src) =>
+        replaceOnce(
+          src,
+          'export const API_BASE_PATH = "/api/v1";',
+          `export const API_BASE_PATH = ${JSON.stringify(bad)};`,
+        ),
+    });
+    assert.equal(r.status, 1, `expected abort for ${JSON.stringify(bad)}`);
+    assert.match(r.stderr, bad === "" ? /is empty/ : /must start with/);
+  }
 });
