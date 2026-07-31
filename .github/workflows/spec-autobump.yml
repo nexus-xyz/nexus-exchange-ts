@@ -23,7 +23,7 @@ name: Spec autobump
 # ── Why this re-vendors instead of copying rs verbatim ────────────────────────
 #
 # rs and py store only a tag and download the spec when their check runs, so a
-# bump PR there is two files. This repo stores a byte-pinned 189 KB copy at
+# bump PR there is two files. This repo stores a byte-pinned copy at
 # spec/openapi.json, and invariant A in scripts/check-spec-drift.mjs ties the tag
 # to that file's `info.version`. rs's autobump dropped in unchanged would leave
 # `.api-version` at the new tag and the vendored spec at the old one — red on
@@ -155,9 +155,26 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/${SPEC_REPO}/${NEW_TAG}/openapi.json" \
             -o /tmp/spec-new.json
 
+      # Pinned to an immutable tag, not `main`, and to an explicit version.
+      # `actions/checkout` persists the `SDK_DISPATCH_TOKEN` in .git/config for
+      # the whole job (the push step below needs it), and this job carries
+      # `contents: write` + `pull-requests: write` — so a script piped to `sh`
+      # here runs with reach over that token. Fetching it from a mutable branch
+      # would make every run trust whatever oasdiff's `main` says today, which is
+      # the one unpinned dependency in a repo that SHA-pins its actions. The tag
+      # is byte-identical to `main` as of v1.27.0; `version=` pins the binary so
+      # the classification gate is reproducible rather than tracking latest.
+      # The installer verifies the release tarball against its checksums.txt.
+      # Bump both together, deliberately — Dependabot does not see a curl.
       - name: Install oasdiff
         if: steps.gate.outputs.proceed == 'true'
-        run: curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh
+        env:
+          OASDIFF_VERSION: "1.27.0"
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/oasdiff/oasdiff/v${OASDIFF_VERSION}/install.sh" \
+            | version="${OASDIFF_VERSION}" sh
+          oasdiff --version
 
       - name: Classify vendored spec -> target with oasdiff
         if: steps.gate.outputs.proceed == 'true'

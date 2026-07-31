@@ -37,6 +37,9 @@ GET /stats/history
 GET /account
 GET /account/summary
 GET /account/equity-history
+GET /account/state
+GET /account/fees
+GET /account/portfolio-history
 GET /account/rate-limit
 GET /positions
 GET /positions/closed
