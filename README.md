@@ -87,12 +87,84 @@ await client.cancelOrder(order.id);
 Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account (`getAccount`, `getAccountSummary`,
-`getEquityHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
+`getAccountState`, `getAccountFees`, `getEquityHistory`,
+`getPortfolioHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
 `createDeposit`, `getDeposits`, `getWithdrawals`, `claimFaucet`, `adjustMargin`);
 positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
 `placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
+
+### Portfolio
+
+`getAccountState` returns the whole account in one call — the summary aggregates
+plus every open position — built from a single coherent read, so
+`summary.open_positions_count` always matches `positions.length`. Prefer it over
+pairing `getAccountSummary` with `getPositions`.
+
+```ts
+const { summary, positions } = await client.getAccountState();
+// `withdrawable` is free margin floored at zero: exactly what can leave the
+// account, already net of initial margin and open-order reservations.
+console.log(summary.withdrawable, positions.length);
+
+// Per-position risk detail. Every derived field is nullable and carries a
+// paired `*_error` reason — null means "not computed", never zero.
+for (const p of positions) {
+  console.log(p.market_id, p.notional_value ?? p.notional_value_error);
+  console.log(p.roe ?? p.roe_error, p.margin_used, p.max_leverage);
+  // Paid-positive: > 0 means this position has paid funding.
+  console.log(p.funding_paid);
+}
+```
+
+The fields v0.7.2 added — `withdrawable` and the per-position risk detail — are
+typed **optional**, because the schemas mark nothing as required and a server
+older than v0.7.2 omits them outright. So each has three states, and they are
+worth keeping apart: a value, `null` (reported but not computable — read the
+paired `*_error`), or `undefined` (this server does not report the field at all).
+`?? fallback` collapses the last two, which is usually what you want; reach for
+`=== undefined` to tell an old server apart from a degraded field. Never coalesce
+a missing `withdrawable` to `"0"` — "not reported" and "nothing withdrawable" are
+different answers and only one of them is safe to act on.
+
+`getPortfolioHistory` returns equity, cumulative trading PnL, and cumulative
+traded volume over a `window`, oldest first. Omit `window` to take the server's
+`day` default, and read `window`/`cadence_ms` off the response rather than
+assuming what was served.
+
+| window  | cadence | max points | span |
+| ------- | ------- | ---------- | ---- |
+| `day`   | 5 min   | 288        | 24 h |
+| `week`  | 1 h     | 168        | 7 d  |
+| `month` | 6 h     | 120        | 30 d |
+| `all`   | 1 d     | 366        | ~1 y |
+
+`limit` is optional and bounded by the spec to an integer in `[1, 366]`; the SDK
+rejects anything else with a `RangeError` before signing, rather than spending a
+round trip on a guaranteed `400`. Within range the server clamps further to the
+window's capacity above, so asking for more points than a window holds is fine.
+
+```ts
+const history = await client.getPortfolioHistory({ window: "week" });
+for (const p of history.points) {
+  // Decimal strings — parse with a decimal type, never a float. (Note
+  // `EquityPoint.equity` from `getEquityHistory` is a JSON number instead.)
+  console.log(p.timestamp_ms, p.equity, p.pnl, p.volume);
+}
+```
+
+`getAccountFees` reports the effective fee schedule. `maker_fee_bps` may be
+negative — that's a rebate, not an error — and `tier` / `schedule` are open
+strings that will gain values when the fee model lands, so don't switch
+exhaustively on them.
+
+```ts
+const fees = await client.getAccountFees();
+console.log(fees.maker_fee_bps, fees.taker_fee_bps, fees.tier, fees.schedule);
+// True when the rolling window may undercount (source fill buffer was full).
+console.log(fees.volume_30d, fees.volume_30d_estimated);
+```
 
 ## Pagination
 
@@ -120,6 +192,16 @@ const recent = await client
 
 The paginator drives the cursor for you: no request is issued until the first
 page is pulled, and it stops safely on a stuck or non-advancing server cursor.
+
+> [!WARNING]
+> **These paginators currently stop after the first page.** Spec v0.7.2 added a
+> `cursor` query parameter and an `X-Next-Cursor` response header to all five
+> endpoints, but the SDK does not thread the cursor yet, so `.all()` returns the
+> first page and reports `isLastPage === true` rather than raising. On an account
+> with more history than one page holds, that under-reports **silently**. Until
+> it lands, use the non-paginated methods (`getFills`, `getOrderHistory`,
+> `getEquityHistory`, `getClosedPositions`, `fetchTrades`) with an explicit
+> `limit` when completeness matters.
 
 ### Wallet sign-in, sessions & API-key management
 
