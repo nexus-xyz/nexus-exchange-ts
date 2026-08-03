@@ -67,7 +67,7 @@ directly and signs over the whole path, not a stripped one.
 import { Client, Network } from "@nexus-xyz/exchange-ts";
 
 const client = new Client({
-  network: Network.Stable,
+  network: Network.Testnet, // play funds; the default
   apiKey: process.env.NEXUS_EXCHANGE_API_KEY,
   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET, // 32-byte hex from POST /keys
 });
@@ -166,6 +166,123 @@ console.log(fees.maker_fee_bps, fees.taker_fee_bps, fees.tier, fees.schedule);
 console.log(fees.volume_30d, fees.volume_30d_estimated);
 ```
 
+## Networks
+
+The public axis is **testnet** (play funds) vs **mainnet** (real funds).
+`Network.Local` is a developer convenience, not a public network. The network is
+carried in the _host_, not the path, and each one is its own origin terminating
+its own TLS and WebSocket upgrades.
+
+| Network                     | Funds    | Faucet | REST base                           | WebSocket base             |
+| --------------------------- | -------- | ------ | ----------------------------------- | -------------------------- |
+| `Network.Testnet` (default) | play     | yes    | `https://exchange.nexus.xyz/api/v1` | `wss://exchange.nexus.xyz` |
+| `Network.Mainnet`           | **real** | no     | _not live yet — see below_          | —                          |
+| `Network.Local`             | play     | yes    | `http://localhost:9090/api/v1`      | `ws://localhost:9090`      |
+
+`networkConfig(network)` returns the bundled config (label, funds, faucet, base
+URLs, signing domain); `NETWORKS` is the whole frozen map.
+
+```ts
+const client = new Client({ network: Network.Testnet });
+
+client.network; // Network.Testnet
+client.isRealFunds; // false — gate destructive actions on this, not on the name
+client.baseUrl; // "https://exchange.nexus.xyz/api/v1"
+client.wsUrl; // "wss://exchange.nexus.xyz" — hand to createWsClient({ url })
+```
+
+> [!IMPORTANT]
+> **Credentials never cross networks.** Session tokens, HMAC API keys, and agent
+> registrations are minted per network and are invalid on any other, so a key
+> leaked or misconfigured on testnet cannot sign for real funds. A `Client` is
+> bound to one network for its lifetime — there is deliberately no setter — so
+> switching networks means constructing a new client with that network's own
+> credentials. Never carry a signature, nonce, or agent registration across
+> networks.
+
+Defaults are chosen to fail safe: omitting `network` gives **testnet**, and an
+unrecognized network identifier is refused rather than assumed to be play money.
+
+### What `baseUrl` is
+
+`baseUrl` is the **direct `/api/v1` surface, prefix included** — the indexer
+serves `/api/v1` at the host root, so the default is
+`https://exchange.nexus.xyz/api/v1` and a method's path is appended to it
+(`…/api/v1/orders`). The few host-root routes (`/auth/login`, `/keys`,
+`/agents/*`, `/ws-tokens`, `/ws`) are derived from that base's **origin**, so one
+field covers both surfaces and `client.wsUrl` can never point at a different host
+than the REST calls. Override it with the prefix included — `https://your-host`
+alone would send `/orders`, not `/api/v1/orders`:
+
+```ts
+new Client({ baseUrl: "https://your-host/api/v1" });
+```
+
+This SDK never uses the legacy `/api/exchange` gateway — no route it implements
+is served there — and an `/api/exchange` base is **refused at construction**
+rather than 404ing with a signature over the wrong path.
+
+That matters when porting a base URL between the Nexus SDKs, because the field
+named `base_url`/`baseUrl` does not mean the same thing in each. All of them
+reach identical URLs for the same operation; only the split differs:
+
+| SDK    | Field carrying this surface | Value                               | Prefix appended by     |
+| ------ | --------------------------- | ----------------------------------- | ---------------------- |
+| **ts** | `baseUrl` (single field)    | `https://exchange.nexus.xyz/api/v1` | you (it's in the base) |
+| py     | `direct_base_url`           | `https://exchange.nexus.xyz`        | the SDK                |
+| mcp    | `directBaseUrl`             | `https://exchange.nexus.xyz`        | the SDK                |
+
+py and mcp additionally carry a **gateway** base (`base_url` /
+`gatewayBaseUrl`, at `/api/exchange`) because they expose routes that have no
+`/api/v1` equivalent yet — demo reads, market specs, admin/observability. This
+SDK implements none of those, which is why it needs only one field. So py's
+`base_url` is **not** the analogue of this SDK's `baseUrl`; `direct_base_url` is,
+plus the `/api/v1` prefix.
+
+### Mainnet is not reachable yet
+
+`Network.Mainnet` exists so you can write network-generic code today, but
+selecting it throws. Two independent reasons, and both would fail _only_ against
+real funds — the one environment that cannot be rehearsed:
+
+1. **DNS/TLS is still pending**, so `api.nexus.xyz` does not resolve.
+2. **The path composition differs.** The durable per-network hosts pair a `/v1`
+   base with the spec's _root_ paths (`/v1` + `/orders`), while this client signs
+   `/api/v1` paths against a host-root base. Pointing it at `…/v1` would send —
+   and sign — `/v1/api/v1/orders`.
+
+Pass an explicit `baseUrl` to target a host deliberately. Note the network still
+selects the funds classification and which credentials are valid, so an override
+is not a way to cross the funds boundary.
+
+Never derive a host by interpolating the network name: mainnet is deliberately
+off-pattern (`api.nexus.xyz`, not `api.mainnet.nexus.xyz`), so
+`api.{network}.nexus.xyz` resolves everywhere testable and breaks only on real
+money.
+
+### Beta
+
+Beta is a testnet base, not a network of its own:
+
+```ts
+new Client({
+  network: Network.Testnet,
+  baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+});
+```
+
+### Signing domain
+
+`networkConfig(n).signingDomain` is the EIP-712 domain, with
+`chainId: null` — meaning **this SDK does not publish the value**, not that it is
+zero. The domain is per-network and server-authoritative: read
+`signing_domain.chain_id` from `GET /metadata` for the network you are connected
+to and pass it to `EthSigner.registerAgent({ chainId })`. If you cannot obtain
+it, refuse to sign rather than defaulting — a wrong domain either fails
+verification or produces a signature valid on a _different_ network. `0` and
+out-of-range values are rejected for exactly that reason. Do not assume a Nexus
+L1 chain id: mainnet runs against Ethereum Mainnet via the USDX bridge.
+
 ## Pagination
 
 List endpoints have auto-paging `*Paginated` variants (`fetchTradesPaginated`,
@@ -214,7 +331,7 @@ known-answer vectors.
 ```ts
 import { Client, EthSigner, Network } from "@nexus-xyz/exchange-ts";
 
-const client = new Client({ network: Network.Stable });
+const client = new Client({ network: Network.Testnet });
 const wallet = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
 
 // Exchange an EIP-191 signature for a 24h session token (stored on the client).

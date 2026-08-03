@@ -4,18 +4,13 @@
 //   NEXUS_EXCHANGE_API_KEY=... NEXUS_EXCHANGE_API_SECRET=... \
 //     npx tsx examples/paginate_fills.ts [--network beta]
 
-import { Client, Network } from "../src/index.js";
+import { Client } from "../src/index.js";
+import { networkOptions } from "./_network.js";
 
-const netArg = process.argv[process.argv.indexOf("--network") + 1];
-const network =
-  netArg === "beta"
-    ? Network.Beta
-    : netArg === "local"
-      ? Network.Local
-      : Network.Stable;
+const net = networkOptions();
 
 const client = new Client({
-  network,
+  ...net,
   apiKey: process.env.NEXUS_EXCHANGE_API_KEY,
   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET,
 });

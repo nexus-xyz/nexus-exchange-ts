@@ -3,15 +3,12 @@
 // Run with:  npx tsx examples/public_market_data.ts
 //        or:  npx tsx examples/public_market_data.ts --network beta
 
-import { Client, Network } from "../src/index.js";
+import { Client } from "../src/index.js";
+import { networkOptions } from "./_network.js";
 
-const network =
-  process.argv.includes("--network") &&
-  process.argv[process.argv.indexOf("--network") + 1] === "beta"
-    ? Network.Beta
-    : Network.Stable;
+const net = networkOptions();
 
-const client = new Client({ network });
+const client = new Client(net);
 
 const summaries = await client.fetchMarketSummaries();
 console.log(`${summaries.length} markets`);

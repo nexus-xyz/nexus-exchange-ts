@@ -527,38 +527,37 @@ function parseOpsManifest(label, text) {
 
 /**
  * The base path every non-`root` request is sent under, read out of
- * `NETWORK_BASE_URL` in src/client.ts rather than hardcoded here — the prefix is
+ * `API_BASE_PATH` in src/client.ts rather than hardcoded here — the prefix is
  * what turns a method-relative path into the spec path, so a checker that
  * hardcoded it would go on comparing the old paths after a base-URL change and
- * report green over every one of them. Every network must agree on the path
- * (they differ only in host), and the result must be non-empty; anything else
- * fails loudly.
+ * report green over every one of them.
+ *
+ * Reads the one exported constant rather than reconciling the per-network base
+ * URLs (ENG-6453). Agreement across that table used to be the invariant, and it
+ * is no longer the right one: the networks deliberately do NOT all share a
+ * prefix now — mainnet's durable base is `/v1`-shaped and has no live host at
+ * all — so requiring agreement would fail on a correct map. `API_BASE_PATH` is
+ * what every non-root request actually composes, in one place, and every live
+ * network base is built from it (pinned by a unit test in test/client.test.ts).
  */
 function clientBasePath(src) {
-  const table = /const\s+NETWORK_BASE_URL[^=]*=\s*\{([\s\S]*?)\n\}/.exec(src);
-  if (!table) {
+  const found = /export\s+const\s+API_BASE_PATH\s*=\s*"([^"]*)"/.exec(src);
+  if (!found) {
     fail(
-      "could not find `NETWORK_BASE_URL` in src/client.ts; the base-URL table moved or changed shape — update clientBasePath()",
+      'could not find `export const API_BASE_PATH = "…"` in src/client.ts; the base-path constant moved or changed shape — update clientBasePath()',
     );
   }
-  const paths = new Set();
-  for (const [, url] of table[1].matchAll(/"(https?:\/\/[^"]+)"/g)) {
-    paths.add(new URL(url).pathname.replace(/\/+$/, ""));
-  }
-  if (paths.size === 0) {
-    fail(
-      "parsed zero base URLs from `NETWORK_BASE_URL` in src/client.ts — update clientBasePath()",
-    );
-  }
-  if (paths.size > 1) {
-    fail(
-      `the networks in \`NETWORK_BASE_URL\` disagree on their base path (${[...paths].map((p) => JSON.stringify(p)).join(", ")}); the drift check needs one prefix to derive spec paths from method-relative ones`,
-    );
-  }
-  const [base] = paths;
+  const base = found[1];
   if (!base) {
     fail(
-      "`NETWORK_BASE_URL` carries no base path; if the SDK moved to host-root requests, drop the prefixing in implementedOps()",
+      "`API_BASE_PATH` in src/client.ts is empty; if the SDK moved to host-root requests, drop the prefixing in implementedOps()",
+    );
+  }
+  // It is concatenated straight onto method-relative paths, so a stray leading
+  // or trailing slash would silently shift every derived operation.
+  if (!base.startsWith("/") || base.endsWith("/")) {
+    fail(
+      `\`API_BASE_PATH\` must start with "/" and must not end with one (got ${JSON.stringify(base)}); it is concatenated directly onto method-relative paths`,
     );
   }
   return base;

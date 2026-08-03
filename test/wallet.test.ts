@@ -117,3 +117,140 @@ test("registerAgent rejects a bad agent address", () => {
     NexusExchangeError,
   );
 });
+
+// ── EIP-712 domain safety (ENG-6453) ─────────────────────────────────────────
+//
+// The signing domain is per-network and server-authoritative (`/metadata`'s
+// `signing_domain`). The spec is explicit that `chain_id: null` means "not
+// published", NOT zero, and that a client which cannot obtain one must refuse to
+// sign rather than guess — a wrong domain either fails verification or, worse,
+// produces a signature that is valid on a *different* network.
+
+test("registerAgent refuses chainId 0 rather than signing a zero domain", () => {
+  const signer = EthSigner.fromHex(TEST_KEY);
+  // 0 is not a real chain id, but it is what a missing one collapses to:
+  // `Number(undefined ?? 0)`, an unset env var, or `chain_id: null ?? 0`.
+  assert.throws(
+    () =>
+      signer.registerAgent({
+        agent: KAT_AGENT,
+        chainId: 0,
+        expiresAtMs: KAT_EXPIRES_MS,
+        nonce: KAT_NONCE,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof NexusExchangeError);
+      assert.match(err.message, /chainId must be a positive integer/);
+      assert.match(err.message, /metadata/);
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      signer.registerAgent({
+        agent: KAT_AGENT,
+        chainId: 0n,
+        expiresAtMs: KAT_EXPIRES_MS,
+        nonce: KAT_NONCE,
+      }),
+    /chainId must be a positive integer/,
+  );
+});
+
+test("registerAgent rejects negative and non-integer chain ids", () => {
+  const signer = EthSigner.fromHex(TEST_KEY);
+  const base = {
+    agent: KAT_AGENT,
+    expiresAtMs: KAT_EXPIRES_MS,
+    nonce: KAT_NONCE,
+  };
+  for (const chainId of [-1, -1n]) {
+    assert.throws(
+      () => signer.registerAgent({ ...base, chainId }),
+      /chainId must be a positive integer/,
+    );
+  }
+  // A fractional or non-finite id would otherwise reach `BigInt()` and throw a
+  // bare RangeError with no explanation of what is wrong.
+  for (const chainId of [1.5, NaN, Infinity, -Infinity]) {
+    assert.throws(
+      () => signer.registerAgent({ ...base, chainId }),
+      /chainId must be a safe integer or bigint/,
+    );
+  }
+});
+
+// The uint256 writer stops after 32 bytes, so before this guard an oversized
+// value wrapped modulo 2^256: `2^256 + KAT_CHAIN_ID` encoded to the same word as
+// `KAT_CHAIN_ID`, i.e. two different signing inputs with one digest.
+test("an oversized chain id is rejected, not silently wrapped", () => {
+  const signer = EthSigner.fromHex(TEST_KEY);
+  const wrapped = (1n << 256n) + BigInt(KAT_CHAIN_ID);
+  assert.throws(
+    () =>
+      signer.registerAgent({
+        agent: KAT_AGENT,
+        chainId: wrapped,
+        expiresAtMs: KAT_EXPIRES_MS,
+        nonce: KAT_NONCE,
+      }),
+    /does not fit in 32 bytes/,
+  );
+  // Proof the collision was real: the in-range id still signs, and had the
+  // oversized one been accepted it would have produced this same signature.
+  const ok = signer.registerAgent({
+    agent: KAT_AGENT,
+    chainId: KAT_CHAIN_ID,
+    expiresAtMs: KAT_EXPIRES_MS,
+    nonce: KAT_NONCE,
+  });
+  assert.match(ok.signature, /^0x[0-9a-f]{130}$/);
+});
+
+// `expires_at` / `nonce` are signed into the digest as the exact value passed but
+// transmitted as JSON numbers via `Number(...)`. Above MAX_SAFE_INTEGER those
+// disagree: 2^53+1 signs `…93` and would send `…92`, so the server rebuilds a
+// different digest and verification fails for no visible reason.
+test("an expiry or nonce that cannot round-trip as a JSON number is refused", () => {
+  const signer = EthSigner.fromHex(TEST_KEY);
+  const base = { agent: KAT_AGENT, chainId: KAT_CHAIN_ID };
+  const unsafe = BigInt(Number.MAX_SAFE_INTEGER) + 2n; // 2^53 + 1
+  assert.notEqual(BigInt(Number(unsafe)), unsafe); // the corruption is real
+
+  assert.throws(
+    () =>
+      signer.registerAgent({ ...base, expiresAtMs: unsafe, nonce: KAT_NONCE }),
+    /expiresAtMs must be a non-negative integer/,
+  );
+  assert.throws(
+    () =>
+      signer.registerAgent({
+        ...base,
+        expiresAtMs: KAT_EXPIRES_MS,
+        nonce: unsafe,
+      }),
+    /nonce must be a non-negative integer/,
+  );
+  // Fractional / non-finite / negative would otherwise surface as a bare
+  // RangeError out of `BigInt()`, outside the SDK's error hierarchy.
+  for (const nonce of [1.5, NaN, Infinity, -1, -1n]) {
+    assert.throws(
+      () =>
+        signer.registerAgent({ ...base, expiresAtMs: KAT_EXPIRES_MS, nonce }),
+      /nonce must be a non-negative integer/,
+    );
+  }
+  // The boundary itself is fine, as bigint or number, and both are transmitted
+  // exactly as signed.
+  for (const nonce of [
+    Number.MAX_SAFE_INTEGER,
+    BigInt(Number.MAX_SAFE_INTEGER),
+  ]) {
+    const body = signer.registerAgent({
+      ...base,
+      expiresAtMs: KAT_EXPIRES_MS,
+      nonce,
+    });
+    assert.equal(body.nonce, Number.MAX_SAFE_INTEGER);
+  }
+});
