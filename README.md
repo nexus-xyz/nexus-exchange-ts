@@ -346,16 +346,6 @@ The flat getters (`fetchTrades`, `getFills`, `getOrderHistory`,
 `getClosedPositions`, `getEquityHistory`) return the **first page only** and take
 the same `limit` bound.
 
-> [!WARNING]
-> **These paginators currently stop after the first page.** Spec v0.7.2 added a
-> `cursor` query parameter and an `X-Next-Cursor` response header to all five
-> endpoints, but the SDK does not thread the cursor yet, so `.all()` returns the
-> first page and reports `isLastPage === true` rather than raising. On an account
-> with more history than one page holds, that under-reports **silently**. Until
-> it lands, use the non-paginated methods (`getFills`, `getOrderHistory`,
-> `getEquityHistory`, `getClosedPositions`, `fetchTrades`) with an explicit
-> `limit` when completeness matters.
-
 ### Wallet sign-in, sessions & API-key management
 
 HMAC API keys are minted from a wallet. `EthSigner` wraps an EVM private key and
