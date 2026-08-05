@@ -72,7 +72,7 @@ jobs:
       id-token: write # mint the OIDC token npm uses to attest provenance
     environment: npm-publish # optional manual-approval / secret-scoping gate
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
 
