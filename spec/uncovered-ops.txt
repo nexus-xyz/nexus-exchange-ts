@@ -91,14 +91,6 @@ GET /account/cancel-on-disconnect
 PUT /account/cancel-on-disconnect
 GET /api/v1/account/cancel-on-disconnect
 PUT /api/v1/account/cancel-on-disconnect
-# Cross-chain bridge deposits (spec Phase A). Modelled in the Rust SDK; the TS
-# client has no bridge methods yet.
-GET /api/v1/bridge/assets
-GET /api/v1/bridge/deposit-addresses
-POST /api/v1/bridge/deposit-addresses
-GET /api/v1/bridge/deposits
-GET /api/v1/bridge/deposits/{id}
-
 # ── Deprecated / superseded — intentionally never targeted ─────────────────────
 #
 # POST /ws/token — superseded by the canonical plural POST /ws-tokens, which the
