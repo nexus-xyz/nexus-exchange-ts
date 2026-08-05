@@ -67,7 +67,7 @@ directly and signs over the whole path, not a stripped one.
 import { Client, Network } from "@nexus-xyz/exchange-ts";
 
 const client = new Client({
-  network: Network.Stable,
+  network: Network.Testnet, // play funds; the default
   apiKey: process.env.NEXUS_EXCHANGE_API_KEY,
   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET, // 32-byte hex from POST /keys
 });
@@ -87,12 +87,201 @@ await client.cancelOrder(order.id);
 Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account (`getAccount`, `getAccountSummary`,
-`getEquityHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
+`getAccountState`, `getAccountFees`, `getEquityHistory`,
+`getPortfolioHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
 `createDeposit`, `getDeposits`, `getWithdrawals`, `claimFaucet`, `adjustMargin`);
 positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
 `placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
+
+### Portfolio
+
+`getAccountState` returns the whole account in one call — the summary aggregates
+plus every open position — built from a single coherent read, so
+`summary.open_positions_count` always matches `positions.length`. Prefer it over
+pairing `getAccountSummary` with `getPositions`.
+
+```ts
+const { summary, positions } = await client.getAccountState();
+// `withdrawable` is free margin floored at zero: exactly what can leave the
+// account, already net of initial margin and open-order reservations.
+console.log(summary.withdrawable, positions.length);
+
+// Per-position risk detail. Every derived field is nullable and carries a
+// paired `*_error` reason — null means "not computed", never zero.
+for (const p of positions) {
+  console.log(p.market_id, p.notional_value ?? p.notional_value_error);
+  console.log(p.roe ?? p.roe_error, p.margin_used, p.max_leverage);
+  // Paid-positive: > 0 means this position has paid funding.
+  console.log(p.funding_paid);
+}
+```
+
+The fields v0.7.2 added — `withdrawable` and the per-position risk detail — are
+typed **optional**, because the schemas mark nothing as required and a server
+older than v0.7.2 omits them outright. So each has three states, and they are
+worth keeping apart: a value, `null` (reported but not computable — read the
+paired `*_error`), or `undefined` (this server does not report the field at all).
+`?? fallback` collapses the last two, which is usually what you want; reach for
+`=== undefined` to tell an old server apart from a degraded field. Never coalesce
+a missing `withdrawable` to `"0"` — "not reported" and "nothing withdrawable" are
+different answers and only one of them is safe to act on.
+
+`getPortfolioHistory` returns equity, cumulative trading PnL, and cumulative
+traded volume over a `window`, oldest first. Omit `window` to take the server's
+`day` default, and read `window`/`cadence_ms` off the response rather than
+assuming what was served.
+
+| window  | cadence | max points | span |
+| ------- | ------- | ---------- | ---- |
+| `day`   | 5 min   | 288        | 24 h |
+| `week`  | 1 h     | 168        | 7 d  |
+| `month` | 6 h     | 120        | 30 d |
+| `all`   | 1 d     | 366        | ~1 y |
+
+`limit` is optional and bounded by the spec to an integer in `[1, 366]`; the SDK
+rejects anything else with a `RangeError` before signing, rather than spending a
+round trip on a guaranteed `400`. Within range the server clamps further to the
+window's capacity above, so asking for more points than a window holds is fine.
+
+```ts
+const history = await client.getPortfolioHistory({ window: "week" });
+for (const p of history.points) {
+  // Decimal strings — parse with a decimal type, never a float. (Note
+  // `EquityPoint.equity` from `getEquityHistory` is a JSON number instead.)
+  console.log(p.timestamp_ms, p.equity, p.pnl, p.volume);
+}
+```
+
+`getAccountFees` reports the effective fee schedule. `maker_fee_bps` may be
+negative — that's a rebate, not an error — and `tier` / `schedule` are open
+strings that will gain values when the fee model lands, so don't switch
+exhaustively on them.
+
+```ts
+const fees = await client.getAccountFees();
+console.log(fees.maker_fee_bps, fees.taker_fee_bps, fees.tier, fees.schedule);
+// True when the rolling window may undercount (source fill buffer was full).
+console.log(fees.volume_30d, fees.volume_30d_estimated);
+```
+
+## Networks
+
+The public axis is **testnet** (play funds) vs **mainnet** (real funds).
+`Network.Local` is a developer convenience, not a public network. The network is
+carried in the _host_, not the path, and each one is its own origin terminating
+its own TLS and WebSocket upgrades.
+
+| Network                     | Funds    | Faucet | REST base                           | WebSocket base             |
+| --------------------------- | -------- | ------ | ----------------------------------- | -------------------------- |
+| `Network.Testnet` (default) | play     | yes    | `https://exchange.nexus.xyz/api/v1` | `wss://exchange.nexus.xyz` |
+| `Network.Mainnet`           | **real** | no     | _not live yet — see below_          | —                          |
+| `Network.Local`             | play     | yes    | `http://localhost:9090/api/v1`      | `ws://localhost:9090`      |
+
+`networkConfig(network)` returns the bundled config (label, funds, faucet, base
+URLs, signing domain); `NETWORKS` is the whole frozen map.
+
+```ts
+const client = new Client({ network: Network.Testnet });
+
+client.network; // Network.Testnet
+client.isRealFunds; // false — gate destructive actions on this, not on the name
+client.baseUrl; // "https://exchange.nexus.xyz/api/v1"
+client.wsUrl; // "wss://exchange.nexus.xyz" — hand to createWsClient({ url })
+```
+
+> [!IMPORTANT]
+> **Credentials never cross networks.** Session tokens, HMAC API keys, and agent
+> registrations are minted per network and are invalid on any other, so a key
+> leaked or misconfigured on testnet cannot sign for real funds. A `Client` is
+> bound to one network for its lifetime — there is deliberately no setter — so
+> switching networks means constructing a new client with that network's own
+> credentials. Never carry a signature, nonce, or agent registration across
+> networks.
+
+Defaults are chosen to fail safe: omitting `network` gives **testnet**, and an
+unrecognized network identifier is refused rather than assumed to be play money.
+
+### What `baseUrl` is
+
+`baseUrl` is the **direct `/api/v1` surface, prefix included** — the indexer
+serves `/api/v1` at the host root, so the default is
+`https://exchange.nexus.xyz/api/v1` and a method's path is appended to it
+(`…/api/v1/orders`). The few host-root routes (`/auth/login`, `/keys`,
+`/agents/*`, `/ws-tokens`, `/ws`) are derived from that base's **origin**, so one
+field covers both surfaces and `client.wsUrl` can never point at a different host
+than the REST calls. Override it with the prefix included — `https://your-host`
+alone would send `/orders`, not `/api/v1/orders`:
+
+```ts
+new Client({ baseUrl: "https://your-host/api/v1" });
+```
+
+This SDK never uses the legacy `/api/exchange` gateway — no route it implements
+is served there — and an `/api/exchange` base is **refused at construction**
+rather than 404ing with a signature over the wrong path.
+
+That matters when porting a base URL between the Nexus SDKs, because the field
+named `base_url`/`baseUrl` does not mean the same thing in each. All of them
+reach identical URLs for the same operation; only the split differs:
+
+| SDK    | Field carrying this surface | Value                               | Prefix appended by     |
+| ------ | --------------------------- | ----------------------------------- | ---------------------- |
+| **ts** | `baseUrl` (single field)    | `https://exchange.nexus.xyz/api/v1` | you (it's in the base) |
+| py     | `direct_base_url`           | `https://exchange.nexus.xyz`        | the SDK                |
+| mcp    | `directBaseUrl`             | `https://exchange.nexus.xyz`        | the SDK                |
+
+py and mcp additionally carry a **gateway** base (`base_url` /
+`gatewayBaseUrl`, at `/api/exchange`) because they expose routes that have no
+`/api/v1` equivalent yet — demo reads, market specs, admin/observability. This
+SDK implements none of those, which is why it needs only one field. So py's
+`base_url` is **not** the analogue of this SDK's `baseUrl`; `direct_base_url` is,
+plus the `/api/v1` prefix.
+
+### Mainnet is not reachable yet
+
+`Network.Mainnet` exists so you can write network-generic code today, but
+selecting it throws. Two independent reasons, and both would fail _only_ against
+real funds — the one environment that cannot be rehearsed:
+
+1. **DNS/TLS is still pending**, so `api.nexus.xyz` does not resolve.
+2. **The path composition differs.** The durable per-network hosts pair a `/v1`
+   base with the spec's _root_ paths (`/v1` + `/orders`), while this client signs
+   `/api/v1` paths against a host-root base. Pointing it at `…/v1` would send —
+   and sign — `/v1/api/v1/orders`.
+
+Pass an explicit `baseUrl` to target a host deliberately. Note the network still
+selects the funds classification and which credentials are valid, so an override
+is not a way to cross the funds boundary.
+
+Never derive a host by interpolating the network name: mainnet is deliberately
+off-pattern (`api.nexus.xyz`, not `api.mainnet.nexus.xyz`), so
+`api.{network}.nexus.xyz` resolves everywhere testable and breaks only on real
+money.
+
+### Beta
+
+Beta is a testnet base, not a network of its own:
+
+```ts
+new Client({
+  network: Network.Testnet,
+  baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+});
+```
+
+### Signing domain
+
+`networkConfig(n).signingDomain` is the EIP-712 domain, with
+`chainId: null` — meaning **this SDK does not publish the value**, not that it is
+zero. The domain is per-network and server-authoritative: read
+`signing_domain.chain_id` from `GET /metadata` for the network you are connected
+to and pass it to `EthSigner.registerAgent({ chainId })`. If you cannot obtain
+it, refuse to sign rather than defaulting — a wrong domain either fails
+verification or produces a signature valid on a _different_ network. `0` and
+out-of-range values are rejected for exactly that reason. Do not assume a Nexus
+L1 chain id: mainnet runs against Ethereum Mainnet via the USDX bridge.
 
 ## Pagination
 
@@ -121,6 +310,16 @@ const recent = await client
 The paginator drives the cursor for you: no request is issued until the first
 page is pulled, and it stops safely on a stuck or non-advancing server cursor.
 
+> [!WARNING]
+> **These paginators currently stop after the first page.** Spec v0.7.2 added a
+> `cursor` query parameter and an `X-Next-Cursor` response header to all five
+> endpoints, but the SDK does not thread the cursor yet, so `.all()` returns the
+> first page and reports `isLastPage === true` rather than raising. On an account
+> with more history than one page holds, that under-reports **silently**. Until
+> it lands, use the non-paginated methods (`getFills`, `getOrderHistory`,
+> `getEquityHistory`, `getClosedPositions`, `fetchTrades`) with an explicit
+> `limit` when completeness matters.
+
 ### Wallet sign-in, sessions & API-key management
 
 HMAC API keys are minted from a wallet. `EthSigner` wraps an EVM private key and
@@ -132,7 +331,7 @@ known-answer vectors.
 ```ts
 import { Client, EthSigner, Network } from "@nexus-xyz/exchange-ts";
 
-const client = new Client({ network: Network.Stable });
+const client = new Client({ network: Network.Testnet });
 const wallet = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
 
 // Exchange an EIP-191 signature for a 24h session token (stored on the client).
@@ -266,20 +465,44 @@ This SDK targets a released version of the Exchange API spec, pinned in
 The spec lives in
 [`nexus-xyz/nexus-exchange-api`](https://github.com/nexus-xyz/nexus-exchange-api).
 
-A drift check (`pnpm run check:drift`, run in CI) keeps four things in lockstep:
+A drift check (`pnpm run check:drift`, run in CI on **every** pull request) keeps
 the pin, the vendored spec, the targeted schema list
-([`spec/schemas.txt`](./spec/schemas.txt)), and the models — and verifies the
-vendored spec still matches the upstream spec at the pinned tag. If the upstream
-spec adds, renames, or removes a schema, the check fails until the models and
-pin are updated to match.
+([`spec/schemas.txt`](./spec/schemas.txt)), the operations manifest
+([`endpoints.txt`](./endpoints.txt)), and the hand-written client and models in
+lockstep. If the upstream spec adds, renames, or removes a schema, an enum
+member, or an operation, the check fails until the SDK and the pin are updated to
+match. It also verifies the vendored spec still **byte-matches** the upstream
+spec at the pinned tag, so the vendored copy can't be hand-edited into agreeing
+with itself.
 
-It also validates enum members _both ways_: every `enum` in the spec must have
-exactly the same members in the matching `src/models.ts` union, so a new
-upstream value (or a stray one the spec dropped) fails the gate. Values the SDK
-deliberately ships ahead of the spec are recorded in
-[`spec/enum-allowlist.txt`](./spec/enum-allowlist.txt), and each allowlist entry
-is itself checked for staleness — it fails once the spec catches up, so the
-allowlist can't accumulate dead grants.
+The invariants that matter most run _both ways_:
+
+- **enum members** — every `enum` in the spec must have exactly the same members
+  in the matching `src/models.ts` union, so a new upstream value (or a stray one
+  the spec dropped) fails the gate. Values the SDK deliberately ships ahead of
+  the spec are recorded in
+  [`spec/enum-allowlist.txt`](./spec/enum-allowlist.txt).
+- **operations** — every line in [`endpoints.txt`](./endpoints.txt) must exist in
+  the spec, and the set must equal the REST operations `src/client.ts` actually
+  implements. So the manifest can neither claim coverage the code lacks nor miss
+  a wrapper someone added, and a mis-prefixed path fails rather than quietly
+  overstating coverage. Spec operations the SDK deliberately does not target are
+  recorded in [`spec/uncovered-ops.txt`](./spec/uncovered-ops.txt), so new
+  upstream surface can't land unnoticed.
+
+Every allowlist entry is itself checked for staleness — it fails once the spec
+catches up or the code moves on, so no list can accumulate dead grants. The
+checker is itself tested: `test/models.test.ts` defeats each invariant in a
+throwaway copy of the drift inputs and asserts the gate goes red, since a green
+run is only worth what proves it can fail.
+
+Spec releases are picked up automatically: `spec-autobump` polls for a newer
+release (and is poked by the spec repo on publish), classifies the delta with
+[oasdiff](https://github.com/oasdiff/oasdiff), re-vendors the spec, and opens a
+labelled PR — `spec-autobump` for a non-breaking delta, `breaking ·
+needs-SDK-update` for one that needs SDK changes. To re-vendor by hand, run
+`pnpm run bump:spec vX.Y.Z`; never edit [`spec/openapi.json`](./spec/openapi.json)
+directly.
 
 ## Releasing
 

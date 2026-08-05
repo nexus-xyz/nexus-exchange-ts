@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Nexus Exchange API",
-    "description": "Perpetual futures exchange with HMAC API key authentication, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never rejects or routes on them, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.",
-    "version": "0.7.1"
+    "description": "Perpetual futures exchange with HMAC API key authentication for trading endpoints, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never uses them for authentication, authorization, or routing, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.\n\n## API version support\n\nThe version identifier is the released spec tag of this contract (`vMAJOR.MINOR.PATCH`) — the tag every official SDK pins and reports in `X-Nexus-Api-Version`. The edge publishes the versions it accepts at the `/metadata` endpoint — served by the edge, not an operation in this contract — returning `current_api_version` (latest tag served) and `min_api_version` (oldest tag still accepted), so clients and agents can discover the support window programmatically.\n\nPre-1.0 (`v0.x.y`), breaking changes are frequent and `min_api_version` may advance with any breaking release; a released tag stays supported for at least 14 days after the release that supersedes it, and this window widens after 1.0. A request whose `X-Nexus-Api-Version` names a recognized tag older than `min_api_version` receives a machine-readable `426 Upgrade Required` (error code `api_version_unsupported`) with a link to the current spec, so tooling and agents can detect the skew and upgrade. A missing, malformed, or unknown version header is treated as an unknown/legacy client and is not blocked. Because the header is unauthenticated (excluded from the HMAC canonical string), this version gate is a compatibility courtesy, not a security control — authentication and authorization never depend on it, and spoofing the header only relaxes the gate.",
+    "version": "0.7.2"
   },
   "servers": [
     {
@@ -226,7 +226,7 @@
           "Agents"
         ],
         "summary": "Register an agent key",
-        "description": "Register a new agent key for your wallet. An agent is an Ethereum-derived keypair that can sign trading requests on your behalf without exposing your main wallet. The registration is authorized by an EIP-712 signature from the wallet that will own the agent — no session token required.\n\nEIP-712 domain: `{ name: 'NexusExchange', version: '1', chainId: <testnet chain id> }`.\nTyped data type: `RegisterAgent { address agent, uint256 expiresAt, uint256 nonce }`.",
+        "description": "Register a new agent key for your wallet. An agent is an Ethereum-derived keypair that can sign trading requests on your behalf without exposing your main wallet. The registration is authorized by an EIP-712 signature from the wallet that will own the agent — no session token required.\n\nEIP-712 domain: `{ name: 'Nexus Exchange', version: '1', chainId: <testnet chain id> }`.\nTyped data type: `RegisterAgent { address agent, uint64 expiresAt, uint64 nonce }`.",
         "requestBody": {
           "required": true,
           "content": {
@@ -660,6 +660,9 @@
               "maximum": 1000
             },
             "description": "Number of trades to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -688,6 +691,11 @@
                     "info": {}
                   }
                 ]
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -1779,7 +1787,18 @@
                     "entry_price": "49500.00",
                     "unrealized_pnl": "250.50",
                     "realized_pnl": "0.00",
-                    "liquidation_price": "42000.00"
+                    "liquidation_price": "42000.00",
+                    "notional_value": "25000.50",
+                    "notional_value_error": null,
+                    "roe": "0.2004",
+                    "roe_error": null,
+                    "margin_used": "1250.03",
+                    "margin_used_error": null,
+                    "max_leverage": 20,
+                    "max_leverage_error": null,
+                    "funding_paid": "12.50",
+                    "leverage": null,
+                    "leverage_error": "margin_state_not_mirrored"
                   }
                 ]
               }
@@ -1818,6 +1837,9 @@
               "maximum": 1000
             },
             "description": "Maximum fills to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -1845,6 +1867,11 @@
                     "is_liquidation": false
                   }
                 ]
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -2192,6 +2219,48 @@
         }
       }
     },
+    "/account/fees": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Account fee schedule",
+        "description": "The authenticated account's effective fee schedule — maker/taker rate (bps), fee tier, rolling 30-day traded volume, and active discounts — for parity with Hyperliquid `userFees`. This is the forward-looking *schedule* rate, not a realized average: the venue charges a per-fill fee but does not emit a realized per-fill rate. The reported rate's scope is given by `schedule` (see the schema); the account id is taken from the authenticated credentials, not a parameter.",
+        "operationId": "fetchAccountFees",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account fee schedule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountFees"
+                },
+                "example": {
+                  "maker_fee_bps": -2,
+                  "taker_fee_bps": 5,
+                  "tier": "base",
+                  "schedule": "standard",
+                  "volume_30d": "101005.00",
+                  "volume_30d_estimated": false,
+                  "discounts": []
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
     "/account/summary": {
       "get": {
         "tags": [
@@ -2217,6 +2286,48 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/AuthoritativeMarginUnavailable"
+          }
+        }
+      }
+    },
+    "/account/state": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Consolidated account state",
+        "description": "Full account state in a single call: the portfolio summary aggregates plus all open positions (`{ summary, positions }`). Saves clients from pairing `/account/summary` with `/positions`, matching Hyperliquid `clearinghouseState` ergonomics. Both parts are built from one coherent read, so `summary.open_positions_count` always matches the `positions` length, and the embedded `summary` is identical to the standalone `/account/summary` response. Fails closed with `502` when the engine-authoritative margin view is unavailable.",
+        "operationId": "fetchAccountState",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Consolidated account state (summary aggregates + open positions).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/AuthoritativeMarginUnavailable"
           }
         }
       }
@@ -2245,6 +2356,9 @@
               "maximum": 720
             },
             "description": "Maximum points to return (capped at 720)."
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -2259,10 +2373,67 @@
                   }
                 }
               }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
+              }
             }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/account/portfolio-history": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Account portfolio time-series",
+        "description": "Portfolio time-series for the authenticated account — equity, cumulative trading PnL, and cumulative traded volume — downsampled over the selected `window` (`day`, `week`, `month`, or `all`), oldest first. Extends `/account/equity-history` (equity only, ~1h window) with PnL and volume series across multiple windows; both endpoints derive equity from the same source, so the series never disagree.",
+        "operationId": "fetchPortfolioHistory",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PortfolioWindow"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 366
+            },
+            "description": "Maximum number of points to return. Capped server-side at the selected window's capacity (day 288, week 168, month 120, all 366); a larger value is clamped, not rejected. Omit to return the full window."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Portfolio time-series for the window, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortfolioHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidWindow"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -2290,6 +2461,9 @@
               "maximum": 200
             },
             "description": "Maximum records to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -2303,6 +2477,11 @@
                     "$ref": "#/components/schemas/ClosedPosition"
                   }
                 }
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -2336,6 +2515,9 @@
               "maximum": 500
             },
             "description": "Maximum records to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -2349,6 +2531,11 @@
                     "$ref": "#/components/schemas/OrderHistoryEntry"
                   }
                 }
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -2825,6 +3012,9 @@
               "maximum": 1000
             },
             "description": "Number of trades to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -2853,6 +3043,11 @@
                     "info": {}
                   }
                 ]
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -3638,6 +3833,9 @@
               "maximum": 500
             },
             "description": "Maximum records to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -3651,6 +3849,11 @@
                     "$ref": "#/components/schemas/OrderHistoryEntry"
                   }
                 }
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -3791,6 +3994,58 @@
         }
       }
     },
+    "/api/v1/account/fees": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Production (direct service)"
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Account fee schedule",
+        "description": "The authenticated account's effective fee schedule — maker/taker rate (bps), fee tier, rolling 30-day traded volume, and active discounts — for parity with Hyperliquid `userFees`. This is the forward-looking *schedule* rate, not a realized average: the venue charges a per-fill fee but does not emit a realized per-fill rate. The reported rate's scope is given by `schedule` (see the schema); the account id is taken from the authenticated credentials, not a parameter.",
+        "operationId": "fetchAccountFeesV1",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account fee schedule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountFees"
+                },
+                "example": {
+                  "maker_fee_bps": -2,
+                  "taker_fee_bps": 5,
+                  "tier": "base",
+                  "schedule": "standard",
+                  "volume_30d": "101005.00",
+                  "volume_30d_estimated": false,
+                  "discounts": []
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
     "/api/v1/account/summary": {
       "servers": [
         {
@@ -3826,6 +4081,58 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/AuthoritativeMarginUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/account/state": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Production (direct service)"
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Consolidated account state",
+        "description": "Full account state in a single call: the portfolio summary aggregates plus all open positions (`{ summary, positions }`). Saves clients from pairing `/account/summary` with `/positions`, matching Hyperliquid `clearinghouseState` ergonomics. Both parts are built from one coherent read, so `summary.open_positions_count` always matches the `positions` length, and the embedded `summary` is identical to the standalone `/account/summary` response. Fails closed with `502` when the engine-authoritative margin view is unavailable.",
+        "operationId": "fetchAccountStateV1",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Consolidated account state (summary aggregates + open positions).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/AuthoritativeMarginUnavailable"
           }
         }
       }
@@ -3864,6 +4171,9 @@
               "maximum": 720
             },
             "description": "Maximum points to return (capped at 720)."
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -3878,10 +4188,77 @@
                   }
                 }
               }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
+              }
             }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/account/portfolio-history": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Production (direct service)"
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Account portfolio time-series",
+        "description": "Portfolio time-series for the authenticated account — equity, cumulative trading PnL, and cumulative traded volume — downsampled over the selected `window` (`day`, `week`, `month`, or `all`), oldest first. Extends `/account/equity-history` (equity only, ~1h window) with PnL and volume series across multiple windows; both endpoints derive equity from the same source, so the series never disagree.",
+        "operationId": "fetchPortfolioHistoryV1",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PortfolioWindow"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 366
+            },
+            "description": "Maximum number of points to return. Capped server-side at the selected window's capacity (day 288, week 168, month 120, all 366); a larger value is clamped, not rejected. Omit to return the full window."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Portfolio time-series for the window, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortfolioHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidWindow"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           }
         }
       }
@@ -4067,7 +4444,18 @@
                     "entry_price": "49500.00",
                     "unrealized_pnl": "250.50",
                     "realized_pnl": "0.00",
-                    "liquidation_price": "42000.00"
+                    "liquidation_price": "42000.00",
+                    "notional_value": "25000.50",
+                    "notional_value_error": null,
+                    "roe": "0.2004",
+                    "roe_error": null,
+                    "margin_used": "1250.03",
+                    "margin_used_error": null,
+                    "max_leverage": 20,
+                    "max_leverage_error": null,
+                    "funding_paid": "12.50",
+                    "leverage": null,
+                    "leverage_error": "margin_state_not_mirrored"
                   }
                 ]
               }
@@ -4115,6 +4503,9 @@
               "maximum": 200
             },
             "description": "Maximum records to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -4128,6 +4519,11 @@
                     "$ref": "#/components/schemas/ClosedPosition"
                   }
                 }
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -4171,6 +4567,9 @@
               "maximum": 1000
             },
             "description": "Maximum fills to return"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
           }
         ],
         "responses": {
@@ -4198,6 +4597,11 @@
                     "is_liquidation": false
                   }
                 ]
+              }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "$ref": "#/components/headers/XNextCursor"
               }
             }
           },
@@ -4539,6 +4943,26 @@
             }
           }
         }
+      },
+      "InvalidWindow": {
+        "description": "The `window` query parameter was present but not one of `day`, `week`, `month`, or `all`. Returns a machine-readable error code.",
+        "content": {
+          "application/json": {
+            "example": {
+              "code": "invalid_window"
+            }
+          }
+        }
+      },
+      "AuthoritativeMarginUnavailable": {
+        "description": "The engine-authoritative margin view is temporarily unavailable. Endpoints that derive balances from it (e.g. `withdrawable`) fail closed — returning this error rather than a locally-estimated, potentially unsafe figure. Transient; retry after a short delay.",
+        "content": {
+          "application/json": {
+            "example": {
+              "code": "authoritative_margin_unavailable"
+            }
+          }
+        }
       }
     },
     "parameters": {
@@ -4552,7 +4976,7 @@
           "maxLength": 32
         },
         "example": "v0.7.0",
-        "description": "Released spec tag the client was compiled/pinned against (the client's `.api-version`), format `vMAJOR.MINOR.PATCH`. Every official client sends it on every request. Advisory and optional: the server accepts requests when it is absent, malformed, or names an unknown tag, and never rejects or routes on it. Excluded from the HMAC canonical string, so it is unauthenticated — never used for authentication, authorization, or access control. For observability and usage metering only; consumers should treat the value as untrusted and bounded."
+        "description": "Released spec tag the client was compiled/pinned against (the client's `.api-version`), format `vMAJOR.MINOR.PATCH`. Every official client sends it on every request. Advisory and optional: the server accepts requests when it is absent, malformed, or names an unknown tag. A recognized tag older than the published minimum supported version may receive `426 Upgrade Required` (`api_version_unsupported`) per the API version-support policy. Excluded from the HMAC canonical string, so it is unauthenticated — never used for authentication, authorization, or access control; the version-support gate is a compatibility courtesy, not a security boundary, and spoofing the value only relaxes it. Consumers should treat the value as untrusted and bounded."
       },
       "UserAgent": {
         "name": "User-Agent",
@@ -4574,6 +4998,29 @@
         },
         "example": "BTC-USDX-PERP",
         "description": "Market identifier (e.g. BTC-USDX-PERP, ETH-USDX-PERP)"
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Opaque pagination cursor returned in the previous response's `X-Next-Cursor` header. Omit to fetch the first page. Treat the token as opaque: its format is not part of the contract and may change. Cursors do not expire. A malformed (unparseable) cursor is not an error — the server serves the first page. A well-formed cursor whose exact position has since been evicted from the retained window is not reset to the first page: pagination resumes at the nearest surviving boundary, so a resumed response is a continuation, not a fresh first page."
+      },
+      "PortfolioWindow": {
+        "name": "window",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/PortfolioWindow"
+            }
+          ],
+          "default": "day"
+        },
+        "description": "Time window to return. Also selects the server-side downsample cadence and point capacity:\n\n| window | cadence | max points | span |\n|--------|---------|-----------|------|\n| `day`   | 5 min | 288 | 24 h |\n| `week`  | 1 h   | 168 | 7 d  |\n| `month` | 6 h   | 120 | 30 d |\n| `all`   | 1 d   | 366 | ~1 y |\n\nOmitted defaults to `day`. A value outside this set is rejected with `400` (`invalid_window`). If the parameter is repeated, the first value is used."
       }
     },
     "schemas": {
@@ -5403,6 +5850,7 @@
       },
       "Position": {
         "type": "object",
+        "description": "An open position with per-position risk detail. Enriched risk fields are derived strictly from indexer-mirrored state (no engine round-trip, to stay on the low-latency read path): when an input is not mirrored, the field is `null` and its companion `<field>_error` carries a machine-readable reason rather than a fabricated number. Monetary fields are lossless decimal strings; leverage fields are JSON numbers.",
         "properties": {
           "market_id": {
             "type": "string"
@@ -5428,6 +5876,96 @@
           },
           "liquidation_price": {
             "$ref": "#/components/schemas/Decimal"
+          },
+          "leverage": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Position leverage (the account's leverage multiplier for this position). Currently always `null`: deriving it needs the user's leverage setting or account equity/allocated margin, which the indexer does not mirror; when `null`, `leverage_error` carries the reason. Do not infer leverage from `margin_used` — that collapses to `1/initial_margin_rate`, a per-market constant, not the real leverage."
+          },
+          "leverage_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable reason `leverage` is `null`, or `null` when `leverage` is populated. Currently always `margin_state_not_mirrored`."
+          },
+          "notional_value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Position notional value (|size| × mark price), as a decimal string. `null` when the mark price is unavailable — see `notional_value_error`."
+          },
+          "notional_value_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable reason `notional_value` is `null` (e.g. `mark_price_unavailable`), or `null` when populated."
+          },
+          "roe": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Return on equity: `unrealized_pnl / margin_used` (return on initial margin), as a decimal string. `null` when a required input is unavailable or margin is zero — see `roe_error`."
+          },
+          "roe_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable reason `roe` is `null` (e.g. `mark_price_unavailable`, `margin_rate_unavailable`, `margin_used_zero`), or `null` when populated."
+          },
+          "margin_used": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Initial-margin requirement held against this position (`notional_value × initial_margin_rate`, under the engine's cross-margin model), as a decimal string. Isolated/custom margin allocations are not mirrored by the indexer. `null` when a required input is unavailable — see `margin_used_error`."
+          },
+          "margin_used_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable reason `margin_used` is `null` (e.g. `mark_price_unavailable`, `margin_rate_unavailable`), or `null` when populated."
+          },
+          "max_leverage": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Maximum leverage allowed for this market (from market risk params), as an integer matching `max_leverage` on `/markets/{market_id}/risk-params`. `null` when market params are unavailable — see `max_leverage_error`."
+          },
+          "max_leverage_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable reason `max_leverage` is `null` (e.g. `market_params_unavailable`), or `null` when populated."
+          },
+          "funding_paid": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Cumulative funding paid on this position, as a decimal string. Sign is **paid-positive**: a positive value means the position has paid funding, a negative value means it has received funding. Always present: `\"0\"` when no funding has accrued. Bounded by the funding history the indexer retains."
           }
         }
       },
@@ -5699,6 +6237,86 @@
           "equity": {
             "type": "number",
             "description": "Account equity at sample time."
+          }
+        }
+      },
+      "PortfolioWindow": {
+        "type": "string",
+        "enum": [
+          "day",
+          "week",
+          "month",
+          "all"
+        ],
+        "description": "Portfolio time-series window selector: `day`, `week`, `month`, or `all`. Shared by the `window` query parameter and the `window` echoed in the response."
+      },
+      "PortfolioPoint": {
+        "type": "object",
+        "description": "One downsampled portfolio sample. Monetary fields are lossless decimal strings — parse with a decimal type, never a float.",
+        "required": [
+          "timestamp_ms",
+          "equity",
+          "pnl",
+          "volume"
+        ],
+        "properties": {
+          "timestamp_ms": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "equity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Account equity at sample time (collateral balance + Σ unrealized PnL). Derived from the same underlying value as `EquityPoint.equity`; note `EquityPoint` serializes equity as a JSON number, whereas this is a lossless decimal string, so compare by decimal value rather than by wire representation."
+          },
+          "pnl": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Cumulative trading PnL up to this sample: Σ realized PnL on position close (including liquidation and ADL closes) + Σ funding (signed) + current unrealized PnL. Deposit-neutral — wallet deposits and withdrawals never move it — so the curve reflects trading performance only."
+          },
+          "volume": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Cumulative traded notional (Σ price × size) up to this sample, across taker and maker fills; a self-trade is counted once. Monotonically non-decreasing."
+          }
+        }
+      },
+      "PortfolioHistory": {
+        "type": "object",
+        "description": "Portfolio time-series for the authenticated account over the requested window: equity, cumulative PnL, and cumulative volume, downsampled at a fixed per-window cadence and returned oldest first.",
+        "required": [
+          "window",
+          "cadence_ms",
+          "points"
+        ],
+        "properties": {
+          "window": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioWindow"
+              }
+            ],
+            "description": "The window that was served — echoes the `window` query parameter, or its `day` default."
+          },
+          "cadence_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Downsample interval between adjacent points, in milliseconds (e.g. 300000 for `day`, 86400000 for `all`)."
+          },
+          "points": {
+            "type": "array",
+            "description": "Samples for the window, oldest first. Length is bounded by the window's capacity (day 288, week 168, month 120, all 366) and by the `limit` parameter.",
+            "items": {
+              "$ref": "#/components/schemas/PortfolioPoint"
+            }
           }
         }
       },
@@ -5989,6 +6607,61 @@
           }
         }
       },
+      "AccountFees": {
+        "type": "object",
+        "description": "The authenticated account's effective fee schedule, mirroring Hyperliquid `userFees`. Reports what the venue charges today: there are no per-account fee tiers or discounts yet (fee model still a draft), so `tier` is `base` and `discounts` is empty. The rate is the forward-looking schedule rate scoped by `schedule`, not a realized per-fill average.",
+        "required": [
+          "maker_fee_bps",
+          "taker_fee_bps",
+          "tier",
+          "schedule",
+          "volume_30d",
+          "volume_30d_estimated",
+          "discounts"
+        ],
+        "properties": {
+          "maker_fee_bps": {
+            "type": "integer",
+            "description": "Effective maker fee in basis points. Negative means the maker is *paid* a rebate — e.g. -2 is a 0.02% rebate."
+          },
+          "taker_fee_bps": {
+            "type": "integer",
+            "description": "Effective taker fee in basis points — e.g. 5 is a 0.05% fee."
+          },
+          "tier": {
+            "type": "string",
+            "description": "Fee tier for the account. Currently always `base`: there are no per-account fee tiers yet (distinct from rate-limit tiers). New values may appear when the fee model lands, so treat this as an open string."
+          },
+          "schedule": {
+            "type": "string",
+            "description": "Scope of the reported rate. Currently always `standard`. The venue charges a per-market schedule (standard crypto, mid-cap crypto, FX, commodities/indices all differ, and the split varies by deploy config), but this endpoint takes no market parameter, so it reports the standard crypto-group schedule and marks it here. Treat the rate as scoped by this value, not a venue-wide guarantee; per-market effective rates are a planned follow-up. Treat as an open string — new scopes may appear."
+          },
+          "volume_30d": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Rolling 30-day traded notional for the account, as a decimal string. Best-effort — see `volume_30d_estimated`."
+          },
+          "volume_30d_estimated": {
+            "type": "boolean",
+            "description": "`true` when `volume_30d` may undercount: the source fill buffer was at capacity, so some older in-window fills may have been evicted. `false` when the full 30-day window is covered."
+          },
+          "discounts": {
+            "type": "array",
+            "description": "Active fee discounts applied to the account. Currently always empty — no discount program exists yet.",
+            "items": {
+              "$ref": "#/components/schemas/FeeDiscount"
+            }
+          }
+        }
+      },
+      "FeeDiscount": {
+        "type": "object",
+        "description": "An active fee discount applied to the account. The concrete shape is provisional and finalizes with the fee model (tiers and discounts are still a draft); `discounts` is currently always empty, so no properties are guaranteed yet. Additional properties may be added additively once the model lands.",
+        "additionalProperties": true
+      },
       "AccountPortfolioSummary": {
         "type": "object",
         "description": "Portfolio summary for the authenticated account (aggregate equity, PnL, volume, open counts).",
@@ -6020,9 +6693,38 @@
           "available_margin": {
             "$ref": "#/components/schemas/Decimal"
           },
+          "withdrawable": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Decimal"
+              }
+            ],
+            "description": "Wallet-withdrawable balance: engine-authoritative free margin floored at zero (`max(0, available_margin)`). Free margin already nets each position's initial margin and pre-trade order reservations out of equity, so this is exactly what can leave the account. A negative free margin (an underwater account) is clamped to `\"0\"` and never surfaced negative. Derived from the authoritative margin view — the endpoint fails closed with `502` rather than reporting a local estimate when that view is unavailable.",
+            "example": "8500.00"
+          },
           "early_access_allowed": {
             "type": "boolean",
             "description": "Present only when the early-access gate is active."
+          }
+        }
+      },
+      "AccountState": {
+        "type": "object",
+        "description": "Consolidated single-call account snapshot — the portfolio summary aggregates plus all open positions — matching Hyperliquid `clearinghouseState` ergonomics. Both parts are built from one coherent read, so `summary.open_positions_count` always equals the length of `positions`, and the embedded `summary` is identical to the standalone `/account/summary` response.",
+        "required": [
+          "summary",
+          "positions"
+        ],
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/AccountPortfolioSummary"
+          },
+          "positions": {
+            "type": "array",
+            "description": "All open positions for the account.",
+            "items": {
+              "$ref": "#/components/schemas/Position"
+            }
           }
         }
       },
@@ -6306,6 +7008,14 @@
             "description": "Unix ms when the deposit was credited; null until `status` is `credited`."
           }
         }
+      }
+    },
+    "headers": {
+      "XNextCursor": {
+        "schema": {
+          "type": "string"
+        },
+        "description": "Opaque cursor for the next page. Present only when more results exist beyond this response; absent on the last page. Pass it back via the `cursor` query parameter to fetch the next page. The response body stays a bare array — pagination state rides only in this header."
       }
     }
   }

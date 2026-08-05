@@ -13,8 +13,10 @@
  * ```ts
  * import { Client, Network } from "@nexus-xyz/exchange-ts";
  *
+ * // Network.Testnet is play funds and the default. Network.Mainnet is REAL
+ * // FUNDS; credentials are per-network and never valid across them.
  * const client = new Client({
- *   network: Network.Stable,
+ *   network: Network.Testnet,
  *   apiKey: process.env.NEXUS_EXCHANGE_API_KEY,
  *   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET,
  * });
@@ -36,9 +38,14 @@ export * from "./models.js";
 export {
   Client,
   Network,
+  NETWORKS,
+  API_BASE_PATH,
+  networkConfig,
   baseUrlForNetwork,
   DEFAULT_USER_AGENT,
   type ClientOptions,
+  type NetworkConfig,
+  type SigningDomain,
 } from "./client.js";
 
 export {

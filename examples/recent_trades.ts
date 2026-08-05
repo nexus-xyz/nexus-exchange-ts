@@ -2,17 +2,12 @@
 //
 // Run with:  npx tsx examples/recent_trades.ts [MARKET_ID] [--network beta]
 
-import { Client, Network } from "../src/index.js";
+import { Client } from "../src/index.js";
+import { networkOptions } from "./_network.js";
 
-const netArg = process.argv[process.argv.indexOf("--network") + 1];
-const network =
-  netArg === "beta"
-    ? Network.Beta
-    : netArg === "local"
-      ? Network.Local
-      : Network.Stable;
+const net = networkOptions();
 
-const client = new Client({ network });
+const client = new Client(net);
 
 // Use the first market unless one was passed as a positional arg. Skip the
 // token right after `--network` — that's its value, not the market id.

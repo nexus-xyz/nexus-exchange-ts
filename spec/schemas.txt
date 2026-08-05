@@ -35,6 +35,12 @@ AccountSummary
 AccountPortfolioSummary
 AccountFunding
 EquityPoint
+AccountState
+AccountFees
+FeeDiscount
+PortfolioWindow
+PortfolioPoint
+PortfolioHistory
 CreditRequest
 CreditResponse
 FaucetResponse

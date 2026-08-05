@@ -1,0 +1,80 @@
+# Operations this SDK targets, checked against the vendored spec (spec/openapi.json,
+# pinned by .api-version) by scripts/check-spec-drift.mjs. The check validates the
+# list BOTH ways — that is what makes the number here trustworthy rather than a
+# hand-maintained claim:
+#
+#   * every line must exist in the vendored spec (invariant F) — so a removed,
+#     renamed, or mis-prefixed operation fails CI rather than quietly overstating
+#     coverage;
+#   * the set must equal the REST operations src/client.ts actually implements
+#     (invariant H), modulo two named allowlists in check-spec-drift.mjs:
+#       - CODE_ONLY_OPS    — implemented but not in the pinned spec, so kept OUT
+#         of this file (listing them would fail invariant F);
+#       - NON_REST_TARGETS — targeted without a `this.#request(...)` call, so
+#         invisible to the code parser: `GET /ws`, opened by src/ws/client.ts.
+#
+# Every spec operation NOT listed here must be recorded in spec/uncovered-ops.txt
+# (invariant G), so new upstream surface cannot land unnoticed.
+#
+# So: add a line here whenever you add a client method for a spec operation, or
+# the drift check fails. Format, one per line:
+#
+#   METHOD /path      (placeholders match the spec, e.g. {market_id})
+#
+# Dual-stack routing (ENG-4947 / gateway elimination ENG-4740): the path here is
+# the FULL path the SDK signs and sends. This client's base URL is
+# `https://exchange.nexus.xyz/api/v1`, so a method that does not pass `root: true`
+# targets `/api/v1/<path>` and is listed with that prefix; the host-root routes
+# (auth, API keys, agents, WS) pass `root: true` and are listed bare.
+
+# --- Direct-service surface (/api/v1) — public market data ---
+GET /api/v1/markets/summary
+GET /api/v1/tickers
+GET /api/v1/markets/{market_id}/ticker
+GET /api/v1/markets/{market_id}/orderbook
+GET /api/v1/markets/{market_id}/trades
+GET /api/v1/markets/{market_id}/candles
+GET /api/v1/markets/{market_id}/funding
+GET /api/v1/markets/{market_id}/funding-samples
+GET /api/v1/markets/{market_id}/mark-price
+GET /api/v1/markets/{market_id}/status
+GET /api/v1/stats
+GET /api/v1/stats/history
+
+# --- Direct-service surface (/api/v1) — authenticated account ---
+GET /api/v1/account
+GET /api/v1/account/summary
+GET /api/v1/account/equity-history
+GET /api/v1/account/state
+GET /api/v1/account/fees
+GET /api/v1/account/portfolio-history
+GET /api/v1/account/rate-limit
+GET /api/v1/positions
+GET /api/v1/positions/closed
+GET /api/v1/fills
+POST /api/v1/account/credit
+
+# --- Direct-service surface (/api/v1) — authenticated orders ---
+POST /api/v1/orders
+POST /api/v1/orders/batch
+POST /api/v1/orders/preview
+GET /api/v1/orders
+GET /api/v1/orders/history
+PATCH /api/v1/orders/{order_id}
+DELETE /api/v1/orders/{order_id}
+DELETE /api/v1/orders
+
+# --- Host-root surface (`root: true`) — wallet auth, API keys, agent keys ---
+POST /auth/login
+POST /keys
+GET /keys
+DELETE /keys/{key_id}
+POST /agents/register
+GET /agents
+DELETE /agents/{address}
+
+# --- Host-root surface (`root: true`) — streaming ---
+POST /ws-tokens
+# The WebSocket upgrade itself. Reached by src/ws/client.ts through a `WebSocket`
+# constructor, not a REST call, so it is in NON_REST_TARGETS — see the header.
+GET /ws

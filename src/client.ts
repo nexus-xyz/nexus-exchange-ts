@@ -25,7 +25,9 @@ import { Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
 import type { EthSigner } from "./wallet.js";
 import type {
+  AccountFees,
   AccountPortfolioSummary,
+  AccountState,
   AccountSummary,
   AgentInfo,
   AgentRegistrationRequest,
@@ -62,6 +64,8 @@ import type {
   OrderRequest,
   OrderResponse,
   OrderResult,
+  PortfolioHistory,
+  PortfolioWindow,
   Position,
   PreviewResponse,
   RateLimitStatus,
@@ -143,26 +147,312 @@ function parseRetryAfter(
   return Math.max(0, date - nowMs);
 }
 
-/** Which Nexus Exchange environment to target. */
+/**
+ * Which Nexus Exchange network to target.
+ *
+ * The public axis is **testnet** (play funds) vs **mainnet** (real funds);
+ * `Local` is a developer convenience, not a public network. The network is
+ * carried in the *host*, not the path — each one is its own origin terminating
+ * its own TLS and WebSocket upgrades.
+ *
+ * **Credentials never cross networks.** Session tokens, HMAC API keys, and
+ * agent registrations are minted per network and are invalid on any other, so a
+ * key leaked or misconfigured on testnet cannot sign for real funds. A `Client`
+ * is bound to one network for its whole lifetime — there is deliberately no
+ * setter — so switching networks means constructing a new client with that
+ * network's own credentials. Never carry a signature, nonce, or agent
+ * registration across networks.
+ */
 export enum Network {
-  Stable = "stable",
-  Beta = "beta",
+  /**
+   * Play funds: balances are synthetic USDX credited by the faucet and carry no
+   * real-world value. The safe target for integration work and CI, and the
+   * default — defaulting to real funds would be the unsafe direction.
+   */
+  Testnet = "testnet",
+  /**
+   * **REAL FUNDS.** Collateral is USDX bridged from Ethereum Mainnet; there is
+   * no faucet and every order moves real money.
+   *
+   * Selecting this today throws: the public host is not resolvable yet
+   * (DNS/TLS is separate infra, ENG-8155). See {@link NETWORKS} for why that is
+   * a refusal rather than a default.
+   */
+  Mainnet = "mainnet",
+  /** A locally run indexer. Not a public network and never a fallback. */
   Local = "local",
 }
 
-// The `/api/v1` surface is served directly by the indexer at the host root,
-// NOT under the legacy `/api/exchange` gateway prefix (the gateway REST proxy
-// is being eliminated). The signed path therefore includes `/api/v1` — see
-// `basePathOf` and the signing step in `#request`.
-const NETWORK_BASE_URL: Record<Network, string> = {
-  [Network.Stable]: "https://exchange.nexus.xyz/api/v1",
-  [Network.Beta]: "https://beta.exchange.nexus.xyz/api/v1",
-  [Network.Local]: "http://localhost:9090/api/v1",
-};
+/**
+ * Path prefix every non-`root` request is sent under, and the single source of
+ * truth for it. `scripts/check-spec-drift.mjs` reads this constant to derive
+ * the spec paths the client targets (invariant H), so it must stay a plain
+ * string literal.
+ *
+ * The `/api/v1` surface is served directly by the indexer at the host root, NOT
+ * under the legacy `/api/exchange` gateway prefix (the gateway REST proxy is
+ * being eliminated). The signed path therefore includes `/api/v1` — see
+ * `basePathOf` and the signing step in `#request`.
+ */
+export const API_BASE_PATH = "/api/v1";
 
-/** Resolve a network's default base URL. */
+/** The EIP-712 domain a network's signatures are scoped to. */
+export interface SigningDomain {
+  readonly name: string;
+  readonly version: string;
+  /**
+   * `null` means **this SDK does not publish the value**, not that it is zero.
+   * The signing domain is per-network and server-authoritative — read it from
+   * `GET /metadata` for the network you are connected to. A client that cannot
+   * obtain a chain id must refuse to sign rather than guess or default: a wrong
+   * domain either fails verification or, worse, produces a signature that is
+   * valid on a *different* network.
+   */
+  readonly chainId: number | null;
+}
+
+/** Everything needed to reach one network. See {@link NETWORKS}. */
+export interface NetworkConfig {
+  /** Human-readable label, e.g. `"Testnet"`. */
+  readonly label: string;
+  /**
+   * `"real"` means orders here move real money. Branch on this rather than on
+   * the network name if you gate destructive actions behind a confirmation.
+   */
+  readonly funds: "play" | "real";
+  /** Whether a faucet exists (never on mainnet). */
+  readonly faucet: boolean;
+  /**
+   * REST base the SDK sends to, or `null` when no host is live yet — in which
+   * case constructing a `Client` for this network requires an explicit
+   * `baseUrl`. Includes {@link API_BASE_PATH}.
+   */
+  readonly baseUrl: string | null;
+  /**
+   * WebSocket base (origin only, no path), or `null` alongside a `null`
+   * `baseUrl`. Append `/ws` for authenticated streams and `/stream` for market
+   * data; {@link Client.wsUrl} resolves this for you, honoring a `baseUrl`
+   * override.
+   */
+  readonly wsUrl: string | null;
+  readonly signingDomain: SigningDomain;
+}
+
+// One `name`/`version` pair across all networks; only the chain id is
+// per-network, and it is deliberately unpublished here (see `SigningDomain`).
+const SIGNING_DOMAIN: SigningDomain = Object.freeze({
+  name: "Nexus Exchange",
+  version: "1",
+  chainId: null,
+});
+
+/**
+ * The network → target map, mirroring the spec's `x-nexus-networks`.
+ *
+ * **Never derive a host by interpolating the network name.** Mainnet is
+ * deliberately off-pattern — `api.nexus.xyz`, not `api.mainnet.nexus.xyz` — so
+ * `api.{network}.nexus.xyz` resolves for every environment that *can* be tested
+ * and fails only on real funds, the one environment that cannot be rehearsed.
+ * Hence an explicit map with mainnet as a named case, kept in one place because
+ * ENG-7809 may re-decide hostnames wholesale.
+ *
+ * ## Why `Mainnet` has a `null` base
+ *
+ * Its durable base is `https://api.nexus.xyz/v1` and its WS base
+ * `wss://api.nexus.xyz`, but neither is usable from this SDK yet, for two
+ * independent reasons — and both fail *only* on real funds:
+ *
+ * 1. **DNS/TLS is not live** (ENG-8155), so the host does not resolve.
+ * 2. **The path composition differs.** Those hosts pair a `/v1` base with the
+ *    spec's *root* paths (`/v1` + `/orders`), whereas this client signs
+ *    {@link API_BASE_PATH} paths against a host-root base
+ *    (`https://host` + `/api/v1/orders`). Pointing this client at `…/v1` would
+ *    send `/v1/api/v1/orders` and sign that same wrong path — a silent 404 at
+ *    best. Switching the client to root paths is its own change.
+ *
+ * So mainnet is declared (the axis and the types are stable, and callers can
+ * write network-generic code today) but refuses to construct rather than
+ * shipping an untestable guess. Pass an explicit `baseUrl` to opt in
+ * deliberately once a host is live.
+ *
+ * Testnet keeps the legacy-but-live base until `api.testnet.nexus.xyz` is
+ * resolvable; the spec says the same ("keep pinning the legacy base above until
+ * it is live"). Its traffic migrates to `https://api.testnet.nexus.xyz/v1` —
+ * never to the bare `api.nexus.xyz`, which is real funds.
+ */
+export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
+  {
+    [Network.Testnet]: Object.freeze({
+      label: "Testnet",
+      funds: "play",
+      faucet: true,
+      baseUrl: `https://exchange.nexus.xyz${API_BASE_PATH}`,
+      wsUrl: "wss://exchange.nexus.xyz",
+      signingDomain: SIGNING_DOMAIN,
+    }) as NetworkConfig,
+    [Network.Mainnet]: Object.freeze({
+      label: "Mainnet",
+      funds: "real",
+      faucet: false,
+      baseUrl: null,
+      wsUrl: null,
+      signingDomain: SIGNING_DOMAIN,
+    }) as NetworkConfig,
+    [Network.Local]: Object.freeze({
+      label: "Local",
+      funds: "play",
+      faucet: true,
+      baseUrl: `http://localhost:9090${API_BASE_PATH}`,
+      wsUrl: "ws://localhost:9090",
+      signingDomain: SIGNING_DOMAIN,
+    }) as NetworkConfig,
+  },
+);
+
+/**
+ * Resolve a network's bundled config.
+ *
+ * Throws on an identifier this SDK does not recognize. That is the fail-safe
+ * direction the spec mandates — an unknown network must be treated as real funds
+ * and refused, never assumed to be play money. The guard is not redundant with
+ * the `Network` type: this is a published JavaScript package, so a plain string
+ * can reach here from untyped callers, `JSON.parse`, or an env var.
+ */
+export function networkConfig(network: Network): NetworkConfig {
+  const config = Object.prototype.hasOwnProperty.call(NETWORKS, network)
+    ? NETWORKS[network]
+    : undefined;
+  if (!config) {
+    throw new NexusExchangeError(
+      `unrecognized network ${JSON.stringify(String(network))}; refusing to ` +
+        `guess a target. An unknown network must be treated as real funds. ` +
+        `Known networks: ${Object.keys(NETWORKS).join(", ")}.`,
+    );
+  }
+  return config;
+}
+
+/**
+ * Resolve a network's default REST base URL.
+ *
+ * Throws for a network with no live host (see {@link NETWORKS}) rather than
+ * returning a URL that cannot work — including `Network.Mainnet`, where a
+ * plausible-looking wrong base would fail only against real funds.
+ */
 export function baseUrlForNetwork(network: Network): string {
-  return NETWORK_BASE_URL[network];
+  const config = networkConfig(network);
+  if (config.baseUrl === null) {
+    throw new NexusExchangeError(unavailableNetworkMessage(network, config));
+  }
+  return config.baseUrl;
+}
+
+function unavailableNetworkMessage(
+  network: Network,
+  config: NetworkConfig,
+): string {
+  return (
+    `network ${JSON.stringify(network)} (${config.label}) has no public base ` +
+    `URL in this SDK version yet, so there is nothing safe to send to. ` +
+    (config.funds === "real"
+      ? `This is the REAL-FUNDS network, so it fails closed rather than ` +
+        `guessing a host: DNS/TLS is still pending (ENG-8155), and the ` +
+        `per-network hosts also pair a "/v1" base with root paths, while this ` +
+        `client signs "${API_BASE_PATH}" paths against a host-root base. `
+      : ``) +
+    `Pass an explicit \`baseUrl\` to target it deliberately, or use ` +
+    `\`Network.Testnet\` for play funds.`
+  );
+}
+
+/**
+ * Reject a base URL that is not an absolute `http(s)` URL.
+ *
+ * The empty string is the one that matters: `""` makes every request URL
+ * *relative*, which in a browser resolves against the hosting page's origin — so
+ * signed requests, `x-api-key` and `x-signature` headers included, would be sent
+ * to whatever site embeds the SDK. A relative or non-HTTP base is a
+ * misconfiguration either way, and failing at construction beats a confusing
+ * transport error per call.
+ *
+ * `??` does not catch this: `baseUrl: ""` is not nullish, so it silently wins
+ * over the network default.
+ */
+function assertAbsoluteHttpUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new NexusExchangeError(
+      `baseUrl must be an absolute http(s) URL, got ${JSON.stringify(baseUrl)}. ` +
+        `A relative base would resolve against the hosting page's origin in a ` +
+        `browser and send signed requests there.`,
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new NexusExchangeError(
+      `baseUrl must use http:// or https://, got ${JSON.stringify(parsed.protocol)}`,
+    );
+  }
+  assertNotGatewayBase(parsed);
+}
+
+/**
+ * Reject a base URL pointing at the legacy `/api/exchange` gateway.
+ *
+ * This client targets only two surfaces — the direct {@link API_BASE_PATH}
+ * indexer surface and a handful of host-root routes (`/auth/login`, `/keys`,
+ * `/agents/*`, `/ws*`) — and *no* route it implements is served under the
+ * gateway prefix. So an `/api/exchange` base cannot be correct here; it would
+ * send (and HMAC-sign) `/api/exchange/api/v1/orders`, a 404 whose signature is
+ * also over the wrong path.
+ *
+ * Worth failing loudly rather than trusting the type, because this is a
+ * plausible cross-SDK paste: the Python SDK's `base_url` *is* the gateway base
+ * (`https://exchange.nexus.xyz/api/exchange`), with its host-root field named
+ * `direct_base_url`. Copying that value into this SDK's single `baseUrl` is the
+ * mistake, and the MCP server already strips the same prefix defensively
+ * (nexus-exchange-api#41), so it demonstrably happens. See the README's
+ * "What `baseUrl` is" for the field-by-field correspondence.
+ */
+function assertNotGatewayBase(parsed: URL): void {
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  const isGateway = segments.some(
+    (segment, i) => segment === "exchange" && segments[i - 1] === "api",
+  );
+  if (!isGateway) return;
+  throw new NexusExchangeError(
+    `baseUrl must not point at the legacy "/api/exchange" gateway, got ` +
+      `${JSON.stringify(parsed.toString())}. This SDK implements no route ` +
+      `served under that prefix: the direct surface is "${API_BASE_PATH}" at ` +
+      `the host root, and requests would otherwise be sent — and signed — as ` +
+      `"/api/exchange${API_BASE_PATH}/…". Pass the host root plus ` +
+      `"${API_BASE_PATH}" instead, e.g. ` +
+      `${JSON.stringify(`${parsed.origin}${API_BASE_PATH}`)}. ` +
+      `(Porting from the Python SDK? Its "base_url" is the gateway base; the ` +
+      `field matching this one is "direct_base_url" + "${API_BASE_PATH}".)`,
+  );
+}
+
+/**
+ * The WebSocket base for a REST base URL: same origin, `http`→`ws` /
+ * `https`→`wss`, no path.
+ *
+ * Derived from the origin the client actually talks to rather than looked up
+ * separately, so a `baseUrl` override can never leave the stream pointed at a
+ * different host than the REST calls — which would mint a token on one origin
+ * and spend it on another. A unit test pins this against every
+ * {@link NETWORKS} entry's declared `wsUrl`, so a typo in the map is caught.
+ */
+function wsUrlForOrigin(origin: string): string | null {
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:") return `wss://${url.host}`;
+    if (url.protocol === "http:") return `ws://${url.host}`;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -184,9 +474,33 @@ export interface RetryOptions {
 }
 
 export interface ClientOptions {
-  /** Named environment to target. Defaults to {@link Network.Stable}. */
+  /**
+   * Network to target. Defaults to {@link Network.Testnet} (play funds) —
+   * never mainnet, so a caller who omits this cannot send real-money orders by
+   * accident.
+   *
+   * The credentials passed alongside must belong to this network: keys and
+   * session tokens are minted per network and are invalid on any other.
+   */
   network?: Network;
-  /** Explicit base URL; overrides `network`. Trailing slashes are trimmed. */
+  /**
+   * Explicit base URL, overriding the network's default. Trailing slashes are
+   * trimmed.
+   *
+   * This is the supported way to reach a base the axis does not name — e.g. the
+   * beta deployment, which is a testnet base rather than a network of its own:
+   *
+   * ```ts
+   * new Client({
+   *   network: Network.Testnet,
+   *   baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+   * });
+   * ```
+   *
+   * The override changes only the target. `network` still selects the signing
+   * domain, the funds classification, and which credentials are valid — so do
+   * not use it to point a testnet client at mainnet.
+   */
   baseUrl?: string;
   /** API key for signed requests (paired with `apiSecret`). */
   apiKey?: string;
@@ -322,6 +636,40 @@ function buildQuery(
 }
 
 /**
+ * Reject a `limit` outside the bounds its spec parameter schema declares, before
+ * the request is signed and sent.
+ *
+ * `minimum`/`maximum` on a query parameter are normative constraints on the
+ * *request*, so a conforming client must not send an out-of-range value. Where
+ * the spec also says the server clamps rather than rejects, that describes how
+ * the server tolerates non-conforming input — it is not licence for the client
+ * to send it. Catching it here turns a signed round trip that can only ever
+ * return `400` into an immediate, local error naming the bound.
+ *
+ * Note `String(v)` in {@link buildQuery} would otherwise forward `NaN` and
+ * `Infinity` as the literal query values `limit=NaN` / `limit=Infinity`; both
+ * fail `Number.isInteger`, so they are rejected here.
+ *
+ * Throws a plain `RangeError` rather than a `NexusExchangeError`: this is a
+ * caller bug caught locally, not an API or transport failure, so it must not be
+ * caught by `catch (e) { if (e.transient) retry() }` handling — retrying an
+ * out-of-range argument can never succeed.
+ */
+function assertLimitInRange(
+  limit: number | undefined,
+  min: number,
+  max: number,
+): void {
+  if (limit === undefined) return;
+  if (!Number.isInteger(limit) || limit < min || limit > max) {
+    throw new RangeError(
+      `limit must be an integer in [${min}, ${max}] (the spec's parameter ` +
+        `schema for this endpoint); got ${limit}`,
+    );
+  }
+}
+
+/**
  * Combine an optional caller signal with a fresh timeout signal, so a request
  * aborts on whichever fires first and never hangs indefinitely. Falls back
  * gracefully if `AbortSignal.any` is unavailable.
@@ -336,6 +684,10 @@ function abortSignalFor(timeoutMs: number, caller?: AbortSignal): AbortSignal {
 }
 
 export class Client {
+  // Bound for the client's lifetime, with no setter: credentials are per-network
+  // and must never be reused across networks.
+  readonly #network: Network;
+  readonly #networkConfig: NetworkConfig;
   readonly #baseUrl: string;
   readonly #basePath: string;
   readonly #origin: string;
@@ -356,11 +708,23 @@ export class Client {
   readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(options: ClientOptions = {}) {
-    const network = options.network ?? Network.Stable;
-    this.#baseUrl = (options.baseUrl ?? baseUrlForNetwork(network)).replace(
-      /\/+$/,
-      "",
-    );
+    // Default to play funds. Defaulting to mainnet would mean a caller who
+    // forgot the option sends real-money orders.
+    const network = options.network ?? Network.Testnet;
+    // Resolved before the baseUrl branch so an unrecognized network is refused
+    // even when an explicit `baseUrl` is supplied — the network still selects
+    // the signing domain and the funds classification.
+    const config = networkConfig(network);
+    if (options.baseUrl === undefined && config.baseUrl === null) {
+      throw new NexusExchangeError(unavailableNetworkMessage(network, config));
+    }
+    this.#network = network;
+    this.#networkConfig = config;
+    // `config.baseUrl` is non-null here: the branch above threw when it was null
+    // and no override was supplied.
+    const resolved = (options.baseUrl ?? config.baseUrl!).replace(/\/+$/, "");
+    assertAbsoluteHttpUrl(resolved);
+    this.#baseUrl = resolved;
     this.#basePath = basePathOf(this.#baseUrl);
     // The origin (scheme + host [+ port]) is the base URL with its path prefix
     // sliced off — byte-exact, same as `basePathOf`. Used for host-root routes
@@ -420,6 +784,68 @@ export class Client {
   /** Whether this client was given both an API key and secret. */
   get hasCredentials(): boolean {
     return Boolean(this.#apiKey && this.#apiSecret);
+  }
+
+  /** The network this client is bound to. Fixed at construction. */
+  get network(): Network {
+    return this.#network;
+  }
+
+  /**
+   * The bundled config for {@link network} — label, funds classification,
+   * faucet availability, and signing domain.
+   *
+   * Note `baseUrl`/`wsUrl` here are the network's *defaults*; read
+   * {@link Client.baseUrl} / {@link Client.wsUrl} for what this client actually
+   * uses, which differ when a `baseUrl` override is in play.
+   */
+  get networkConfig(): NetworkConfig {
+    return this.#networkConfig;
+  }
+
+  /**
+   * Whether this client is pointed at real funds. `true` means every order
+   * moves real money.
+   *
+   * Derived from the selected network, so a `baseUrl` override does not change
+   * it — pointing a `Network.Testnet` client at a mainnet host would report
+   * `false`. Treat this as "which network's rules and credentials apply", and
+   * do not use an override to cross the funds boundary.
+   */
+  get isRealFunds(): boolean {
+    return this.#networkConfig.funds === "real";
+  }
+
+  /** The REST base URL this client sends to, including {@link API_BASE_PATH}. */
+  get baseUrl(): string {
+    return this.#baseUrl;
+  }
+
+  /**
+   * WebSocket base for this client's origin — hand straight to
+   * `createWsClient({ url })`:
+   *
+   * ```ts
+   * const ws = createWsClient({
+   *   url: client.wsUrl,
+   *   tokenProvider: client.wsTokenProvider(),
+   * });
+   * ```
+   *
+   * Derived from the same origin the REST calls use, so it follows a `baseUrl`
+   * override and cannot leave the stream on a different host than the token was
+   * minted on. Throws only if the base URL has no `http(s)` origin to convert,
+   * which `fetch` would reject anyway.
+   */
+  get wsUrl(): string {
+    const url = wsUrlForOrigin(this.#origin);
+    if (url === null) {
+      throw new NexusExchangeError(
+        `cannot derive a WebSocket URL from base URL ${JSON.stringify(this.#baseUrl)}; ` +
+          `expected an http:// or https:// origin`,
+      );
+    }
+    return url;
   }
 
   // -- public market data ---------------------------------------------------
@@ -568,6 +994,39 @@ export class Client {
     });
   }
 
+  /**
+   * `GET /account/state` — consolidated account state in one call: the portfolio
+   * summary aggregates plus all open positions.
+   *
+   * Prefer this over pairing {@link getAccountSummary} with {@link getPositions}:
+   * both halves come from a single coherent read, so
+   * `summary.open_positions_count` always matches `positions.length` and the two
+   * can't disagree the way two separate round-trips can. Fails closed with a
+   * `502` {@link ApiError} when the engine-authoritative margin view is
+   * unavailable, rather than reporting a local estimate.
+   */
+  getAccountState(opts?: { signal?: AbortSignal }): Promise<AccountState> {
+    return this.#request<AccountState>("GET", "/account/state", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `GET /account/fees` — the account's effective fee schedule: maker/taker rate
+   * in bps, fee tier, rolling 30-day volume, and active discounts.
+   *
+   * This is the forward-looking *schedule* rate, not a realized per-fill
+   * average, and its scope is given by the response's `schedule` field. Note
+   * `maker_fee_bps` may be negative (a rebate).
+   */
+  getAccountFees(opts?: { signal?: AbortSignal }): Promise<AccountFees> {
+    return this.#request<AccountFees>("GET", "/account/fees", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
   /** `GET /account/equity-history` — equity samples for the account. */
   getEquityHistory(
     opts: {
@@ -581,6 +1040,51 @@ export class Client {
       signed: true,
       signal: opts.signal,
     });
+  }
+
+  /**
+   * `GET /account/portfolio-history` — equity, cumulative trading PnL, and
+   * cumulative traded volume for the account, downsampled over `window` and
+   * returned **oldest first**.
+   *
+   * The richer superset of {@link getEquityHistory} (equity only, ~1h window);
+   * both derive equity from the same source, so the series never disagree.
+   *
+   * Omit `window` to take the server's `day` default — always read
+   * `window`/`cadence_ms` off the response rather than assuming what was served.
+   *
+   * `limit` is bounded by the spec's parameter schema to an integer in
+   * `[1, 366]`; anything else rejects with a {@link RangeError} locally rather
+   * than spending a signed round trip on a guaranteed `400`. Within that range
+   * the server clamps further to the selected window's capacity (day 288, week
+   * 168, month 120, all 366) instead of rejecting, so a `limit` larger than the
+   * window holds is fine — read `points.length` off the response.
+   *
+   * The returned promise **rejects** with `RangeError`; it is not thrown
+   * synchronously. `async` here is load-bearing for that: every other failure
+   * mode of every method on this client (including `MissingCredentialsError`,
+   * likewise a caller bug) arrives as a rejection, so a caller who writes
+   * `client.getPortfolioHistory(…).catch(…)` without `await` must not get an
+   * exception through a second channel that the `.catch` cannot see.
+   */
+  async getPortfolioHistory(
+    opts: {
+      window?: PortfolioWindow;
+      limit?: number;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<PortfolioHistory> {
+    assertLimitInRange(opts.limit, 1, 366);
+    const query = buildQuery({ window: opts.window, limit: opts.limit });
+    return this.#request<PortfolioHistory>(
+      "GET",
+      "/account/portfolio-history",
+      {
+        query,
+        signed: true,
+        signal: opts.signal,
+      },
+    );
   }
 
   /** `GET /positions` — open positions for the authenticated account. */
@@ -900,19 +1404,36 @@ export class Client {
   // `for await (const item of …)`. Set the per-page limit with `.pageSize(n)`
   // and cap total pages with `.maxPages(n)`.
   //
-  // The underlying REST endpoints currently accept only a `limit` and return a
-  // bare array with no next-page cursor, so today a paginator resolves to a
-  // single page. The seam is deliberate: once the server starts returning a
-  // cursor, `#pageFetcherFrom` will thread it through `PageRequest.cursor` and
-  // these same methods auto-page across every page with no change to callers.
+  // KNOWN GAP — every paginator below resolves to a SINGLE page.
+  //
+  // This used to be a faithful description of the server: the endpoints took
+  // only a `limit` and returned a bare array with no cursor. As of the vendored
+  // spec v0.7.2 that is no longer true. All five paginated GETs — `/fills`,
+  // `/orders/history`, `/positions/closed`, `/account/equity-history`, and
+  // `/markets/{market_id}/trades` — now accept the shared `cursor` query
+  // parameter and return the next page's token in the `X-Next-Cursor` response
+  // header. `#pageFetcherFrom` does not thread it yet, so `.all()` returns only
+  // the first page and reports `isLastPage === true`: on an account with more
+  // history than one page fits, these methods UNDER-REPORT SILENTLY.
+  //
+  // Threading `X-Next-Cursor` through `PageRequest.cursor` is the tracked
+  // follow-up (it needs `#request` to surface response headers, which it does
+  // not today). The seam below is where it lands, with no change to callers.
+  // Until then, prefer the non-paginated methods with an explicit `limit` when
+  // completeness matters.
 
   /**
    * Adapt a `limit`-only list endpoint into a {@link FetchPage} for a
-   * {@link Paginator}. The endpoint returns a bare array today (no server
-   * cursor), so each fetched page is terminal (`nextCursor: null`); the
-   * paginator therefore resolves to a single page. `fetchArray` receives the
-   * per-page limit (or `undefined` when none was configured) and the abort
-   * signal so cancellation still flows through auto-paging.
+   * {@link Paginator}. `fetchArray` receives the per-page limit (or `undefined`
+   * when none was configured) and the abort signal so cancellation still flows
+   * through auto-paging.
+   *
+   * Every page is reported terminal (`nextCursor: null`) because the decoded
+   * body is all we have here — `#request` returns `T` and discards the response
+   * headers, so the `X-Next-Cursor` that spec v0.7.2 added is not reachable from
+   * this seam. See the KNOWN GAP note above: this is the single line that makes
+   * the paginators stop after one page, and the one to change once headers are
+   * plumbed through.
    */
   #pageFetcherFrom<T>(
     fetchArray: (

@@ -1,0 +1,115 @@
+# Spec operations this SDK deliberately does NOT target.
+#
+# The operations analogue of the coverage half of spec/schemas.txt. Together with
+# endpoints.txt this file must account for EVERY operation in the vendored spec
+# (invariant G in scripts/check-spec-drift.mjs), so a spec release that adds an
+# operation fails CI until someone either implements it or records here why not.
+# Unlike the schema list, 100% operation coverage is not the goal: the spec carries
+# admin routes, deprecated routes, and legacy-gateway twins of operations this
+# client already reaches through `/api/v1`.
+#
+# Entries are staleness-checked both ways: a line the spec no longer defines fails
+# (drop it), and so does a line that endpoints.txt has since started targeting
+# (remove it — it is covered). So this cannot rot into a list of routes that no
+# longer exist.
+#
+# Format matches endpoints.txt: `METHOD /path`, one per line, placeholders as the
+# spec spells them.
+
+# ── Legacy-gateway twins of operations already targeted via /api/v1 ────────────
+#
+# Dual-stack routing (ENG-4947 / ENG-4740): the exchange serves each of these at
+# both the legacy root and an `/api/v1` sibling, and the spec documents both. This
+# client's base URL is `…/api/v1`, so it targets the `/api/v1` form (see
+# endpoints.txt) and never the root form. Not a coverage gap — the same operation.
+GET /markets/summary
+GET /tickers
+GET /markets/{market_id}/ticker
+GET /markets/{market_id}/orderbook
+GET /markets/{market_id}/trades
+GET /markets/{market_id}/candles
+GET /markets/{market_id}/funding
+GET /markets/{market_id}/funding-samples
+GET /markets/{market_id}/mark-price
+GET /markets/{market_id}/status
+GET /stats
+GET /stats/history
+GET /account
+GET /account/summary
+GET /account/equity-history
+GET /account/state
+GET /account/fees
+GET /account/portfolio-history
+GET /account/rate-limit
+GET /positions
+GET /positions/closed
+GET /fills
+POST /account/credit
+POST /orders
+POST /orders/batch
+POST /orders/preview
+GET /orders
+GET /orders/history
+PATCH /orders/{order_id}
+DELETE /orders/{order_id}
+DELETE /orders
+
+# ── Legacy-root forms of the funds surface the client sends to /api/v1 ─────────
+#
+# The client implements each of these, but against its `/api/v1` sibling, which
+# the spec does not yet document — so the implemented path sits in CODE_ONLY_OPS
+# (see check-spec-drift.mjs) and the documented path sits here. When the spec
+# ships the `/api/v1` variants, the CODE_ONLY_OPS entries move into endpoints.txt
+# and these lines stay put.
+#
+# The first two are different: ENG-8463 — `POST /api/v1/account/deposit` and
+# `POST /api/v1/account/margin` appear to be routed nowhere, so `deposit()` and
+# `adjustMargin()` are probably calling a path that 404s. If that is confirmed,
+# the client moves to the bare paths below and these two lines go away.
+POST /account/deposit
+POST /account/margin
+GET /deposits
+POST /deposits
+GET /withdrawals
+POST /faucet
+
+# ── Surface with no client method yet ─────────────────────────────────────────
+#
+# Real coverage gaps: `src/client.ts` has no wrapper. Several already have their
+# models in src/models.ts (cancel-on-disconnect and the bridge shapes landed with
+# the v0.7.1 bump), so for those the remaining work is the wrapper plus a line in
+# endpoints.txt. Listed here so the backlog is visible rather than invisible.
+GET /markets
+GET /orders/{order_id}
+GET /funding
+GET /status
+GET /markets/{market_id}/risk-params
+GET /markets/{market_id}/adl-events
+GET /account/{address}/adl-history
+# Cancel-on-disconnect (both stacks).
+GET /account/cancel-on-disconnect
+PUT /account/cancel-on-disconnect
+GET /api/v1/account/cancel-on-disconnect
+PUT /api/v1/account/cancel-on-disconnect
+# Cross-chain bridge deposits (spec Phase A). Modelled in the Rust SDK; the TS
+# client has no bridge methods yet.
+GET /api/v1/bridge/assets
+GET /api/v1/bridge/deposit-addresses
+POST /api/v1/bridge/deposit-addresses
+GET /api/v1/bridge/deposits
+GET /api/v1/bridge/deposits/{id}
+
+# ── Deprecated / superseded — intentionally never targeted ─────────────────────
+#
+# POST /ws/token — superseded by the canonical plural POST /ws-tokens, which the
+#   client uses (see Client.mintWsToken).
+# GET /stream    — deprecated SSE stream, superseded by the GET /ws upgrade.
+POST /ws/token
+GET /stream
+
+# ── Admin surface — outside this SDK's audience ────────────────────────────────
+#
+# admin_secret-gated tier management. Not part of a public trading client.
+GET /admin/tiers
+PUT /admin/tiers
+DELETE /admin/tiers/{address}
