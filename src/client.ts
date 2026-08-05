@@ -974,6 +974,25 @@ export class Client {
     return this.#request<ThroughputSample[]>("GET", "/stats/history", opts);
   }
 
+  /**
+   * `GET /bridge/assets` — bridgeable chains and their deposit/withdraw assets.
+   *
+   * **Public.** The spec declares `security: []` for this route and documents
+   * only `200`/`429` — no `401` — unlike the other three bridge routes, which
+   * are `[{ hmacAuth: [] }]`. It was originally written `signed: true` alongside
+   * them, which meant a credential-less `new Client()` — the public-read mode the
+   * README documents — threw `MissingCredentialsError` out of `#sendOnce` before
+   * anything reached the wire (@Luc-Campos, review of #37).
+   *
+   * Note the drift checker cannot catch a repeat of this: it validates schemas
+   * and enums, not per-route `security`. The regression test is the guard.
+   */
+  getBridgeAssets(opts?: {
+    signal?: AbortSignal;
+  }): Promise<BridgeAssetsResponse> {
+    return this.#request<BridgeAssetsResponse>("GET", "/bridge/assets", opts);
+  }
+
   // -- authenticated: account -----------------------------------------------
 
   /** `GET /account` — balances, equity, and open positions. */
@@ -1202,16 +1221,6 @@ export class Client {
   }
 
   // -- authenticated: bridge (deposits) -------------------------------------
-
-  /** `GET /bridge/assets` — bridgeable chains and their deposit/withdraw assets. */
-  getBridgeAssets(opts?: {
-    signal?: AbortSignal;
-  }): Promise<BridgeAssetsResponse> {
-    return this.#request<BridgeAssetsResponse>("GET", "/bridge/assets", {
-      signed: true,
-      signal: opts?.signal,
-    });
-  }
 
   /**
    * `POST /bridge/deposit-addresses` — get or create the account's deposit

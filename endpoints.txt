@@ -41,6 +41,11 @@ GET /api/v1/markets/{market_id}/status
 GET /api/v1/stats
 GET /api/v1/stats/history
 
+# `GET /bridge/assets` is PUBLIC — the spec gives it `security: []` and declares
+# only 200/429, unlike the three authenticated bridge routes below. Listed here,
+# with the other unauthenticated reads, so the grouping matches the contract.
+GET /api/v1/bridge/assets
+
 # --- Direct-service surface (/api/v1) — authenticated account ---
 GET /api/v1/account
 GET /api/v1/account/summary
@@ -53,6 +58,14 @@ GET /api/v1/positions
 GET /api/v1/positions/closed
 GET /api/v1/fills
 POST /api/v1/account/credit
+
+# --- Direct-service surface (/api/v1) — authenticated bridge (deposits) ---
+# All three are `[{hmacAuth: []}]` in the spec. `GET /bridge/assets` is NOT here
+# on purpose — see the public block above.
+POST /api/v1/bridge/deposit-addresses
+GET /api/v1/bridge/deposit-addresses
+GET /api/v1/bridge/deposits
+GET /api/v1/bridge/deposits/{id}
 
 # --- Direct-service surface (/api/v1) — authenticated orders ---
 POST /api/v1/orders
