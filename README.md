@@ -307,18 +307,44 @@ const recent = await client
   .all();
 ```
 
-The paginator drives the cursor for you: no request is issued until the first
-page is pulled, and it stops safely on a stuck or non-advancing server cursor.
+The paginator drives the cursor for you: it sends the opaque `cursor` query
+parameter and reads the next one off the **`X-Next-Cursor`** response header, so
+`.all()` really does walk every page. No request is issued until the first page
+is pulled.
 
-> [!WARNING]
-> **These paginators currently stop after the first page.** Spec v0.7.2 added a
-> `cursor` query parameter and an `X-Next-Cursor` response header to all five
-> endpoints, but the SDK does not thread the cursor yet, so `.all()` returns the
-> first page and reports `isLastPage === true` rather than raising. On an account
-> with more history than one page holds, that under-reports **silently**. Until
-> it lands, use the non-paginated methods (`getFills`, `getOrderHistory`,
-> `getEquityHistory`, `getClosedPositions`, `fetchTrades`) with an explicit
-> `limit` when completeness matters.
+Termination:
+
+- **No `X-Next-Cursor` ⇒ the last page.** Not an error, and not a reason to retry.
+- An **empty page that still carries a cursor is not the end** — a sparse window
+  keeps paging.
+- A server that hands back the **same** cursor it was given cannot advance, so the
+  paginator returns that page and stops rather than re-issuing one request
+  forever. (The Python SDK raises `PaginationError` here instead; in TS the last
+  page's non-`null` `nextCursor` makes the stall visible without an error type.)
+- Nothing else bounds how far back a walk goes; pass `.maxPages(n)` when that
+  matters.
+
+`.pageSize(n)` is checked against **that endpoint's** spec maximum before the
+request is built, so an out-of-schema page size fails locally (as a terminal
+`InvalidRequestError`) instead of being signed and sent. The maxima are per
+endpoint and **not** interchangeable:
+
+| endpoint                      | method                        | `limit` max                                         |
+| ----------------------------- | ----------------------------- | --------------------------------------------------- |
+| `GET /markets/{id}/trades`    | `fetchTradesPaginated`        | `TRADES_LIMIT_MAX` = 1000                           |
+| `GET /fills`                  | `getFillsPaginated`           | `FILLS_LIMIT_MAX` = 1000                            |
+| `GET /orders/history`         | `getOrderHistoryPaginated`    | `ORDER_HISTORY_LIMIT_MAX` = 500                     |
+| `GET /positions/closed`       | `getClosedPositionsPaginated` | `CLOSED_POSITIONS_LIMIT_MAX` = 200                  |
+| `GET /account/equity-history` | `getEquityHistoryPaginated`   | `EQUITY_HISTORY_LIMIT_MAX` = 720 (also the default) |
+
+The `366` that appears in the spec belongs to `/account/portfolio-history`, which
+has no `cursor` parameter and is not paginated — applying it here would reject
+valid requests, and on `/account/equity-history` it sits below that endpoint's own
+default of 720.
+
+The flat getters (`fetchTrades`, `getFills`, `getOrderHistory`,
+`getClosedPositions`, `getEquityHistory`) return the **first page only** and take
+the same `limit` bound.
 
 ### Wallet sign-in, sessions & API-key management
 

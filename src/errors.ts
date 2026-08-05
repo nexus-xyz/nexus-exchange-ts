@@ -80,6 +80,18 @@ export class TransportError extends NexusExchangeError {
 export class MissingCredentialsError extends NexusExchangeError {}
 
 /**
+ * The SDK rejected the request locally: an argument violates the API's request
+ * schema, so the request was never built, signed, or sent.
+ *
+ * Terminal (never `transient`) — retrying the same arguments cannot help. This is
+ * the TS analog of the Rust SDK's `Error::invalid_request` and the Python SDK's
+ * `ValueError`, and the reason a schema violation is not surfaced as a
+ * {@link TransportError}: that one reports `transient: true`, which would tell a
+ * retrying caller to spin on a mistake that will never succeed.
+ */
+export class InvalidRequestError extends NexusExchangeError {}
+
+/**
  * Max sanitized error-body length carried on an {@link ApiError}. Bounded so a
  * large or hostile error response can't blow up logs or memory; enough to
  * convey a normal JSON error.
