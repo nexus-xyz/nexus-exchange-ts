@@ -301,8 +301,10 @@ test("out_of_sync yields a synthetic outOfSync sentinel", async () => {
   });
 
   const evt = await nextEvent(iter);
+  // `assert.ok` is declared `asserts value`, so this narrows `evt` to `WsEvent`
+  // on its own. A following `if (evt === "timeout") return;` was unreachable —
+  // and once this file is typechecked, provably so (TS2367).
   assert.ok(evt !== "timeout");
-  if (evt === "timeout") return;
   assert.equal(evt.outOfSync, true);
   assert.equal(evt.channel, "orders");
   assert.equal(evt.seq, 1234n);

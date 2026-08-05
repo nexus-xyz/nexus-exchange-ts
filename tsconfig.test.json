@@ -1,0 +1,49 @@
+// Typecheck-only config covering the two directories the build config cannot
+// (ENG-7726). `tsconfig.json` is the BUILD config: it emits `dist/` from
+// `rootDir: "src"`, so it deliberately compiles `src/**/*.ts` and nothing else.
+// That left `test/` and `examples/` checked by no tool at all — `pnpm test` runs
+// through `tsx`, which strips types without checking them, and `eslint` has no
+// `parserOptions.project`, so no type-aware rule ever fires either.
+//
+// The consequence was not theoretical. The `test/models.test.ts` shape fixtures
+// carry a comment claiming "a field rename or type change in models.ts breaks
+// compilation here" — nothing made that true. They passed against a `models.ts`
+// that did not export `AccountState` / `AccountFees` / `PortfolioHistory` at
+// all, because a type-only import is erased before `tsx` ever runs it. Two
+// invalid fixtures (`Order.limit_offset_bps`) sat green through a full release
+// cycle, and a runtime bug shipped in `examples/portfolio.ts` through review.
+//
+// This config is what makes those fixtures load-bearing, so it is the only
+// thing pinning the hand-written models to the spec's field TYPES — the drift
+// gate checks schema names and enum members, never a property's type.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Checking only. Nothing here is ever emitted, which is also what licenses
+    // `allowImportingTsExtensions` below.
+    "noEmit": true,
+
+    // The base config emits, so it sets `rootDir: "src"` and `declaration`.
+    // Widened to the repo root because `test/` and `examples/` sit outside
+    // `src/`, and declarations are meaningless under `noEmit`.
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+
+    // `test/smoke.test.ts` and `test/ws-client.test.ts` import
+    // `"../src/index.ts"` by extension. That is fine under `tsx` but plain
+    // `tsc` rejects it without this flag, which in turn requires `noEmit`.
+    // Scoped to this config on purpose: the BUILD config still forbids it, so a
+    // `.ts`-suffixed import cannot leak into `src/` and break the published
+    // output.
+    "allowImportingTsExtensions": true
+  },
+
+  // Both keys are required. `include` alone would silently check nothing new:
+  // `exclude` does not merge across `extends`, and the base excludes "test" —
+  // so leaving it inherited would reproduce the exact gap this file closes.
+  // Verified with `tsc -p tsconfig.test.json --listFiles`.
+  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
