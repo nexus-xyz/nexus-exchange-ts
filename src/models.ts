@@ -529,7 +529,50 @@ export interface AccountSummary {
   positions: Position[];
 }
 
-/** An open position (`GET /positions`, embedded in {@link AccountSummary}). */
+/**
+ * Machine-readable reason an enriched {@link Position} risk field is `null`.
+ *
+ * Open string — the documented codes are listed for autocomplete, but new
+ * reasons may appear upstream, so never treat a `switch` over these as
+ * exhaustive.
+ */
+export type PositionFieldError = OpenUnion<
+  | "margin_state_not_mirrored"
+  | "mark_price_unavailable"
+  | "margin_rate_unavailable"
+  | "margin_used_zero"
+  | "market_params_unavailable"
+>;
+
+/**
+ * An open position (`GET /positions`, embedded in {@link AccountSummary} and
+ * {@link AccountState}).
+ *
+ * The per-position risk detail added in spec v0.7.2 (`leverage`,
+ * `notional_value`, `roe`, `margin_used`, `max_leverage`) is **nullable**: each
+ * is derived from inputs the indexer may not have, and each carries a paired
+ * `*_error` field naming the reason when it is `null`. Always null-check before
+ * doing arithmetic — a missing mark price yields `null`, not `0`.
+ *
+ * Those v0.7.2 fields are also **optional**, which is a distinct thing from
+ * nullable and worth reading carefully:
+ *
+ * - `undefined` — the server did not report the field at all. Every deployment
+ *   older than v0.7.2 behaves this way, and the spec permits it: this schema has
+ *   **no `required` array**, so no property is contractually guaranteed.
+ * - `null` — reported, but not computable. Read the paired `*_error` for why.
+ * - a value — computed and authoritative.
+ *
+ * `?? fallback` collapses the first two, which is usually what you want. Reach
+ * for `=== undefined` only to tell an old server apart from a degraded field.
+ *
+ * The seven pre-v0.7.2 properties are left non-optional despite the same missing
+ * `required` array. That is deliberate and narrow: re-typing them now would turn
+ * every existing `position.size` read into a compile error, and unlike the new
+ * fields there is no deployment in which they are actually absent. Aligning the
+ * whole schema (and the sibling SDKs, which disagree three ways here) wants one
+ * cross-SDK decision, not a unilateral change buried in a feature PR.
+ */
 export interface Position {
   market_id: string;
   side: PositionSide;
@@ -538,6 +581,63 @@ export interface Position {
   unrealized_pnl: Decimal;
   realized_pnl: Decimal;
   liquidation_price: Decimal;
+  /**
+   * The account's leverage multiplier for this position.
+   *
+   * **Currently always `null`** (`leverage_error` is `margin_state_not_mirrored`):
+   * deriving it needs the user's leverage setting or account equity/allocated
+   * margin, which the indexer does not mirror. Do not substitute
+   * `1 / initial_margin_rate` or infer it from {@link margin_used} — that
+   * collapses to a per-market constant, not the real leverage.
+   */
+  leverage?: number | null;
+  /** Why {@link leverage} is `null`, or `null` when it is populated. */
+  leverage_error?: PositionFieldError | null;
+  /**
+   * Position notional value (`|size| × mark price`) as a decimal string, or
+   * `null` when the mark price is unavailable (see {@link notional_value_error}).
+   */
+  notional_value?: Decimal | null;
+  /** Why {@link notional_value} is `null`, or `null` when it is populated. */
+  notional_value_error?: PositionFieldError | null;
+  /**
+   * Return on initial margin (`unrealized_pnl / margin_used`) as a decimal
+   * string, or `null` when an input is unavailable or margin is zero (see
+   * {@link roe_error}).
+   */
+  roe?: Decimal | null;
+  /** Why {@link roe} is `null`, or `null` when it is populated. */
+  roe_error?: PositionFieldError | null;
+  /**
+   * Initial-margin requirement held against this position
+   * (`notional_value × initial_margin_rate`, under the engine's cross-margin
+   * model) as a decimal string, or `null` when an input is unavailable (see
+   * {@link margin_used_error}). Isolated/custom margin allocations are not
+   * mirrored by the indexer.
+   */
+  margin_used?: Decimal | null;
+  /** Why {@link margin_used} is `null`, or `null` when it is populated. */
+  margin_used_error?: PositionFieldError | null;
+  /**
+   * Maximum leverage allowed for this market, matching `max_leverage` on
+   * {@link MarketRiskParams}, or `null` when market params are unavailable (see
+   * {@link max_leverage_error}).
+   */
+  max_leverage?: number | null;
+  /** Why {@link max_leverage} is `null`, or `null` when it is populated. */
+  max_leverage_error?: PositionFieldError | null;
+  /**
+   * Cumulative funding paid on this position, as a decimal string.
+   *
+   * Sign is **paid-positive**: positive means the position has *paid* funding,
+   * negative means it has *received* funding. Bounded by the funding history the
+   * indexer retains.
+   *
+   * Never `null`: a v0.7.2+ server always reports a value, using `"0"` when no
+   * funding has accrued. `undefined` therefore means only one thing here — the
+   * server predates v0.7.2 — and it must not be read as "no funding paid".
+   */
+  funding_paid?: Decimal;
 }
 
 /** A closed position record (`GET /positions/closed`). */
@@ -567,6 +667,27 @@ export interface AccountPortfolioSummary {
   open_orders_count: number;
   margin_used: Decimal;
   available_margin: Decimal;
+  /**
+   * Wallet-withdrawable balance: engine-authoritative free margin floored at
+   * zero (`max(0, available_margin)`), as a decimal string.
+   *
+   * Free margin already nets each position's initial margin and pre-trade order
+   * reservations out of equity, so this is exactly what can leave the account.
+   * An underwater account is clamped to `"0"` and never surfaced negative —
+   * prefer this over {@link available_margin} when deciding what to withdraw.
+   * Derived from the authoritative margin view: the endpoint fails closed with
+   * `502` rather than reporting a local estimate when that view is unavailable.
+   *
+   * **Optional**, and the distinction matters here more than anywhere else on
+   * this schema: added in spec v0.7.2, so a deployment older than that omits it
+   * entirely, and this schema has no `required` array to guarantee otherwise.
+   * `undefined` means "this server does not report withdrawable balance" — do
+   * **not** coalesce it to `"0"`, which reads as "nothing is withdrawable" and
+   * is indistinguishable from a genuinely empty account. Fail the operation or
+   * fall back to {@link available_margin} explicitly, and note the fail-closed
+   * `502` guarantee above only covers a server that implements the field at all.
+   */
+  withdrawable?: Decimal;
   /** Present only when the early-access gate is active. */
   early_access_allowed?: boolean;
 }
@@ -574,8 +695,175 @@ export interface AccountPortfolioSummary {
 /** One equity sample for the account (`GET /account/equity-history`, 5s cadence). */
 export interface EquityPoint {
   timestamp_ms: TimestampMs;
-  /** Account equity at sample time. */
+  /**
+   * Account equity at sample time, as a JSON **number**.
+   *
+   * Note the wire-type difference from {@link PortfolioPoint.equity}, which is a
+   * lossless decimal string derived from the same underlying value — compare the
+   * two by decimal value, never by wire representation.
+   */
   equity: number;
+}
+
+/**
+ * Consolidated single-call account snapshot (`GET /account/state`): the
+ * portfolio summary aggregates plus all open positions.
+ *
+ * Saves pairing `GET /account/summary` with `GET /positions`. Both parts come
+ * from one coherent read, so `summary.open_positions_count` always equals
+ * `positions.length`, and `summary` is identical to the standalone
+ * `/account/summary` response — no torn-read skew between the two halves.
+ */
+export interface AccountState {
+  summary: AccountPortfolioSummary;
+  /** All open positions for the account. */
+  positions: Position[];
+}
+
+/**
+ * Portfolio time-series window selector — also picks the server-side downsample
+ * cadence and point capacity:
+ *
+ * | window  | cadence | max points | span  |
+ * | ------- | ------- | ---------- | ----- |
+ * | `day`   | 5 min   | 288        | 24 h  |
+ * | `week`  | 1 h     | 168        | 7 d   |
+ * | `month` | 6 h     | 120        | 30 d  |
+ * | `all`   | 1 d     | 366        | ~1 y  |
+ *
+ * Omitting the `window` query parameter defaults to `day`. A value outside this
+ * closed set is rejected with `400` (`invalid_window`).
+ */
+export type PortfolioWindow = "day" | "week" | "month" | "all";
+
+/**
+ * One downsampled portfolio sample (`GET /account/portfolio-history`).
+ *
+ * The monetary fields are lossless decimal strings — parse them with a decimal
+ * type, never a float.
+ */
+export interface PortfolioPoint {
+  timestamp_ms: TimestampMs;
+  /**
+   * Account equity at sample time (collateral balance + Σ unrealized PnL), as a
+   * decimal string. Same underlying value as {@link EquityPoint.equity}, which
+   * is serialized as a JSON number instead.
+   */
+  equity: Decimal;
+  /**
+   * Cumulative trading PnL up to this sample, as a decimal string: Σ realized
+   * PnL on position close (including liquidation and ADL closes) + Σ funding
+   * (signed) + current unrealized PnL.
+   *
+   * Deposit-neutral — wallet deposits and withdrawals never move it — so the
+   * curve reflects trading performance only.
+   */
+  pnl: Decimal;
+  /**
+   * Cumulative traded notional (Σ price × size) up to this sample, across taker
+   * and maker fills, as a decimal string. A self-trade is counted once.
+   * Monotonically non-decreasing.
+   */
+  volume: Decimal;
+}
+
+/**
+ * Portfolio time-series for the authenticated account
+ * (`GET /account/portfolio-history`): equity, cumulative PnL, and cumulative
+ * volume, downsampled at a fixed per-window cadence and returned **oldest
+ * first**.
+ *
+ * Extends `GET /account/equity-history` (equity only, ~1h window) with PnL and
+ * volume across multiple windows; both derive equity from the same source, so
+ * the series never disagree.
+ */
+export interface PortfolioHistory {
+  /**
+   * The window actually served — echoes the `window` query parameter, or its
+   * `day` default. Read it rather than assuming the requested value.
+   */
+  window: PortfolioWindow;
+  /**
+   * Downsample interval between adjacent points, in milliseconds (e.g. 300000
+   * for `day`, 86400000 for `all`).
+   */
+  cadence_ms: number;
+  /**
+   * Samples for the window, **oldest first**. Length is bounded by the window's
+   * capacity (see {@link PortfolioWindow}) and by the `limit` parameter.
+   */
+  points: PortfolioPoint[];
+}
+
+/**
+ * An active fee discount applied to the account.
+ *
+ * The concrete shape is provisional and finalizes with the fee model, so no
+ * properties are guaranteed yet and {@link AccountFees.discounts} is currently
+ * always empty. Modeled as an open record so upstream can add fields additively
+ * without a breaking change; values are `unknown` to force callers to narrow.
+ */
+export interface FeeDiscount {
+  [key: string]: unknown;
+}
+
+/**
+ * The authenticated account's effective fee schedule (`GET /account/fees`).
+ *
+ * Reports what the venue charges **today**, as a forward-looking schedule rate —
+ * not a realized per-fill average. There are no per-account fee tiers or
+ * discounts yet (the fee model is still a draft), so `tier` is `base` and
+ * `discounts` is empty.
+ */
+export interface AccountFees {
+  /**
+   * Effective maker fee in basis points. **May be negative**, which means the
+   * maker is *paid* a rebate — e.g. `-2` is a 0.02% rebate. Do not assume a
+   * non-negative value.
+   */
+  maker_fee_bps: number;
+  /** Effective taker fee in basis points — e.g. `5` is a 0.05% fee. */
+  taker_fee_bps: number;
+  /**
+   * Fee tier for the account, currently always `base` (distinct from rate-limit
+   * tiers). Open string — new values arrive when the fee model lands.
+   */
+  tier: OpenUnion<"base">;
+  /**
+   * Scope of the reported rate, currently always `standard`. The venue charges a
+   * per-market schedule (standard crypto, mid-cap crypto, FX, and
+   * commodities/indices all differ), but this endpoint takes no market
+   * parameter, so it reports the standard crypto-group schedule and marks it
+   * here. Treat the rate as scoped by this value, **not** a venue-wide
+   * guarantee. Open string — new scopes may appear.
+   */
+  schedule: OpenUnion<"standard">;
+  /**
+   * Rolling 30-day traded notional for the account, as a decimal string.
+   * Best-effort — see {@link volume_30d_estimated}.
+   */
+  volume_30d: Decimal;
+  /**
+   * `true` when {@link volume_30d} may **undercount**: the source fill buffer was
+   * at capacity, so some older in-window fills may have been evicted. `false`
+   * when the full 30-day window is covered.
+   *
+   * Typed non-optional because the spec lists it in `AccountFees.required` —
+   * unlike the `Position` / `AccountPortfolioSummary` fields, which have no
+   * `required` array and are therefore optional here.
+   *
+   * Beware the asymmetry if you harden against a *non-conforming* server that
+   * omits it: `undefined` is **falsy**, so a plain `if (fees.volume_30d_estimated)`
+   * silently treats a missing field as a positive claim of full 30-day coverage —
+   * the unsafe direction. Test `fees.volume_30d_estimated === false` when you
+   * need that claim, and treat anything else as possibly-estimated.
+   */
+  volume_30d_estimated: boolean;
+  /**
+   * Active fee discounts applied to the account. Currently always empty — no
+   * discount program exists yet.
+   */
+  discounts: FeeDiscount[];
 }
 
 /** A funding payment for the account (`GET /funding`). */

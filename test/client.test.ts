@@ -5,13 +5,19 @@ import { createHash, createHmac } from "node:crypto";
 import {
   Client,
   Network,
+  NETWORKS,
+  API_BASE_PATH,
+  networkConfig,
   baseUrlForNetwork,
   DEFAULT_USER_AGENT,
 } from "../src/client.js";
+import type { ClientOptions } from "../src/client.js";
+import type { PortfolioWindow } from "../src/models.js";
 import { SDK_VERSION, API_VERSION } from "../src/version.js";
 import {
   ApiError,
   MissingCredentialsError,
+  NexusExchangeError,
   TransportError,
 } from "../src/errors.js";
 
@@ -33,15 +39,236 @@ function mockFetch(
   return { impl, calls };
 }
 
-test("network base URLs are the direct-indexer /api/v1 hosts", () => {
+// ── Network axis (ENG-6453) ──────────────────────────────────────────────────
+
+test("live network base URLs are the direct-indexer hosts", () => {
   assert.equal(
-    baseUrlForNetwork(Network.Stable),
+    baseUrlForNetwork(Network.Testnet),
     "https://exchange.nexus.xyz/api/v1",
   );
   assert.equal(
-    baseUrlForNetwork(Network.Beta),
-    "https://beta.exchange.nexus.xyz/api/v1",
+    baseUrlForNetwork(Network.Local),
+    "http://localhost:9090/api/v1",
   );
+});
+
+// scripts/check-spec-drift.mjs reads API_BASE_PATH as the prefix every non-root
+// request composes, and derives the operations it compares against the spec from
+// it (invariant H). If a network base stopped ending with it, the checker would
+// keep reporting green while the client signed different paths.
+test("every live network base URL is built from API_BASE_PATH", () => {
+  assert.equal(API_BASE_PATH, "/api/v1");
+  for (const [network, config] of Object.entries(NETWORKS)) {
+    if (config.baseUrl === null) continue;
+    assert.ok(
+      config.baseUrl.endsWith(API_BASE_PATH),
+      `${network} base URL ${config.baseUrl} must end with ${API_BASE_PATH}`,
+    );
+  }
+});
+
+// A wsUrl pointing at a different host than baseUrl would mint a token on one
+// origin and spend it on another. Client.wsUrl derives from the REST origin, so
+// this pins the declared map values against that derivation.
+test("each network's declared wsUrl matches its base URL's origin", () => {
+  for (const [network, config] of Object.entries(NETWORKS)) {
+    if (config.baseUrl === null) {
+      assert.equal(config.wsUrl, null, `${network} must not declare a wsUrl`);
+      continue;
+    }
+    const restOrigin = new URL(config.baseUrl).origin;
+    const derived = new Client({
+      network: network as Network,
+      fetchImpl: async () => new Response("{}"),
+    }).wsUrl;
+    assert.equal(
+      config.wsUrl,
+      derived,
+      `${network}: declared wsUrl ${config.wsUrl} disagrees with ${derived} (REST origin ${restOrigin})`,
+    );
+    assert.equal(new URL(derived).host, new URL(restOrigin).host);
+  }
+});
+
+test("the default network is testnet play funds, never mainnet", () => {
+  const client = new Client({ fetchImpl: async () => new Response("{}") });
+  assert.equal(client.network, Network.Testnet);
+  assert.equal(client.isRealFunds, false);
+  assert.equal(client.networkConfig.funds, "play");
+  assert.equal(client.baseUrl, "https://exchange.nexus.xyz/api/v1");
+});
+
+// Mainnet is real funds with no resolvable host and a different path
+// composition, so it must fail closed rather than ship a guess that breaks only
+// where it cannot be rehearsed.
+test("selecting mainnet without an explicit baseUrl refuses", () => {
+  assert.throws(
+    () => new Client({ network: Network.Mainnet }),
+    (err: unknown) => {
+      assert.ok(err instanceof NexusExchangeError);
+      assert.match(err.message, /REAL-FUNDS/);
+      assert.match(err.message, /baseUrl/);
+      return true;
+    },
+  );
+  assert.throws(() => baseUrlForNetwork(Network.Mainnet), NexusExchangeError);
+  assert.equal(NETWORKS[Network.Mainnet].baseUrl, null);
+  assert.equal(NETWORKS[Network.Mainnet].funds, "real");
+  assert.equal(NETWORKS[Network.Mainnet].faucet, false);
+});
+
+test("mainnet is reachable only by opting in with an explicit baseUrl", () => {
+  const client = new Client({
+    network: Network.Mainnet,
+    baseUrl: "https://api.internal.example/api/v1",
+    fetchImpl: async () => new Response("{}"),
+  });
+  assert.equal(client.network, Network.Mainnet);
+  // The override changes the target, never the funds classification.
+  assert.equal(client.isRealFunds, true);
+  assert.equal(client.wsUrl, "wss://api.internal.example");
+});
+
+// This is a published JS package, so a plain string reaches here from untyped
+// callers, JSON.parse, or an env var. An unknown network must be refused, not
+// assumed to be play money.
+test("an unrecognized network is refused rather than assumed play funds", () => {
+  for (const bogus of ["mainnet-2", "stable", "beta", "", "MAINNET"]) {
+    assert.throws(
+      () => new Client({ network: bogus as Network }),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /unrecognized network/);
+        assert.match(err.message, /real funds/);
+        return true;
+      },
+      `expected ${JSON.stringify(bogus)} to be refused`,
+    );
+  }
+  // `networkConfig` refuses on its own, not only via the constructor.
+  assert.throws(() => networkConfig("nope" as Network), /unrecognized network/);
+  // Inherited properties must not satisfy the lookup.
+  assert.throws(
+    () => networkConfig("toString" as Network),
+    /unrecognized network/,
+  );
+});
+
+// Beta is a testnet base, not a network: it keeps testnet's funds
+// classification and signing domain while retargeting the host.
+test("beta is reachable as a baseUrl override on testnet", () => {
+  const client = new Client({
+    network: Network.Testnet,
+    baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+    fetchImpl: async () => new Response("{}"),
+  });
+  assert.equal(client.network, Network.Testnet);
+  assert.equal(client.isRealFunds, false);
+  assert.equal(client.baseUrl, "https://beta.exchange.nexus.xyz/api/v1");
+  // wsUrl follows the override — the stream cannot end up on the default host.
+  assert.equal(client.wsUrl, "wss://beta.exchange.nexus.xyz");
+});
+
+// The map is module-level shared state. Without freezing, one caller could
+// retarget every client constructed afterwards — including onto a real-funds
+// host — from anywhere in the process.
+test("the NETWORKS map and its entries are frozen", () => {
+  assert.ok(Object.isFrozen(NETWORKS));
+  for (const config of Object.values(NETWORKS)) {
+    assert.ok(Object.isFrozen(config));
+    assert.ok(Object.isFrozen(config.signingDomain));
+  }
+  assert.throws(() => {
+    (NETWORKS as unknown as Record<string, unknown>)[Network.Testnet] = {
+      baseUrl: "https://evil.example",
+    };
+  }, TypeError);
+  assert.equal(
+    baseUrlForNetwork(Network.Testnet),
+    "https://exchange.nexus.xyz/api/v1",
+  );
+});
+
+// `baseUrl: ""` is the dangerous one: it is not nullish, so `??` lets it win
+// over the network default, and every request URL then becomes relative — which
+// in a browser resolves against the hosting page's origin and would send the
+// signed x-api-key / x-signature headers there.
+test("a relative or non-HTTP baseUrl is refused at construction", () => {
+  for (const baseUrl of [
+    "",
+    "not-a-url",
+    "/relative/api/v1",
+    "//evil.example",
+  ]) {
+    assert.throws(
+      () => new Client({ baseUrl }),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /absolute http\(s\) URL/);
+        return true;
+      },
+      `expected ${JSON.stringify(baseUrl)} to be refused`,
+    );
+  }
+  assert.throws(
+    () => new Client({ baseUrl: "ftp://h/x" }),
+    /must use http:\/\/ or https:\/\//,
+  );
+  // A legitimate absolute override still works.
+  assert.equal(
+    new Client({
+      baseUrl: "https://example.test/api/v1/",
+      fetchImpl: async () => new Response("{}"),
+    }).baseUrl,
+    "https://example.test/api/v1",
+  );
+});
+
+// No route this SDK implements is served under the legacy `/api/exchange`
+// gateway, so such a base can only be a misconfiguration — and a likely one:
+// the Python SDK's `base_url` *is* the gateway base, so pasting it here is the
+// natural cross-SDK mistake. Unguarded it would send, and HMAC-sign,
+// `/api/exchange/api/v1/orders`.
+test("a legacy /api/exchange gateway baseUrl is refused at construction", () => {
+  for (const baseUrl of [
+    "https://exchange.nexus.xyz/api/exchange",
+    "https://exchange.nexus.xyz/api/exchange/",
+    // The shape the MCP server strips defensively (nexus-exchange-api#41).
+    "https://exchange.nexus.xyz/api/exchange/api/v1",
+  ]) {
+    assert.throws(
+      () => new Client({ baseUrl }),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /must not point at the legacy/);
+        // The message must name the value to use instead.
+        assert.match(err.message, /"https:\/\/exchange\.nexus\.xyz\/api\/v1"/);
+        return true;
+      },
+      `expected ${JSON.stringify(baseUrl)} to be refused`,
+    );
+  }
+  // Not fooled by the host merely being named `exchange`, nor by an `exchange`
+  // path segment that is not the `/api/exchange` gateway prefix.
+  for (const baseUrl of [
+    "https://exchange.nexus.xyz/api/v1",
+    "https://h/exchange/api/v1",
+  ]) {
+    assert.doesNotThrow(
+      () => new Client({ baseUrl, fetchImpl: async () => new Response("{}") }),
+      `expected ${JSON.stringify(baseUrl)} to be accepted`,
+    );
+  }
+});
+
+// chainId is per-network and server-authoritative; the SDK must not publish a
+// value that could be mistaken for one.
+test("signing domains publish no chain id", () => {
+  for (const config of Object.values(NETWORKS)) {
+    assert.equal(config.signingDomain.name, "Nexus Exchange");
+    assert.equal(config.signingDomain.version, "1");
+    assert.equal(config.signingDomain.chainId, null);
+  }
 });
 
 test("fetchMarketSummaries hits /markets/summary and decodes the body", async () => {
@@ -190,10 +417,18 @@ interface Captured {
   body?: Buffer;
 }
 
-/** Build a signed client whose fetch is stubbed, capturing the outgoing request. */
+/**
+ * Build a signed client whose fetch is stubbed, capturing the outgoing request.
+ *
+ * `overrides` is merged into the client options — pass
+ * `{ retry: { maxRetries: 0 } }` when asserting on a *transient* error status
+ * (5xx/408/429) so the call fails after exactly one attempt instead of being
+ * retried behind the assertion.
+ */
 function signedClientWithCapture(
   responder: () => Response | Promise<Response> = () =>
     new Response("{}", { status: 200 }),
+  overrides: Partial<ClientOptions> = {},
 ): { client: Client; calls: Captured[] } {
   const calls: Captured[] = [];
   const fetchImpl = (async (url: unknown, init: RequestInit | undefined) => {
@@ -211,6 +446,7 @@ function signedClientWithCapture(
     apiKey: "nx_test",
     apiSecret: SECRET,
     fetchImpl,
+    ...overrides,
   });
   return { client, calls };
 }
@@ -442,4 +678,295 @@ test("a header override with control characters is rejected at construction", ()
     () => new Client({ apiVersion: "v1.0.0\nX-Injected: 1" }),
     TransportError,
   );
+});
+
+// ─── Portfolio parity (spec v0.7.2, ENG-6458) ────────────────────────────────
+
+test("getAccountState hits /account/state and decodes summary + positions", async () => {
+  const state = {
+    summary: { total_equity: "1000.00", withdrawable: "250.00" },
+    positions: [{ market_id: "BTC-USDX-PERP", funding_paid: "0" }],
+  };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(state), { status: 200 }),
+  );
+  const got = await client.getAccountState();
+
+  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/state");
+  assert.equal(calls[0]!.method, "GET");
+  // Signed: the consolidated snapshot is account-scoped.
+  assert.equal(calls[0]!.headers.get("x-api-key"), "nx_test");
+  assert.equal(got.summary.withdrawable, "250.00");
+  assert.equal(got.positions.length, 1);
+});
+
+test("getAccountFees decodes a negative maker rebate and open tier/schedule", async () => {
+  const fees = {
+    maker_fee_bps: -2,
+    taker_fee_bps: 5,
+    tier: "base",
+    schedule: "standard",
+    volume_30d: "101005.00",
+    volume_30d_estimated: false,
+    discounts: [],
+  };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(fees), { status: 200 }),
+  );
+  const got = await client.getAccountFees();
+
+  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/fees");
+  // A rebate is negative — it must survive decoding, not be clamped or dropped.
+  assert.equal(got.maker_fee_bps, -2);
+  assert.equal(got.volume_30d_estimated, false);
+  assert.deepEqual(got.discounts, []);
+});
+
+test("getPortfolioHistory omits the window param entirely when not given", async () => {
+  const body = { window: "day", cadence_ms: 300000, points: [] };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(body), { status: 200 }),
+  );
+  const got = await client.getPortfolioHistory();
+
+  // No `window=`/`limit=` — the server applies its documented `day` default,
+  // rather than the SDK hard-coding a default that could drift from the spec.
+  assert.equal(
+    calls[0]!.url,
+    "http://localhost:9090/api/v1/account/portfolio-history",
+  );
+  // The served window is authoritative and echoed back.
+  assert.equal(got.window, "day");
+  assert.equal(got.cadence_ms, 300000);
+});
+
+test("getPortfolioHistory signs the exact query string it sends", async () => {
+  const body = {
+    window: "week",
+    cadence_ms: 3600000,
+    points: [
+      {
+        timestamp_ms: 1_700_000_000_000,
+        equity: "1000.50",
+        pnl: "-25.25",
+        volume: "50000.00",
+      },
+    ],
+  };
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(body), { status: 200 }),
+  );
+  const got = await client.getPortfolioHistory({ window: "week", limit: 168 });
+
+  const c = calls[0]!;
+  // Insertion order is preserved, so the canonical query and the wire query are
+  // byte-identical — a mismatch here would make every request fail HMAC checks.
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/account/portfolio-history?window=week&limit=168",
+  );
+  const ts = c.headers.get("x-timestamp")!;
+  const expected = referenceSignature(
+    ts,
+    "GET",
+    "/api/v1/account/portfolio-history",
+    "window=week&limit=168",
+    Buffer.alloc(0),
+  );
+  assert.equal(c.headers.get("x-signature"), expected);
+
+  // Monetary fields stay lossless decimal strings — never coerced to a float.
+  assert.equal(got.points[0]!.equity, "1000.50");
+  assert.equal(got.points[0]!.pnl, "-25.25");
+  assert.equal(typeof got.points[0]!.volume, "string");
+});
+
+// -- documented error paths --------------------------------------------------
+
+test("getAccountState surfaces the fail-closed 502 with its machine-readable code", async () => {
+  // The whole point of `withdrawable` is that the server refuses to guess when
+  // the authoritative margin view is down. A caller must be able to tell that
+  // apart from an ordinary gateway blip, because the correct responses differ:
+  // retry the read, vs. treat balances as unknown and stop.
+  const { client, calls } = signedClientWithCapture(
+    () =>
+      new Response(
+        JSON.stringify({ code: "authoritative_margin_unavailable" }),
+        {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    // Transient status: without this the SDK would retry behind the assertion.
+    { retry: { maxRetries: 0 } },
+  );
+
+  await assert.rejects(
+    () => client.getAccountState(),
+    (err: unknown) => {
+      assert.ok(err instanceof ApiError);
+      assert.equal(err.status, 502);
+      // The code is what makes the condition actionable — without it this is
+      // indistinguishable from any other 502.
+      assert.equal(err.code, "authoritative_margin_unavailable");
+      // 5xx is retryable in principle — the caller may back off and re-read.
+      assert.equal(err.transient, true);
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1, "maxRetries: 0 must mean exactly one attempt");
+});
+
+test("getPortfolioHistory surfaces 400 invalid_window as a non-transient ApiError", async () => {
+  const { client } = signedClientWithCapture(
+    () =>
+      new Response(JSON.stringify({ code: "invalid_window" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+
+  await assert.rejects(
+    // A bad `window` can only originate from a caller bypassing the closed
+    // union (plain JS, or a value widened through `any`).
+    () => client.getPortfolioHistory({ window: "decade" as PortfolioWindow }),
+    (err: unknown) => {
+      assert.ok(err instanceof ApiError);
+      assert.equal(err.status, 400);
+      assert.equal(err.code, "invalid_window");
+      // Rejected input — retrying the identical request can never succeed.
+      assert.equal(err.transient, false);
+      return true;
+    },
+  );
+});
+
+// -- local `limit` validation -----------------------------------------------
+
+test("getPortfolioHistory rejects an out-of-schema limit before signing anything", async () => {
+  // The spec bounds `limit` to an integer in [1, 366]. Each of these can only
+  // ever come back 400, and `String(v)` would forward the last two as the
+  // literal query values `limit=NaN` / `limit=Infinity`.
+  for (const limit of [0, -5, 367, 1.5, NaN, Infinity]) {
+    const { client, calls } = signedClientWithCapture();
+    await assert.rejects(
+      () => client.getPortfolioHistory({ limit }),
+      RangeError,
+      `limit=${limit} should have been rejected locally`,
+    );
+    // Nothing was signed or sent — the round trip is saved, and the failure is
+    // a caller bug rather than something `transient` retry handling can eat.
+    assert.equal(calls.length, 0, `limit=${limit} must not reach the wire`);
+  }
+});
+
+test("getPortfolioHistory accepts both ends of the documented limit range", async () => {
+  for (const limit of [1, 366]) {
+    const { client, calls } = signedClientWithCapture(
+      () =>
+        new Response(
+          JSON.stringify({ window: "all", cadence_ms: 86400000, points: [] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    await client.getPortfolioHistory({ window: "all", limit });
+    assert.equal(
+      calls[0]!.url,
+      `http://localhost:9090/api/v1/account/portfolio-history?window=all&limit=${limit}`,
+    );
+  }
+});
+
+// -- older deployments ------------------------------------------------------
+
+test("a pre-v0.7.2 payload leaves the new fields undefined, not zero", async () => {
+  // Neither `Position` nor `AccountPortfolioSummary` has a `required` array in
+  // the spec, and a deployment older than v0.7.2 simply does not report these
+  // fields. The SDK has no runtime decoder, so whatever the server omits shows
+  // up as `undefined` — this pins that it stays distinguishable from `"0"`.
+  const legacy = {
+    summary: {
+      collateral: "1000",
+      total_equity: "1010",
+      margin_used: "100",
+      available_margin: "900",
+      open_positions_count: 1,
+      open_orders_count: 0,
+    },
+    positions: [
+      {
+        market_id: "BTC-USDX-PERP",
+        side: "Long",
+        size: "0.5",
+        entry_price: "84000.00",
+        unrealized_pnl: "10",
+        realized_pnl: "0",
+        liquidation_price: "76000.00",
+      },
+    ],
+  };
+  const { client } = signedClientWithCapture(
+    () =>
+      new Response(JSON.stringify(legacy), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  const got = await client.getAccountState();
+
+  // "not reported" must never be readable as "nothing withdrawable".
+  assert.equal(got.summary.withdrawable, undefined);
+  assert.notEqual(got.summary.withdrawable, "0");
+
+  const p = got.positions[0]!;
+  assert.equal(p.notional_value, undefined);
+  assert.equal(p.notional_value_error, undefined);
+  assert.equal(p.funding_paid, undefined);
+  // The absent-vs-null distinction survives: a `*_error` of `undefined` means
+  // "this server never reported the field", where `null` would mean "reported,
+  // and computed fine". Callers keying off the reason must handle both.
+  assert.notEqual(p.notional_value_error, null);
+  // Pre-existing fields are unaffected — they are sent by every deployment.
+  assert.equal(p.size, "0.5");
+});
+
+test("a null-valued risk field arrives as null over the wire, with its reason", async () => {
+  // Distinct from the case above: here the server DOES report the field and
+  // says it could not compute it. JSON `null` must survive as `null`.
+  const degraded = {
+    summary: { total_equity: "1010", withdrawable: "0" },
+    positions: [
+      {
+        market_id: "BTC-USDX-PERP",
+        side: "Long",
+        size: "0.5",
+        entry_price: "84000.00",
+        unrealized_pnl: "10",
+        realized_pnl: "0",
+        liquidation_price: "76000.00",
+        leverage: null,
+        leverage_error: "margin_state_not_mirrored",
+        notional_value: null,
+        notional_value_error: "mark_price_unavailable",
+        funding_paid: "0",
+      },
+    ],
+  };
+  const { client } = signedClientWithCapture(
+    () =>
+      new Response(JSON.stringify(degraded), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  const got = await client.getAccountState();
+  const p = got.positions[0]!;
+
+  assert.equal(p.notional_value, null);
+  assert.equal(p.notional_value_error, "mark_price_unavailable");
+  assert.equal(p.leverage, null);
+  assert.equal(p.leverage_error, "margin_state_not_mirrored");
+  // A reported zero is a real value, not a missing one — `??` must not eat it.
+  assert.equal(got.summary.withdrawable ?? "<absent>", "0");
+  assert.equal(p.funding_paid ?? "<absent>", "0");
 });
