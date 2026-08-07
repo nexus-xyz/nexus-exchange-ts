@@ -91,6 +91,17 @@ GET /account/cancel-on-disconnect
 PUT /account/cancel-on-disconnect
 GET /api/v1/account/cancel-on-disconnect
 PUT /api/v1/account/cancel-on-disconnect
+# Withdrawal wallets (v0.7.3). The two-step ownership proof:
+# `POST …/challenge` issues a message, the wallet signs it EIP-191, and
+# `POST …/wallets` registers the address. Modeled already
+# (CreateBridgeWalletChallengeRequest, BridgeWalletChallenge,
+# RegisterBridgeWalletRequest, BridgeWallet, BridgeWalletsResponse), so what is
+# left is the three wrappers — which want `EthSigner` plumbing for the signing
+# step, hence their own change rather than the spec bump. Spec ships only the
+# `/api/v1` forms; there are no legacy-root twins to record.
+POST /api/v1/bridge/wallets/challenge
+POST /api/v1/bridge/wallets
+GET /api/v1/bridge/wallets
 # ── Deprecated / superseded — intentionally never targeted ─────────────────────
 #
 # POST /ws/token — superseded by the canonical plural POST /ws-tokens, which the

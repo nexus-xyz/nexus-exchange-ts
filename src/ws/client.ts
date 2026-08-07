@@ -17,8 +17,8 @@
 // Channels
 // --------
 // Public market-data channels — `book`, `trades`, `candles` — need no auth.
-// Account-scoped channels — `orders`, `fills`, `positions`, `balances` —
-// require a short-lived token. The SDK does not know how your deployment
+// Account-scoped channels — `orders`, `fills`, `positions`, `balances`,
+// `liquidations` — require a short-lived token. The SDK does not know how your deployment
 // mints tokens (the web app signs the mint request with an agent key); you
 // supply that via `tokenProvider`. Subscribing to an account-scoped channel
 // without a `tokenProvider` is an error, caught early.
@@ -41,8 +41,19 @@
 /** Public market-data channels. No authentication required. */
 export type PublicChannel = "book" | "trades" | "candles";
 
-/** Account-scoped channels. Require a `tokenProvider`. */
-export type AccountChannel = "orders" | "fills" | "positions" | "balances";
+/**
+ * Account-scoped channels. Require a `tokenProvider`.
+ *
+ * `liquidations` (spec v0.7.3) carries pre-liquidation warnings and the terminal
+ * portfolio-liquidation notice; cast its `WsEvent.data` to `LiquidationEvent`
+ * from ../models (externally tagged — exactly one variant key is present).
+ */
+export type AccountChannel =
+  | "orders"
+  | "fills"
+  | "positions"
+  | "balances"
+  | "liquidations";
 
 export type Channel = PublicChannel | AccountChannel;
 
@@ -51,11 +62,17 @@ const PUBLIC_CHANNELS: ReadonlySet<Channel> = new Set<Channel>([
   "trades",
   "candles",
 ]);
+// v0.7.3 also documents a public, venue-wide `engine` channel, deliberately NOT
+// listed here: the spec states subscribe/unsubscribe are acked but no frames are
+// published on it yet and that it is reserved ("do not build against a payload
+// shape"). Admitting it would let a caller open a subscription that can only ever
+// yield nothing. Add it here when it starts publishing.
 const ACCOUNT_CHANNELS: ReadonlySet<Channel> = new Set<Channel>([
   "orders",
   "fills",
   "positions",
   "balances",
+  "liquidations",
 ]);
 function isChannel(value: unknown): value is Channel {
   return (

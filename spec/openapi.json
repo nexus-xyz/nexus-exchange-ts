@@ -2,19 +2,81 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Nexus Exchange API",
-    "description": "Perpetual futures exchange with HMAC API key authentication for trading endpoints, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never uses them for authentication, authorization, or routing, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.\n\n## API version support\n\nThe version identifier is the released spec tag of this contract (`vMAJOR.MINOR.PATCH`) — the tag every official SDK pins and reports in `X-Nexus-Api-Version`. The edge publishes the versions it accepts at the `/metadata` endpoint — served by the edge, not an operation in this contract — returning `current_api_version` (latest tag served) and `min_api_version` (oldest tag still accepted), so clients and agents can discover the support window programmatically.\n\nPre-1.0 (`v0.x.y`), breaking changes are frequent and `min_api_version` may advance with any breaking release; a released tag stays supported for at least 14 days after the release that supersedes it, and this window widens after 1.0. A request whose `X-Nexus-Api-Version` names a recognized tag older than `min_api_version` receives a machine-readable `426 Upgrade Required` (error code `api_version_unsupported`) with a link to the current spec, so tooling and agents can detect the skew and upgrade. A missing, malformed, or unknown version header is treated as an unknown/legacy client and is not blocked. Because the header is unauthenticated (excluded from the HMAC canonical string), this version gate is a compatibility courtesy, not a security control — authentication and authorization never depend on it, and spoofing the header only relaxes the gate.",
-    "version": "0.7.2"
+    "description": "Perpetual futures exchange with HMAC API key authentication for trading endpoints, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Networks\n\nThe API is served per **network**, and the network is the *host* — not a path, not a header, and not a release channel. Two public networks:\n\n| Network | REST base | WebSocket | Funds |\n|---|---|---|---|\n| **Testnet** | `https://api.testnet.nexus.xyz/v1` | `wss://api.testnet.nexus.xyz` | play — synthetic USDX from the faucet, no real-world value |\n| **Mainnet** | `https://api.nexus.xyz/v1` | `wss://api.nexus.xyz` | **real** — USDX bridged from Ethereum Mainnet |\n\nWebSocket paths are identical on every host: market data at `…/stream`, authenticated at `…/ws?token=…`. `x-nexus-networks` is the machine-readable form of this table and the single place to copy the map from; it also carries `local` (`http://localhost:9090`) as a developer convenience.\n\nMainnet is the real-funds exchange running against **Ethereum Mainnet via the USDX bridge** — it is not a Nexus L1 chain. Testnet has a faucet (`POST /faucet`, `POST /account/credit`); mainnet has none, and collateral arrives through the bridge instead.\n\n**Mainnet is deliberately off-pattern.** It takes the bare `api.nexus.xyz`, so `api.{network}.nexus.xyz` is wrong for exactly one network — the real-funds one. Interpolating the network into the host resolves in dev, staging and testnet and fails only where it cannot be rehearsed. Copy the explicit map instead, with mainnet as a named case.\n\n**Credentials do not cross networks.** Session tokens, HMAC API keys, and agent keys are per-network; a key minted on testnet cannot sign for mainnet. Signatures, nonces, and agent registrations are network-scoped too — the EIP-712 signing domain differs per network (see `POST /agents/register`), which is what makes an action signed for one network invalid on the other. Never replay one network's signed payloads against another, and if you cannot determine the signing domain for the network you are on, refuse to sign rather than guess.\n\n**No implicit default, and no blanket redirect.** There is no default network — select one explicitly. `servers[0]` is still the legacy gateway base `https://exchange.nexus.xyz/api/exchange`, which serves **testnet**, so existing clients keep working unchanged; when it retires, its traffic belongs on `api.testnet.nexus.xyz`, never on the bare `api.nexus.xyz`. Pointing the legacy host at mainnet would silently move play-funds clients onto real funds.\n\n### Base paths and the signed path\n\nBare operation paths in this document (`/orders`) resolve against whichever base you select: `…/api/exchange/orders` on the legacy gateway base, `…/v1/orders` on a per-network `api.` base. Operations whose path already begins with `/api/v1` are the legacy host's spelling of the same direct versioned surface and carry their own `servers` override; on the `api.` hosts that surface is reached as `/v1/<path>`, because the `api.` prefix moved into the host rather than being repeated in the path. Operations still served only by the transitional gateway proxy move under `/v1` as it is retired.\n\nMigrating is two independent steps, in this order: the base-path move on the current host (`/api/exchange/*` → `/api/v1/*`), then the host move (`exchange.nexus.xyz/api/v1/*` → `api.testnet.nexus.xyz/v1/*`). Both change the request path — and **the path is part of the HMAC canonical string** — so a client that repoints its base URL without signing the new path gets `401`. Change the signed path and the base together.\n\n### Discovering targets at runtime\n\n`/metadata` — served by the edge, not an operation in this contract — publishes the network it is serving, the per-network REST and WebSocket targets, and the EIP-712 signing domain, so clients and agents can discover targets rather than hardcode them. The `Metadata` schema documents the payload. Everything beyond `current_api_version` and `min_api_version` is optional: an older edge may omit it, in which case fall back to `x-nexus-networks` — except the signing domain, which must never be guessed.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never uses them for authentication, authorization, or routing, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.\n\n## API version support\n\nThe version identifier is the released spec tag of this contract (`vMAJOR.MINOR.PATCH`) — the tag every official SDK pins and reports in `X-Nexus-Api-Version`. The edge publishes the versions it accepts at the `/metadata` endpoint — served by the edge, not an operation in this contract — returning `current_api_version` (latest tag served) and `min_api_version` (oldest tag still accepted), so clients and agents can discover the support window programmatically.\n\nPre-1.0 (`v0.x.y`), breaking changes are frequent and `min_api_version` may advance with any breaking release; a released tag stays supported for at least 14 days after the release that supersedes it, and this window widens after 1.0. A request whose `X-Nexus-Api-Version` names a recognized tag older than `min_api_version` receives a machine-readable `426 Upgrade Required` (error code `api_version_unsupported`) with a link to the current spec, so tooling and agents can detect the skew and upgrade. A missing, malformed, or unknown version header is treated as an unknown/legacy client and is not blocked. Because the header is unauthenticated (excluded from the HMAC canonical string), this version gate is a compatibility courtesy, not a security control — authentication and authorization never depend on it, and spoofing the header only relaxes the gate.\n\n## Jurisdiction restrictions\n\nTwo independent geo controls can refuse a request with `403`. They are told apart by the machine-readable `code` in the body and the identical `x-nexus-block-reason` response header, never by the status code alone.\n\n- **`RESTRICTED_JURISDICTION`** — the venue's published sanctions list. It applies to **every** operation in this contract, reads included, so it is not repeated per-operation below. Treat it as possible on any request.\n- **`US_RESTRICTED`** — state-changing operations only. Market data, order-book, account and position reads, the WebSocket stream, order cancellation and withdrawals are unaffected: this is a read-only posture, not a block. The operations it can refuse declare a `403` explicitly.\n- **`GEO_UNRESOLVED`** — a state-changing operation could not be attributed to a country (no usable client address), so it failed closed. This is **not** a claim about where the caller is; it is an operational signal, kept distinct precisely so that a proxy misconfiguration is never reported as \"you are in the United States\".\n\n**Do not retry any of them.** All three are permanent for the caller's origin: no amount of backoff changes the outcome, and a retry loop against a permanent condition is the failure mode this taxonomy exists to prevent. That is what separates a `403` here from `401` (re-authenticate, then retry) and `429` (back off, then retry). Surface it to the operator instead — and for `GEO_UNRESOLVED`, surface it as a configuration problem rather than a jurisdiction one.\n\nTreat an unrecognized `code` on a `403` that carries `x-nexus-block-reason` the same way: refused, permanent, not retryable. Codes are added additively, so a closed client-side enum will go stale.\n\nWhich controls are in force, and over which countries, is per-deployment configuration and is not part of this contract; testnet deployments are not subject to the write restriction. Write clients should handle the error regardless of which deployment they are pointed at.\n\n**Over WebSocket** there is no refusal frame, because there is no state-changing WebSocket operation: the inbound `/ws` envelope accepts `subscribe` and `unsubscribe` only, and order submission is REST-only. If a state-changing inbound op is ever added it must carry these same codes so both surfaces agree.",
+    "version": "0.7.3"
   },
   "servers": [
     {
       "url": "https://exchange.nexus.xyz/api/exchange",
-      "description": "Production"
+      "description": "Testnet — legacy gateway base, and the current default. Play funds: balances are synthetic USDX with no real-world value. Every released SDK targets this base today, so it stays first and remains the default a generator picks; it is transitional and will be removed in a deliberate breaking release once the per-network hosts below are live. Because it serves **testnet**, its traffic migrates to `https://api.testnet.nexus.xyz/v1` — never to the bare `api.nexus.xyz`, which is real funds. See `x-nexus-networks` for the authoritative network → target map."
+    },
+    {
+      "url": "https://api.testnet.nexus.xyz/v1",
+      "description": "Testnet — play funds (synthetic USDX, faucet-funded, no real-world value). The durable per-network base. Not resolvable yet: DNS/TLS is a separate infra change, so keep pinning the legacy base above until it is live."
+    },
+    {
+      "url": "https://api.nexus.xyz/v1",
+      "description": "Mainnet — **REAL FUNDS**. Collateral is USDX bridged from Ethereum Mainnet; orders placed here move real money, and there is no faucet. The durable per-network base. Listed after testnet on purpose, so nothing that reaches for \"the first https server\" lands on the real-funds target. Not resolvable yet: DNS/TLS is a separate infra change."
     },
     {
       "url": "http://localhost:9090",
-      "description": "Local development"
+      "description": "Local development — the indexer served directly. Not a public network; whatever your local instance holds."
     }
   ],
+  "x-nexus-networks": {
+    "description": "Authoritative network → target map. The public network axis is **testnet** (play funds) vs **mainnet** (real funds); `local` is a developer convenience, not a public network. The network is carried in the host, not in the path, and each host is its own origin terminating its own TLS and WebSocket upgrades.\n\n**Never derive a host by interpolating the network name.** Mainnet is deliberately off-pattern — `api.nexus.xyz`, not `api.mainnet.nexus.xyz` — so `api.{network}.nexus.xyz` resolves for every environment that can be tested and fails only on real funds, which is the one environment that cannot be rehearsed. Consumers (SDK network enums, CLI config, CORS allowlists, deploy env blocks) must copy this map with mainnet as a named case.\n\n**Credentials never cross networks.** Session tokens, HMAC API keys, and agent keys are minted per network and are invalid on any other, so a key leaked or misconfigured on testnet cannot sign for real funds. A client that switches network must also switch credentials, and must never carry a signature, nonce, or agent registration across networks.\n\n**Operation availability.** An operation carrying `x-nexus-network-availability` is served only on the networks it lists — today just the synthetic-funding operations, which are testnet-only. No marker means the operation is not network-restricted.\n\n**Non-public environments are deliberately absent.** Internal mainnet, staging, and devnet have no decided public API host; nothing here should be extrapolated to them. Treat a network identifier you do not recognize as **real funds** — the fail-safe direction is to require confirmation, never to assume play money.",
+    "networks": {
+      "testnet": {
+        "label": "Testnet",
+        "funds": "play",
+        "faucet": true,
+        "host": "api.testnet.nexus.xyz",
+        "rest_base": "https://api.testnet.nexus.xyz/v1",
+        "ws_url": "wss://api.testnet.nexus.xyz",
+        "ws_market_data_url": "wss://api.testnet.nexus.xyz/stream",
+        "ws_authenticated_url": "wss://api.testnet.nexus.xyz/ws",
+        "signing_domain": {
+          "name": "Nexus Exchange",
+          "version": "1",
+          "chain_id": null
+        },
+        "description": "Play funds: balances are synthetic USDX credited by the faucet (`POST /faucet`, `POST /account/credit`) and carry no real-world value. The safe target for integration work and CI. Served today by the legacy base `https://exchange.nexus.xyz/api/exchange`; that traffic migrates here."
+      },
+      "mainnet": {
+        "label": "Mainnet",
+        "funds": "real",
+        "faucet": false,
+        "host": "api.nexus.xyz",
+        "rest_base": "https://api.nexus.xyz/v1",
+        "ws_url": "wss://api.nexus.xyz",
+        "ws_market_data_url": "wss://api.nexus.xyz/stream",
+        "ws_authenticated_url": "wss://api.nexus.xyz/ws",
+        "signing_domain": {
+          "name": "Nexus Exchange",
+          "version": "1",
+          "chain_id": null
+        },
+        "description": "**Real funds.** Collateral is USDX bridged from Ethereum Mainnet (see the `Bridge` tag) — there is no faucet and no synthetic credit, and every order moves real money. Mainnet is the real-funds exchange running *against Ethereum Mainnet via the USDX bridge*; it is not a Nexus L1 chain, so never assume a Nexus L1 chain id here."
+      },
+      "local": {
+        "label": "Local",
+        "funds": "play",
+        "faucet": true,
+        "host": "localhost:9090",
+        "rest_base": "http://localhost:9090",
+        "ws_url": "ws://localhost:9090",
+        "ws_market_data_url": "ws://localhost:9090/stream",
+        "ws_authenticated_url": "ws://localhost:9090/ws",
+        "signing_domain": {
+          "name": "Nexus Exchange",
+          "version": "1",
+          "chain_id": null
+        },
+        "description": "A locally run indexer. Not a public network and not a deployment target — never a fallback when a public host fails to resolve, since silently succeeding against localhost hides a misconfigured client."
+      }
+    },
+    "signing_domain_note": "Each entry's `signing_domain` is the EIP-712 domain for that network, deliberately spelled the same as `/metadata`'s `signing_domain` and the `SigningDomain` schema, so one name means one thing across the static map, the runtime payload, and generated clients.\n\n`chain_id: null` means this document does not publish the value, not that the value is zero. The signing domain is per-network and server-authoritative: read `signing_domain` from `/metadata` (see the `Metadata` schema) for the network you are connected to. A client that cannot obtain a `chain_id` must **refuse to sign** rather than guess or default — a wrong domain either fails verification or, worse, produces a signature valid on a different network. `name` and `version` are the values this contract has always documented for `POST /agents/register`; `/metadata` remains authoritative for all three fields."
+  },
   "tags": [
     {
       "name": "Authentication",
@@ -74,7 +136,7 @@
     },
     {
       "name": "Bridge",
-      "description": "Cross-chain deposits: bridgeable assets, per-account deposit addresses, and deposit tracking (Phase A: USDC/USDX)."
+      "description": "Cross-chain deposits and withdrawal wallets: bridgeable assets, per-account deposit addresses, deposit tracking, and ownership-proven withdrawal wallets (Phase A: USDC/USDX)."
     }
   ],
   "paths": {
@@ -226,7 +288,7 @@
           "Agents"
         ],
         "summary": "Register an agent key",
-        "description": "Register a new agent key for your wallet. An agent is an Ethereum-derived keypair that can sign trading requests on your behalf without exposing your main wallet. The registration is authorized by an EIP-712 signature from the wallet that will own the agent — no session token required.\n\nEIP-712 domain: `{ name: 'Nexus Exchange', version: '1', chainId: <testnet chain id> }`.\nTyped data type: `RegisterAgent { address agent, uint64 expiresAt, uint64 nonce }`.",
+        "description": "Register a new agent key for your wallet. An agent is an Ethereum-derived keypair that can sign trading requests on your behalf without exposing your main wallet. The registration is authorized by an EIP-712 signature from the wallet that will own the agent — no session token required.\n\nEIP-712 domain: `{ name: 'Nexus Exchange', version: '1', chainId: <per-network chain id> }`. The `chainId` is **network-scoped**: read `signing_domain.chain_id` from `/metadata` for the network you are connected to (see `x-nexus-networks`) instead of hardcoding it, and refuse to sign if you cannot obtain it — a wrong domain either fails verification or produces a signature that is valid somewhere you did not intend. Mainnet is the real-funds exchange on Ethereum Mainnet, not a Nexus L1 chain, so a Nexus L1 chain id is never correct there. Because the domain differs per network, a registration signed for one network does not verify on another; never replay one across networks.\nTyped data type: `RegisterAgent { address agent, uint64 expiresAt, uint64 nonce }`.",
         "requestBody": {
           "required": true,
           "content": {
@@ -383,7 +445,7 @@
           "WebSocket"
         ],
         "summary": "Mint a WebSocket token",
-        "description": "Returns a short-lived (60s), single-use token bound to the authenticated account. Pass it as `?token=TOKEN` when upgrading to `GET /ws`. Supports HMAC keys, registered agent keys, and session tokens (Bearer). The token encodes the account identity so per-account channels (orders, fills, positions, balances) are automatically scoped to the connected wallet.",
+        "description": "Returns a short-lived (60s), single-use token bound to the authenticated account. Pass it as `?token=TOKEN` when upgrading to `GET /ws`. Supports HMAC keys, registered agent keys, and session tokens (Bearer). The token encodes the account identity so per-account channels (orders, fills, positions, balances, liquidations) are automatically scoped to the connected wallet.",
         "security": [
           {
             "hmacAuth": []
@@ -1115,6 +1177,17 @@
                     "quantity": "0.1",
                     "time_in_force": "IOC"
                   }
+                },
+                "marketWithSlippageCap": {
+                  "summary": "Market order with a server-enforced 50 bp slippage cap",
+                  "value": {
+                    "market_id": "BTC-USDX-PERP",
+                    "side": "Buy",
+                    "order_type": "Market",
+                    "quantity": "0.1",
+                    "time_in_force": "IOC",
+                    "max_slippage_bps": 50
+                  }
                 }
               }
             }
@@ -1136,6 +1209,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -1252,6 +1328,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -1420,6 +1499,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
+          },
           "404": {
             "description": "Order not found"
           },
@@ -1505,6 +1587,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
@@ -1554,6 +1639,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
+          },
           "404": {
             "description": "No open position for the account in this market (NoOpenPosition)."
           },
@@ -1566,11 +1654,15 @@
     "/account/credit": {
       "post": {
         "operationId": "credit",
+        "x-nexus-network-availability": [
+          "testnet",
+          "local"
+        ],
         "tags": [
           "Account"
         ],
         "summary": "Claim synthetic USDX credit",
-        "description": "Credit synthetic USDX to the authenticated account, up to a per-API-key daily allowance (default 500 USDX, resets at midnight UTC). `amount` is a decimal string; omit it to claim the full remaining daily allowance. Returns 429 with code `daily_limit_exceeded` once the allowance is used up, and 403 with code `credits_frozen` while crediting is administratively frozen. This is a testnet faucet: the credited USDX is synthetic and carries no real-world value.",
+        "description": "Credit synthetic USDX to the authenticated account, up to a per-API-key daily allowance (default 500 USDX, resets at midnight UTC). `amount` is a decimal string; omit it to claim the full remaining daily allowance. Returns 429 with code `daily_limit_exceeded` once the allowance is used up, and 403 with code `credits_frozen` while crediting is administratively frozen. This is a **testnet-only** faucet: the credited USDX is synthetic and carries no real-world value. Mainnet has no synthetic credit — real-funds collateral arrives through the USDX bridge — so do not build a funding flow that assumes this operation exists on every network.",
         "security": [
           {
             "hmacAuth": []
@@ -1609,12 +1701,36 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Crediting is administratively frozen",
+            "description": "Refused. Either crediting is administratively frozen (`credits_frozen`), or a jurisdiction control refused the write (`US_RESTRICTED` / `GEO_UNRESOLVED` / `RESTRICTED_JURISDICTION`) — the latter are permanent for the caller's origin and must not be retried. Branch on `code`, which for the jurisdiction reasons equals the `x-nexus-block-reason` header. See “Jurisdiction restrictions” in the API description.",
+            "headers": {
+              "x-nexus-block-reason": {
+                "$ref": "#/components/headers/XNexusBlockReason"
+              }
+            },
             "content": {
               "application/json": {
-                "example": {
-                  "code": "credits_frozen",
-                  "message": "USDX crediting is temporarily frozen by an administrator. Existing balances remain tradeable."
+                "examples": {
+                  "creditsFrozen": {
+                    "summary": "Crediting administratively frozen",
+                    "value": {
+                      "code": "credits_frozen",
+                      "message": "USDX crediting is temporarily frozen by an administrator. Existing balances remain tradeable."
+                    }
+                  },
+                  "usRestricted": {
+                    "summary": "US write restriction",
+                    "value": {
+                      "code": "US_RESTRICTED",
+                      "message": "This action is not available in the United States or to U.S. persons"
+                    }
+                  },
+                  "geoUnresolved": {
+                    "summary": "Origin could not be resolved; the write failed closed",
+                    "value": {
+                      "code": "GEO_UNRESOLVED",
+                      "message": "Unable to verify request origin; this action is unavailable"
+                    }
+                  }
                 }
               }
             }
@@ -1945,7 +2061,7 @@
           "WebSocket"
         ],
         "summary": "Per-account WebSocket stream",
-        "description": "WebSocket endpoint for both public market data and per-account private channels. Requires a token from POST /ws/token:\n```\nwss://host/ws?token=YOUR_TOKEN\n```\nTokens are single-use and expire after 60 seconds.\n\nEvery client→server and server→client message is a JSON envelope tagged with an `op` field. Subscribe to one channel per message:\n```json\n{\"op\": \"subscribe\", \"channel\": \"trades\", \"market\": \"BTC-USDX-PERP\"}\n{\"op\": \"subscribe\", \"channel\": \"fills\"}\n```\nUnsubscribe with `{\"op\": \"unsubscribe\", \"channel\": \"...\", \"market\": \"...\"}`.\n\n**Public channels** (the token is always required to upgrade): `trades`, `book`, `candles` — each requires a `market` field.\n\n**Per-account channels** (scoped to the wallet that minted the token): `orders`, `fills`, `positions`, `balances`.\n\n**Server messages:**\n- `{\"op\": \"subscribed\", \"channel\": \"fills\", \"market\": null, \"seq_at_join\": 42}` — subscribe ack; `seq_at_join` is the channel's current sequence at attach time, used as the reconnect cursor.\n- `{\"op\": \"unsubscribed\", \"channel\": \"fills\", \"market\": null}` — unsubscribe ack.\n- `{\"op\": \"event\", \"channel\": \"fills\", \"market\": null, \"seq\": 43, \"payload\": {...}}` — a delivered event; `seq` is monotonic per channel.\n- `{\"op\": \"out_of_sync\", \"channel\": \"fills\", \"market\": null, \"oldest_seq\": 100}` — the requested `since` cursor fell behind the replay buffer; refetch state over REST and resubscribe with a fresh cursor.\n- `{\"op\": \"error\", \"message\": \"...\"}` — invalid op, unknown channel, or bad message format.\n\n**Reconnection:** tokens are single-use — mint a new one via POST /ws/token before reconnecting. To resume a channel without gaps, pass the last `seq` you received:\n```json\n{\"op\": \"subscribe\", \"channel\": \"fills\", \"since\": 42}\n```",
+        "description": "WebSocket endpoint for both public market data and per-account private channels. Requires a token from POST /ws/token:\n```\nwss://host/ws?token=YOUR_TOKEN\n```\nTokens are single-use and expire after 60 seconds, and they are scoped to the network that minted them — mint the token on the same host you connect to.\n\nEvery client→server and server→client message is a JSON envelope tagged with an `op` field. Subscribe to one channel per message:\n```json\n{\"op\": \"subscribe\", \"channel\": \"trades\", \"market\": \"BTC-USDX-PERP\"}\n{\"op\": \"subscribe\", \"channel\": \"fills\"}\n```\nUnsubscribe with `{\"op\": \"unsubscribe\", \"channel\": \"...\", \"market\": \"...\"}`.\n\n**Public channels** (the token is always required to upgrade): `trades`, `book`, `candles` — each requires a `market` field. `engine` is public and venue-wide, so it takes no `market` field: subscribe and unsubscribe are accepted and acked, but no frames are published on it yet. Treat it as reserved — do not build against a payload shape.\n\n**Per-account channels** (scoped to the wallet that minted the token): `orders`, `fills`, `positions`, `balances`, `liquidations`.\n\n**Server messages:**\n- `{\"op\": \"subscribed\", \"channel\": \"fills\", \"market\": null, \"seq_at_join\": 42}` — subscribe ack; `seq_at_join` is the channel's current sequence at attach time, used as the reconnect cursor.\n- `{\"op\": \"unsubscribed\", \"channel\": \"fills\", \"market\": null}` — unsubscribe ack.\n- `{\"op\": \"event\", \"channel\": \"fills\", \"market\": null, \"seq\": 43, \"payload\": {...}}` — a delivered event; `seq` is monotonic per channel.\n- `{\"op\": \"out_of_sync\", \"channel\": \"fills\", \"market\": null, \"oldest_seq\": 100}` — the requested `since` cursor fell behind the replay buffer; refetch state over REST and resubscribe with a fresh cursor.\n- `{\"op\": \"error\", \"message\": \"...\"}` — invalid op, unknown channel, or bad message format.\n\n**`liquidations` payloads:** the `payload` of an `event` on this channel is externally tagged — exactly one key, naming the engine event variant. See the `LiquidationEvent` schema for the full shape. Monetary fields are lossless decimal strings, never JSON numbers.\n- `LiquidationAlert` — a pre-liquidation risk warning for the account. `severity` is `Warning`, `Critical` or `Imminent`, classified from `equity / maintenance_margin`: `Warning` in (1.2, 1.5], `Critical` in (1.05, 1.2], `Imminent` in (1.0, 1.05]. Nothing is emitted above 1.5 (safe) or at/below 1.0 (already liquidating). `market_id` is `null` for a portfolio-level alert over the whole cross-margin account — the only form the engine emits today — and names a market when the alert is scoped to one market.\n- `PortfolioLiquidation` — terminal: the account's cross-margin positions have already been closed out. `closures` carries the per-market closes.\n\nAlerts are **edge-triggered**: one frame per worsening severity transition, nothing while a severity holds, and nothing when the account recovers. Subscribing does not replay the current alert state — unlike `balances` and `positions`, this channel is not seeded with a snapshot on subscribe — and there is no REST read of it, so a reconnecting client sees nothing until the next worsening transition.\n```json\n{\"op\": \"event\", \"channel\": \"liquidations\", \"market\": null, \"seq\": 7, \"payload\": {\"LiquidationAlert\": {\"account_id\": \"0x1111111111111111111111111111111111111111\", \"market_id\": null, \"severity\": \"Critical\", \"equity\": \"1150.00\", \"maintenance_margin\": \"1000.00\", \"sequence\": 9412, \"epoch\": 3, \"emitted_at\": 1750000000000}}}\n```\n\n**Reconnection:** tokens are single-use — mint a new one via POST /ws/token before reconnecting. To resume a channel without gaps, pass the last `seq` you received:\n```json\n{\"op\": \"subscribe\", \"channel\": \"fills\", \"since\": 42}\n```",
         "parameters": [
           {
             "name": "token",
@@ -2680,6 +2796,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
           }
         }
       },
@@ -2733,8 +2852,12 @@
           "Account"
         ],
         "summary": "Claim testnet faucet",
-        "description": "Credit a fixed testnet faucet amount of synthetic USDX to the authenticated account, subject to a per-wallet cooldown and cumulative cap.",
+        "description": "Credit a fixed testnet faucet amount of synthetic USDX to the authenticated account, subject to a per-wallet cooldown and cumulative cap.\n\n**Testnet only.** There is no faucet on mainnet — real-funds collateral arrives through the USDX bridge instead. Do not build a funding flow that assumes this operation exists on every network.",
         "operationId": "claimFaucet",
+        "x-nexus-network-availability": [
+          "testnet",
+          "local"
+        ],
         "security": [
           {
             "hmacAuth": []
@@ -2754,6 +2877,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
+          },
           "429": {
             "description": "Cooldown not elapsed or cumulative cap reached"
           }
@@ -2764,11 +2890,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -2811,11 +2937,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -2880,11 +3006,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -2921,11 +3047,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -2985,11 +3111,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3061,11 +3187,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3164,11 +3290,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3225,11 +3351,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3282,11 +3408,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3326,11 +3452,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3364,11 +3490,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3397,11 +3523,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3433,11 +3559,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "post": {
@@ -3485,6 +3611,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -3562,11 +3691,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "post": {
@@ -3610,6 +3739,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
@@ -3621,11 +3753,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "post": {
@@ -3677,11 +3809,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "delete": {
@@ -3790,6 +3922,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "$ref": "#/components/responses/RestrictedJurisdiction"
+          },
           "404": {
             "description": "Order not found"
           },
@@ -3803,11 +3938,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3867,11 +4002,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -3916,20 +4051,24 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "post": {
         "operationId": "creditV1",
+        "x-nexus-network-availability": [
+          "testnet",
+          "local"
+        ],
         "tags": [
           "Account"
         ],
         "summary": "Claim synthetic USDX credit",
-        "description": "Credit synthetic USDX to the authenticated account, up to a per-API-key daily allowance (default 500 USDX, resets at midnight UTC). `amount` is a decimal string; omit it to claim the full remaining daily allowance. Returns 429 with code `daily_limit_exceeded` once the allowance is used up, and 403 with code `credits_frozen` while crediting is administratively frozen. This is a testnet faucet: the credited USDX is synthetic and carries no real-world value.",
+        "description": "Credit synthetic USDX to the authenticated account, up to a per-API-key daily allowance (default 500 USDX, resets at midnight UTC). `amount` is a decimal string; omit it to claim the full remaining daily allowance. Returns 429 with code `daily_limit_exceeded` once the allowance is used up, and 403 with code `credits_frozen` while crediting is administratively frozen. This is a **testnet-only** faucet: the credited USDX is synthetic and carries no real-world value. Mainnet has no synthetic credit — real-funds collateral arrives through the USDX bridge — so do not build a funding flow that assumes this operation exists on every network.",
         "security": [
           {
             "hmacAuth": []
@@ -3968,12 +4107,36 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Crediting is administratively frozen",
+            "description": "Refused. Either crediting is administratively frozen (`credits_frozen`), or a jurisdiction control refused the write (`US_RESTRICTED` / `GEO_UNRESOLVED` / `RESTRICTED_JURISDICTION`) — the latter are permanent for the caller's origin and must not be retried. Branch on `code`, which for the jurisdiction reasons equals the `x-nexus-block-reason` header. See “Jurisdiction restrictions” in the API description.",
+            "headers": {
+              "x-nexus-block-reason": {
+                "$ref": "#/components/headers/XNexusBlockReason"
+              }
+            },
             "content": {
               "application/json": {
-                "example": {
-                  "code": "credits_frozen",
-                  "message": "USDX crediting is temporarily frozen by an administrator. Existing balances remain tradeable."
+                "examples": {
+                  "creditsFrozen": {
+                    "summary": "Crediting administratively frozen",
+                    "value": {
+                      "code": "credits_frozen",
+                      "message": "USDX crediting is temporarily frozen by an administrator. Existing balances remain tradeable."
+                    }
+                  },
+                  "usRestricted": {
+                    "summary": "US write restriction",
+                    "value": {
+                      "code": "US_RESTRICTED",
+                      "message": "This action is not available in the United States or to U.S. persons"
+                    }
+                  },
+                  "geoUnresolved": {
+                    "summary": "Origin could not be resolved; the write failed closed",
+                    "value": {
+                      "code": "GEO_UNRESOLVED",
+                      "message": "Unable to verify request origin; this action is unavailable"
+                    }
+                  }
                 }
               }
             }
@@ -3998,11 +4161,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4050,11 +4213,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4095,11 +4258,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4141,11 +4304,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4205,11 +4368,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4267,11 +4430,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4313,11 +4476,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4407,11 +4570,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4474,11 +4637,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4537,11 +4700,11 @@
       "servers": [
         {
           "url": "https://exchange.nexus.xyz",
-          "description": "Production (direct service)"
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
         },
         {
           "url": "http://localhost:9090",
-          "description": "Local development"
+          "description": "Local development — not a public network."
         }
       ],
       "get": {
@@ -4615,6 +4778,16 @@
       }
     },
     "/api/v1/bridge/assets": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development — not a public network."
+        }
+      ],
       "get": {
         "tags": [
           "Bridge"
@@ -4641,6 +4814,16 @@
       }
     },
     "/api/v1/bridge/deposit-addresses": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development — not a public network."
+        }
+      ],
       "post": {
         "tags": [
           "Bridge"
@@ -4724,6 +4907,16 @@
       }
     },
     "/api/v1/bridge/deposits": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development — not a public network."
+        }
+      ],
       "get": {
         "tags": [
           "Bridge"
@@ -4810,6 +5003,16 @@
       }
     },
     "/api/v1/bridge/deposits/{id}": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development — not a public network."
+        }
+      ],
       "get": {
         "tags": [
           "Bridge"
@@ -4849,6 +5052,166 @@
           },
           "404": {
             "$ref": "#/components/responses/BridgeNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/wallets/challenge": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development — not a public network."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "Create a wallet-registration challenge",
+        "description": "Start registration of a withdrawal wallet. Returns a message to sign with the wallet's key using EIP-191 `personal_sign`. Sign the `message` field verbatim, then submit the signature to `POST /api/v1/bridge/wallets`.\n\nThe message is bound to both the authenticated account and `address`, and expires at `expires_at`. It carries its own integrity tag, so no server-side state is held between this call and registration.\n\nError codes: `invalid_address` on `400` when `address` is not a 0x-prefixed 20-byte hex string; `wallet_registration_unavailable` on `503` when the deployment has no challenge key configured, in which case registration is off rather than issuing challenges that cannot be trusted.",
+        "operationId": "createBridgeWalletChallenge",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBridgeWalletChallengeRequest"
+              },
+              "example": {
+                "address": "0x3178f4bC9A2B1e0d2Cf5eA1B7C4D6E8F0a2B4C6D"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The challenge to sign.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeWalletChallenge"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BridgeBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/BridgeUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/wallets": {
+      "servers": [
+        {
+          "url": "https://exchange.nexus.xyz",
+          "description": "Testnet (play funds) — legacy direct-service host. Not a release channel: see `x-nexus-networks` for the network map."
+        },
+        {
+          "url": "http://localhost:9090",
+          "description": "Local development — not a public network."
+        }
+      ],
+      "post": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "Register a withdrawal wallet",
+        "description": "Register an ownership-proven wallet as the account's withdrawal sink. Submit the `address`, the `message` returned by `POST /api/v1/bridge/wallets/challenge` echoed back verbatim, and the EIP-191 signature over it.\n\nThe address recovered from the signature must equal `address`, and the account named in the challenge must be the authenticated account. The first verified wallet becomes the default. Idempotent: re-registering an address already registered to the account returns the existing record. Registering a *different* address while one is already registered is rejected with `409` / `wallet_already_registered`: an account holds one wallet in this cut and replacement is not supported, so the request is a rejection rather than an update.\n\nError codes: `invalid_address`, `invalid_challenge`, `challenge_expired`, `signature_mismatch` and `account_mismatch` on `400`; `wallet_already_registered` on `409`; `wallet_registration_unavailable` on `503` when the deployment has no challenge key configured.",
+        "operationId": "registerBridgeWallet",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterBridgeWalletRequest"
+              },
+              "example": {
+                "address": "0x3178f4bC9A2B1e0d2Cf5eA1B7C4D6E8F0a2B4C6D",
+                "message": "Nexus Exchange: register 0x3178f4bC9A2B1e0d2Cf5eA1B7C4D6E8F0a2B4C6D as the withdrawal wallet for account 0x7a1Fb3C5D7E9A1B3C5D7E9A1B3C5D7E9A1B3C5D7\nnonce: 9f2c1d84a6b03e57\nexpires: 1785772800000\ntag: 0x4d3c1a9f",
+                "signature": "0xababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered wallet (existing or newly verified).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeWallet"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BridgeBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/BridgeConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/BridgeUnavailable"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Bridge"
+        ],
+        "summary": "List registered wallets",
+        "description": "List the authenticated account's registered withdrawal wallets. Wallets are not chain-scoped: one EVM address is valid on every supported EVM chain, and the chain is chosen per withdrawal.",
+        "operationId": "listBridgeWallets",
+        "security": [
+          {
+            "hmacAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's registered wallets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeWalletsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -4944,6 +5307,32 @@
           }
         }
       },
+      "BridgeConflict": {
+        "description": "The request conflicts with existing state (e.g. the account already registered a different withdrawal wallet).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BridgeError"
+            }
+          }
+        }
+      },
+      "BridgeUnavailable": {
+        "description": "The operation is not available on this deployment (e.g. wallet registration has no challenge key configured). Not transient: this reflects deployment configuration, so retrying will not succeed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BridgeError"
+            },
+            "example": {
+              "error": {
+                "code": "wallet_registration_unavailable",
+                "message": "wallet registration is not configured on this deployment"
+              }
+            }
+          }
+        }
+      },
       "InvalidWindow": {
         "description": "The `window` query parameter was present but not one of `day`, `week`, `month`, or `all`. Returns a machine-readable error code.",
         "content": {
@@ -4960,6 +5349,44 @@
           "application/json": {
             "example": {
               "code": "authoritative_margin_unavailable"
+            }
+          }
+        }
+      },
+      "RestrictedJurisdiction": {
+        "description": "Refused by a jurisdiction control. **Permanent for the caller's origin — do not retry.** Branch on the `code` (identical to the `x-nexus-block-reason` header): `US_RESTRICTED` for the US write restriction, `GEO_UNRESOLVED` when the origin could not be resolved and the write failed closed, or `RESTRICTED_JURISDICTION` for the sanctions list. Reads are never refused by the write restriction. See “Jurisdiction restrictions” in the API description.",
+        "headers": {
+          "x-nexus-block-reason": {
+            "$ref": "#/components/headers/XNexusBlockReason"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/JurisdictionError"
+            },
+            "examples": {
+              "usRestricted": {
+                "summary": "US write restriction",
+                "value": {
+                  "code": "US_RESTRICTED",
+                  "message": "This action is not available in the United States or to U.S. persons"
+                }
+              },
+              "geoUnresolved": {
+                "summary": "Origin could not be resolved; the write failed closed",
+                "value": {
+                  "code": "GEO_UNRESOLVED",
+                  "message": "Unable to verify request origin; this action is unavailable"
+                }
+              },
+              "restrictedJurisdiction": {
+                "summary": "Sanctions list — can also be returned on a read",
+                "value": {
+                  "code": "RESTRICTED_JURISDICTION",
+                  "message": "Access denied from restricted jurisdiction"
+                }
+              }
             }
           }
         }
@@ -5561,6 +5988,14 @@
             "minimum": 0,
             "maximum": 9999,
             "description": "Offset in basis points for the fired limit price (`TrailingLimit` only; required together with `trailing_offset_bps`). When the trailing trigger fires at `fire_price`, the injected limit order rests at `fire_price` * (1 + offset) for buys / * (1 - offset) for sells, tick-rounded toward the tighter bound. A value of 0 rests the limit exactly at `fire_price`. Ignored for other order types."
+          },
+          "max_slippage_bps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Server-enforced slippage cap in basis points (1 bp = 0.01%). Omit the field for no cap. When set, the engine captures the book mid-price `(best_bid + best_ask) / 2` once at submission and requires the order's running fill VWAP to stay inside `mid ± mid × bps / 10000` as it walks the book. Fills made before the cap binds stand; the fill that would push the VWAP outside the band is not made and the unfilled remainder is cancelled — the order comes back on the normal `201` with `status` `Cancelled` and a `SlippageCap` cancellation reason, not as an error. Because the reference is the mid captured server-side at submission and the bound is on the running VWAP rather than on the worst individual fill, this is a stricter guarantee than a marketable limit price derived client-side from a previously sampled reference price.\n\nApplies to the market family: `Market`, plus `StopMarket`, `TakeProfitMarket`, and `TrailingStop`, which carry the field through their conversion and have the cap applied when they fire as market orders. Accepted but ignored on `Limit`, `StopLimit`, `TakeProfitLimit`, and `TrailingLimit` — a limit order already fills at its limit price or better.\n\nTwo edges worth knowing. A mid-price requires **both** sides of the book to be non-empty, so a capped order submitted while either side is empty is rejected with `InsufficientLiquidity` (a `400` on `POST /orders`, an `err` item on `POST /orders/batch`) — including when the empty side is the order's own and the order could otherwise have filled. And `0` does not mean \"no cap\": it collapses the band onto the mid exactly, so against any book with a non-zero spread the order cancels with zero fills. `POST /orders/preview` accepts the field but does not apply it — `expected_fill_vwap` always walks the full book."
           }
         }
       },
@@ -5688,6 +6123,14 @@
               "null"
             ],
             "description": "Fire-time limit offset in basis points, echoed for `TrailingLimit` orders (see the `OrderRequest.limit_offset_bps` placement field); null for other order types."
+          },
+          "max_slippage_bps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Slippage cap in basis points, echoed for orders placed with one (see the `OrderRequest.max_slippage_bps` placement field); null for orders placed without a cap."
           },
           "price": {
             "$ref": "#/components/schemas/Decimal"
@@ -7008,6 +7451,412 @@
             "description": "Unix ms when the deposit was credited; null until `status` is `credited`."
           }
         }
+      },
+      "CreateBridgeWalletChallengeRequest": {
+        "type": "object",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "0x-prefixed EVM address to register as a withdrawal wallet."
+          }
+        }
+      },
+      "BridgeWalletChallenge": {
+        "type": "object",
+        "description": "A message proving control of a wallet, valid until `expires_at`. Not single-use: until it expires the same signature can be replayed, which is a no-op because it only re-registers the same address for the same account.",
+        "required": [
+          "address",
+          "nonce",
+          "message",
+          "expires_at"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The address the challenge was issued for."
+          },
+          "nonce": {
+            "type": "string",
+            "description": "Random value carried inside `message`, distinct per challenge. Informational only: sign `message`, not this. It does not make the challenge single-use."
+          },
+          "message": {
+            "type": "string",
+            "description": "Exact string to sign with EIP-191 `personal_sign`. Its format is server-defined, so treat it as opaque: do not reformat, re-encode or trim it. Echo it back verbatim to `POST /api/v1/bridge/wallets`."
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/TimestampMs"
+          }
+        }
+      },
+      "RegisterBridgeWalletRequest": {
+        "type": "object",
+        "required": [
+          "address",
+          "message",
+          "signature"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "0x-prefixed EVM address being registered. Must match the address recovered from `signature`."
+          },
+          "message": {
+            "type": "string",
+            "description": "The exact `message` returned by `POST /api/v1/bridge/wallets/challenge`, echoed back verbatim. The server holds no state between the two calls, so it re-derives the signed bytes from this field and re-checks the integrity tag, the account binding, and `expires_at` against it."
+          },
+          "signature": {
+            "type": "string",
+            "description": "0x-prefixed 65-byte EIP-191 signature over `message`."
+          }
+        }
+      },
+      "BridgeWallet": {
+        "type": "object",
+        "description": "An ownership-proven wallet that withdrawals can be paid to.",
+        "required": [
+          "address",
+          "verified",
+          "is_default"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "0x-prefixed EVM address."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Whether ownership was proven by signature. Only verified wallets can receive a withdrawal. Always `true` in this cut: a failed check returns 400 rather than storing an unproven record, so do not branch on it. The field is here because the wallet-lifecycle follow-up adds records that are not yet proven, and introducing it later would churn every generated SDK."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Whether this is the account's default withdrawal sink, used when a withdrawal names no destination. Always `true` in this cut: an account holds at most one registered wallet, so do not branch on it. It starts varying with the wallet-lifecycle follow-up, which allows several wallets and moving the default between them."
+          }
+        }
+      },
+      "BridgeWalletsResponse": {
+        "type": "object",
+        "required": [
+          "wallets"
+        ],
+        "properties": {
+          "wallets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BridgeWallet"
+            }
+          }
+        }
+      },
+      "SigningDomain": {
+        "type": "object",
+        "description": "EIP-712 signing domain for a network — the domain behind `POST /agents/register` and any other typed-data signature. Network-scoped on purpose: a distinct domain per network is what makes an action signed for one network invalid on another.\n\n`chain_id` is nullable and may be absent entirely. Null or absent means the server has not published it. It does **not** mean zero, and it is not an invitation to fall back to a default or to a value cached from another network — a client that cannot obtain a `chain_id` must refuse to sign. Mainnet is the real-funds exchange running against Ethereum Mainnet rather than a Nexus L1 chain, so a Nexus L1 chain id is never correct there.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "EIP-712 domain `name`.",
+            "example": "Nexus Exchange"
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 32,
+            "description": "EIP-712 domain `version`.",
+            "example": "1"
+          },
+          "chain_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "EIP-712 domain `chainId` for this network. Null when the server does not publish it — refuse to sign rather than guess a value."
+          }
+        }
+      },
+      "NetworkTarget": {
+        "type": "object",
+        "description": "Connection targets and funds semantics for one network. Field-for-field the same shape as an entry of the top-level `x-nexus-networks.networks` map — same names, same meanings — so a client can deserialize either into one type: the map is the static fallback, `/metadata` is authoritative at runtime. Two differences, both deliberate. Identity: in the static map the network identifier is the map key, while here it is also carried explicitly in `network`, so a single target stays self-describing when passed around on its own. And the static map's per-network `description` is prose for people reading this document — it is not part of the runtime payload and no edge is expected to serve it.",
+        "required": [
+          "network",
+          "rest_base"
+        ],
+        "properties": {
+          "network": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Network identifier. Known values: `mainnet` (real funds), `testnet` (play funds), `local`. Deliberately an open string rather than an enum, so a network added later cannot break deserialization — but treat an identifier you do not recognize as **real funds**, and require explicit confirmation before anything that moves money.",
+            "example": "testnet"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Human-readable name for this network, for display in UIs and CLI output. Presentation only — never parse it or key logic off it; `network` is the identifier.",
+            "example": "Testnet"
+          },
+          "host": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "Bare host (with port, if non-default) serving this network. Each network is its own origin, terminating its own TLS and WebSocket upgrades, so this is what belongs in CORS allowlists, certificate pinning, and egress rules. Do not assemble request URLs from it — use `rest_base`, which already carries the scheme and version segment — and never derive it by interpolating `network` into a template, because mainnet is deliberately off-pattern.",
+            "example": "api.testnet.nexus.xyz"
+          },
+          "rest_base": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "REST base URL, version segment included. Bare operation paths from this document append to it (`/orders` → `<rest_base>/orders`). The request path is part of the HMAC canonical string, so changing base also changes what you sign.",
+            "example": "https://api.testnet.nexus.xyz/v1"
+          },
+          "ws_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "WebSocket origin for this network. Market data is `<ws_url>/stream`; authenticated is `<ws_url>/ws?token=…`.",
+            "example": "wss://api.testnet.nexus.xyz"
+          },
+          "ws_market_data_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Fully-qualified public market-data WebSocket URL for this network.",
+            "example": "wss://api.testnet.nexus.xyz/stream"
+          },
+          "ws_authenticated_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Fully-qualified authenticated WebSocket URL for this network; append `?token=…` with a token minted on this same network.",
+            "example": "wss://api.testnet.nexus.xyz/ws"
+          },
+          "funds": {
+            "type": "string",
+            "maxLength": 32,
+            "description": "`real` — balances are real money (mainnet: USDX bridged from Ethereum Mainnet). `play` — synthetic balances with no real-world value. Open string for the same reason as `network`: treat an unrecognized value as `real`.",
+            "example": "play"
+          },
+          "faucet": {
+            "type": "boolean",
+            "description": "Whether synthetic funding is available on this network (`POST /faucet`, `POST /account/credit`). False on mainnet, where collateral arrives through the USDX bridge."
+          },
+          "signing_domain": {
+            "$ref": "#/components/schemas/SigningDomain"
+          }
+        }
+      },
+      "Metadata": {
+        "type": "object",
+        "description": "Payload of the edge's `/metadata` endpoint. `/metadata` is served by the edge at each network's own host and is deliberately not an operation in this contract; this schema documents its shape so clients and agents can discover targets programmatically instead of hardcoding them.\n\nOnly `current_api_version` and `min_api_version` are required — those are what the edge has always served. Every other field is optional, so an older edge stays conformant; when one is absent, fall back to the static `x-nexus-networks` map. `signing_domain` is the one field with no safe fallback: if it is absent and you have no value for the network you are on, refuse to sign.\n\nThe response describes reachable targets only. It confers nothing: credentials are minted per network and remain invalid everywhere else, so discovering a sibling network here does not mean your keys work there.",
+        "required": [
+          "current_api_version",
+          "min_api_version"
+        ],
+        "properties": {
+          "current_api_version": {
+            "type": "string",
+            "pattern": "^v\\d+\\.\\d+\\.\\d+$",
+            "maxLength": 32,
+            "description": "Latest released spec tag this edge serves.",
+            "example": "v0.7.2"
+          },
+          "min_api_version": {
+            "type": "string",
+            "pattern": "^v\\d+\\.\\d+\\.\\d+$",
+            "maxLength": 32,
+            "description": "Oldest released spec tag still accepted. A client pinned below this may receive `426 Upgrade Required`; see the API version-support policy.",
+            "example": "v0.6.0"
+          },
+          "network": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "The network **this host** serves — the one your credentials must belong to. Known values: `mainnet`, `testnet`, `local`. An unrecognized or absent value must not be assumed to be play funds; treat it as real funds and confirm before acting.",
+            "example": "testnet"
+          },
+          "ws_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "WebSocket origin for the network this host serves — the same value as `networks[network].ws_url`, inlined so a client does not have to resolve the map to connect. Market data is `<ws_url>/stream`; authenticated is `<ws_url>/ws?token=…`.",
+            "example": "wss://api.testnet.nexus.xyz"
+          },
+          "signing_domain": {
+            "$ref": "#/components/schemas/SigningDomain"
+          },
+          "networks": {
+            "type": "object",
+            "description": "Every network the edge knows about, keyed by network identifier, so a client can resolve another network's targets without a hardcoded host map. Keys are the same identifiers as `network`. Do not derive a host by interpolating a key into a template — mainnet is deliberately off-pattern.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NetworkTarget"
+            }
+          }
+        }
+      },
+      "LiquidationEvent": {
+        "type": "object",
+        "description": "One `payload` delivered on the per-account `liquidations` WebSocket channel. Externally tagged: exactly one property is present and its key names the engine event variant. Ignore unrecognized keys — further variants may be added.",
+        "minProperties": 1,
+        "maxProperties": 1,
+        "properties": {
+          "LiquidationAlert": {
+            "$ref": "#/components/schemas/LiquidationAlert"
+          },
+          "PortfolioLiquidation": {
+            "$ref": "#/components/schemas/PortfolioLiquidation"
+          }
+        }
+      },
+      "LiquidationAlert": {
+        "type": "object",
+        "description": "Pre-liquidation risk warning for one account, delivered on the `liquidations` channel. Edge-triggered: emitted once per worsening severity transition, never on recovery, and never repeated while a severity holds.",
+        "required": [
+          "account_id",
+          "market_id",
+          "severity",
+          "equity",
+          "maintenance_margin",
+          "sequence",
+          "epoch",
+          "emitted_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "description": "0x-prefixed address the alert is about. Always the wallet that minted the token — the channel is filtered server-side."
+          },
+          "market_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Market the alert is scoped to, or `null` for a portfolio-level alert computed over the whole cross-margin account. Portfolio-level (`null`) is what the engine emits today, so clients must handle `null`; a non-null value scopes the alert to a single market."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "Warning",
+              "Critical",
+              "Imminent",
+              "Unknown"
+            ],
+            "description": "Severity tier, classified from `equity / maintenance_margin`: `Warning` in (1.2, 1.5], `Critical` in (1.05, 1.2], `Imminent` in (1.0, 1.05]. Ordering is Warning < Critical < Imminent. `Unknown` is the forward-compatibility value for a tier this spec version does not name; treat it defensively rather than as a severity claim."
+          },
+          "equity": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Account equity at the moment of classification, as a decimal string."
+          },
+          "maintenance_margin": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Maintenance-margin requirement the equity was compared against, as a decimal string."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Engine event sequence number, monotonic within `epoch`."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Engine epoch. Increments when the engine restarts, so `sequence` is only comparable within one epoch."
+          },
+          "emitted_at": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "When the engine emitted the event. `0` when the upstream frame carried no emit timestamp."
+          }
+        }
+      },
+      "PortfolioLiquidation": {
+        "type": "object",
+        "description": "Terminal notification on the `liquidations` channel: the account's cross-margin positions have already been closed out. Not a warning — no action is available to the holder.",
+        "required": [
+          "account_id",
+          "closures",
+          "equity_before",
+          "equity_after",
+          "sequence",
+          "epoch",
+          "emitted_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "description": "0x-prefixed address that was liquidated."
+          },
+          "closures": {
+            "type": "array",
+            "description": "Per-market closes that made up the liquidation. Empty only if the account held no positions.",
+            "items": {
+              "$ref": "#/components/schemas/PortfolioLiquidationClosure"
+            }
+          },
+          "equity_before": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Account equity before the closes, as a decimal string."
+          },
+          "equity_after": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Account equity after the closes, as a decimal string."
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Engine event sequence number, monotonic within `epoch`."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Engine epoch. Increments when the engine restarts, so `sequence` is only comparable within one epoch."
+          },
+          "emitted_at": {
+            "$ref": "#/components/schemas/TimestampMs",
+            "description": "When the engine emitted the event. `0` when the upstream frame carried no emit timestamp."
+          }
+        }
+      },
+      "PortfolioLiquidationClosure": {
+        "type": "object",
+        "description": "One market's forced close within a portfolio liquidation.",
+        "required": [
+          "market_id",
+          "position_size_closed",
+          "settlement_price",
+          "settlement_amount"
+        ],
+        "properties": {
+          "market_id": {
+            "type": "string"
+          },
+          "position_size_closed": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Absolute position size closed, as a decimal string."
+          },
+          "settlement_price": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Price the close settled at (the mark price used for the closure), as a decimal string."
+          },
+          "settlement_amount": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "Signed collateral delta from this close after fees, as a decimal string."
+          }
+        }
+      },
+      "JurisdictionError": {
+        "type": "object",
+        "description": "Error body returned with a `403` from a jurisdiction control. Flat `code`/`message`, matching the other top-level error bodies in this contract (`unauthorized`, `credits_frozen`) rather than the nested `BridgeError` envelope, which is scoped to `/v1/bridge`.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable reason, identical to the `x-nexus-block-reason` response header. One of `RESTRICTED_JURISDICTION` (sanctions list — reads and writes alike), `US_RESTRICTED` (US write restriction — state-changing operations only) or `GEO_UNRESOLVED` (the request's origin could not be resolved and the write failed closed; not a statement about the caller's location). Match on this, not on `message`. All three are permanent for the caller's origin and must not be retried; treat an unrecognized code the same way."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation. Wording is not stable and is not intended for programmatic matching."
+          }
+        }
       }
     },
     "headers": {
@@ -7016,6 +7865,12 @@
           "type": "string"
         },
         "description": "Opaque cursor for the next page. Present only when more results exist beyond this response; absent on the last page. Pass it back via the `cursor` query parameter to fetch the next page. The response body stays a bare array — pagination state rides only in this header."
+      },
+      "XNexusBlockReason": {
+        "schema": {
+          "type": "string"
+        },
+        "description": "Which jurisdiction control refused the request: `RESTRICTED_JURISDICTION` (sanctions list; any operation, reads included), `US_RESTRICTED` (US write restriction; state-changing operations only), or `GEO_UNRESOLVED` (a state-changing operation whose origin could not be resolved, failing closed). Always equal to the body's `code` — the header exists so a browser client can branch without reading the body. Deliberately not a closed enum: treat an unrecognized value as a permanent, non-retryable refusal. See “Jurisdiction restrictions” in the API description."
       }
     }
   }
