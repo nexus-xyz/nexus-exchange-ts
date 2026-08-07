@@ -443,16 +443,27 @@ const CODE_ONLY_OPS = new Set([
   "GET /api/v1/withdrawals", // getWithdrawals
   "POST /api/v1/faucet", // claimFaucet
 
-  // (2) SUSPECTED WRONG PATH — tracked in ENG-8463, not an intentional
-  // ahead-of-spec grant. Unlike the four above, these two have no `/api/v1`
-  // sibling mount: they are engine routes reached through the indexer's
-  // catch-all, which forwards the request path to the engine *unstripped*
-  // (`proxy_to`, same file), and the engine registers only the bare
-  // `/account/deposit` / `/account/margin`. So these calls most likely 404 and
-  // the methods should pass `root: true` like the other host-root routes. That
-  // is a behavioural fix to two money-moving endpoints and wants its own
-  // change; recorded here so the discrepancy is visible and staleness-checked
-  // rather than silently absent.
+  // (2) NOT ahead-of-spec — a routing gap that outlived its first diagnosis.
+  // ENG-8463 predicted these two 404 (no `/api/v1` sibling mount: they are
+  // engine routes reached through the indexer catch-all, which forwards the path
+  // *unstripped*) and proposed `root: true` as the fix. Probing
+  // `exchange.nexus.xyz` settled both halves, and only the first held:
+  //
+  //   POST /api/v1/account/{deposit,margin}  -> 404  (frontend HTML)
+  //   POST /account/{deposit,margin}         -> 301  https://nexus.xyz/exchange/…
+  //   POST /api/exchange/account/{…}         -> 401  (the live API)
+  //
+  // So the 404 is real, but `root: true` does not fix it — the host root
+  // redirects to the marketing site, and every other `/api/v1` path on that host
+  // 404s too (`/api/v1/orders`, `/api/v1/account`, and the four group-(1) entries
+  // above), while the whole surface answers under `/api/exchange`. That makes it
+  // a deployment-level routing question about the SDK's base URL, not a per-method
+  // one, and route existence under `/account/*` cannot be confirmed from outside
+  // anyway: auth runs before routing there, so `/account/depositt` also answers
+  // 401. Re-pointing two money-moving endpoints on that evidence would trade a
+  // loud 404 for a cross-origin redirect, so the paths stay put and the client
+  // now refuses to follow redirects at all (`isRedirectResponse` in
+  // src/client.ts). Kept here, staleness-checked, until the base URL is settled.
   "POST /api/v1/account/deposit", // deposit
   "POST /api/v1/account/margin", // adjustMargin
 ]);
