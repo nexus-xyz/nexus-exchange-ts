@@ -407,6 +407,27 @@ export interface OrderRequest {
    * bound); `0` rests exactly at `fire_price`. Ignored for other types.
    */
   limit_offset_bps?: number | null;
+  /**
+   * Server-enforced slippage cap in basis points (1 bp = 0.01%), added in spec
+   * v0.7.3. Omit the field for no cap. The engine captures the book mid
+   * (`(best_bid + best_ask) / 2`) once at submission and requires the order's
+   * running fill VWAP to stay inside `mid ± mid × bps / 10000`; fills made
+   * before the cap binds stand, and the remainder is cancelled — returned as a
+   * normal `201` whose order carries `status` `Cancelled` and a `SlippageCap`
+   * cancellation reason, **not** as an error.
+   *
+   * Applies to the market family (`Market`, and `StopMarket` /
+   * `TakeProfitMarket` / `TrailingStop` when they fire); accepted but ignored on
+   * the limit family, which already fills at its limit price or better.
+   *
+   * Two edges. `0` does **not** mean "no cap": it collapses the band onto the
+   * mid, so against any non-zero spread the order cancels with zero fills — omit
+   * the field instead. And a mid requires both sides of the book to be
+   * non-empty, so a capped order sent against a one-sided book is rejected with
+   * `InsufficientLiquidity` even when it could otherwise have filled.
+   * `POST /orders/preview` accepts the field but does not apply it.
+   */
+  max_slippage_bps?: number | null;
 }
 
 /**
@@ -445,6 +466,12 @@ export interface Order {
    * (see {@link OrderRequest.limit_offset_bps}); `null` for other order types.
    */
   limit_offset_bps: number | null;
+  /**
+   * Slippage cap in basis points, echoed for orders placed with one (see
+   * {@link OrderRequest.max_slippage_bps}); `null` for orders placed without a
+   * cap. Optional: a server older than v0.7.3 omits the field entirely.
+   */
+  max_slippage_bps?: number | null;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }
@@ -1202,4 +1229,325 @@ export interface BridgeDeposit {
   updated_at?: TimestampMs;
   /** Unix ms when the deposit was credited; `null` until `status` is `credited`. */
   credited_at?: TimestampMs | null;
+}
+
+// ─── Bridge (withdrawal wallets, v0.7.3) ─────────────────────────────────────
+//
+// Two-step ownership proof: `POST /api/v1/bridge/wallets/challenge` issues a
+// message, the wallet signs it with EIP-191 `personal_sign`, and
+// `POST /api/v1/bridge/wallets` registers the address. The server keeps no state
+// between the calls — it re-derives everything from the echoed `message` — so the
+// challenge must be passed back verbatim. No client method wraps these yet (see
+// spec/uncovered-ops.txt); the models are here so a caller can type the two
+// bodies today.
+
+/** Request body for `POST /api/v1/bridge/wallets/challenge`. */
+export interface CreateBridgeWalletChallengeRequest {
+  /** 0x-prefixed EVM address to register as a withdrawal wallet. */
+  address: string;
+}
+
+/**
+ * A message proving control of a wallet, valid until `expires_at`.
+ *
+ * **Not single-use.** Until it expires the same signature can be replayed, which
+ * is a no-op: it only re-registers the same address for the same account.
+ */
+export interface BridgeWalletChallenge {
+  /** The address the challenge was issued for. */
+  address: string;
+  /**
+   * Random value carried inside `message`, distinct per challenge.
+   * Informational only — sign {@link BridgeWalletChallenge.message}, not this.
+   */
+  nonce: string;
+  /**
+   * Exact string to sign with EIP-191 `personal_sign`. Server-defined format, so
+   * treat it as opaque: do not reformat, re-encode, or trim it, and echo it back
+   * verbatim on `POST /api/v1/bridge/wallets`.
+   */
+  message: string;
+  expires_at: TimestampMs;
+}
+
+/** Request body for `POST /api/v1/bridge/wallets`. */
+export interface RegisterBridgeWalletRequest {
+  /**
+   * 0x-prefixed EVM address being registered. Must match the address recovered
+   * from `signature`.
+   */
+  address: string;
+  /**
+   * The `message` from {@link BridgeWalletChallenge}, echoed back verbatim. The
+   * server holds no state between the two calls, so it re-derives the signed
+   * bytes from this field and re-checks the integrity tag, the account binding,
+   * and `expires_at` against it.
+   */
+  message: string;
+  /** 0x-prefixed 65-byte EIP-191 signature over `message`. */
+  signature: string;
+}
+
+/** An ownership-proven wallet that withdrawals can be paid to. */
+export interface BridgeWallet {
+  /** 0x-prefixed EVM address. */
+  address: string;
+  /**
+   * Whether ownership was proven by signature. Always `true` in this cut — a
+   * failed check returns `400` rather than storing an unproven record — so do
+   * **not** branch on it. It starts varying with the wallet-lifecycle follow-up.
+   */
+  verified: boolean;
+  /**
+   * Whether this is the account's default withdrawal sink, used when a
+   * withdrawal names no destination. Always `true` in this cut (an account holds
+   * at most one registered wallet), so do **not** branch on it.
+   */
+  is_default: boolean;
+}
+
+/** Response from `GET /api/v1/bridge/wallets`. */
+export interface BridgeWalletsResponse {
+  wallets: BridgeWallet[];
+}
+
+// ─── Liquidations (per-account `liquidations` WS channel, v0.7.3) ─────────────
+
+/**
+ * Severity tier of a {@link LiquidationAlert}, classified from
+ * `equity / maintenance_margin`: `Warning` in (1.2, 1.5], `Critical` in
+ * (1.05, 1.2], `Imminent` in (1.0, 1.05]. Ordered `Warning` < `Critical` <
+ * `Imminent`.
+ *
+ * `Unknown` is the forward-compatibility value for a tier this spec version does
+ * not name — treat it defensively rather than as a severity claim.
+ */
+export type LiquidationSeverity =
+  | "Warning"
+  | "Critical"
+  | "Imminent"
+  | "Unknown";
+
+/**
+ * Pre-liquidation risk warning for one account.
+ *
+ * Edge-triggered: emitted once per worsening severity transition, never on
+ * recovery, and never repeated while a severity holds. So this is not a level
+ * you can poll — treat each event as the whole notification.
+ */
+export interface LiquidationAlert {
+  /**
+   * 0x-prefixed address the alert is about. Always the wallet that minted the
+   * token — the channel is filtered server-side.
+   */
+  account_id: string;
+  /**
+   * Market the alert is scoped to, or `null` for a portfolio-level alert over
+   * the whole cross-margin account. Portfolio-level (`null`) is what the engine
+   * emits today, so a consumer must handle `null`.
+   */
+  market_id: string | null;
+  severity: LiquidationSeverity;
+  /** Account equity at the moment of classification. */
+  equity: Decimal;
+  /** Maintenance-margin requirement the equity was compared against. */
+  maintenance_margin: Decimal;
+  /** Engine event sequence number, monotonic **within `epoch`**. */
+  sequence: number;
+  /**
+   * Engine epoch, incremented on engine restart — so `sequence` is only
+   * comparable within one epoch.
+   */
+  epoch: number;
+  /** When the engine emitted the event; `0` when the frame carried no timestamp. */
+  emitted_at: TimestampMs;
+}
+
+/** One market's forced close within a {@link PortfolioLiquidation}. */
+export interface PortfolioLiquidationClosure {
+  market_id: string;
+  /** Absolute position size closed. */
+  position_size_closed: Decimal;
+  /** Price the close settled at (the mark price used for the closure). */
+  settlement_price: Decimal;
+  /** Amount settled for this market's close. */
+  settlement_amount: Decimal;
+}
+
+/**
+ * Terminal notification: the account's cross-margin positions have **already**
+ * been closed out. Not a warning — no action is available to the holder.
+ */
+export interface PortfolioLiquidation {
+  /** 0x-prefixed address that was liquidated. */
+  account_id: string;
+  /** Per-market closes that made up the liquidation. Empty only if no positions. */
+  closures: PortfolioLiquidationClosure[];
+  /** Account equity before the closes. */
+  equity_before: Decimal;
+  /** Account equity after the closes. */
+  equity_after: Decimal;
+  /** Engine event sequence number, monotonic **within `epoch`**. */
+  sequence: number;
+  /** Engine epoch; see {@link LiquidationAlert.epoch}. */
+  epoch: number;
+  /** When the engine emitted the event; `0` when the frame carried no timestamp. */
+  emitted_at: TimestampMs;
+}
+
+/**
+ * One `payload` delivered on the per-account `liquidations` channel — the shape
+ * to cast `WsEvent.data` to when subscribed to it.
+ *
+ * Externally tagged: exactly one property is present and its key names the
+ * engine event variant. Ignore unrecognized keys — further variants may be
+ * added, which is why both members are optional here.
+ */
+export interface LiquidationEvent {
+  LiquidationAlert?: LiquidationAlert;
+  PortfolioLiquidation?: PortfolioLiquidation;
+}
+
+// ─── Network discovery (`/metadata`, v0.7.3) ──────────────────────────────────
+//
+// `/metadata` is served by the edge at each network's own host and is
+// deliberately NOT an operation in the contract, so no client method wraps it.
+// These schemas document its shape so a caller can discover targets at runtime
+// instead of hardcoding them. The SDK's own static map is {@link NETWORKS} in
+// ./client (mirroring the spec's `x-nexus-networks`), which is the fallback when
+// a field here is absent.
+
+/**
+ * EIP-712 signing domain for a network, as **the server reports it** — the wire
+ * shape of `/metadata`'s `signing_domain`. The SDK's own per-network constants
+ * are `NetworkSigningDomain` in ./client; this is the runtime-authoritative one.
+ *
+ * Network-scoped on purpose: a distinct domain per network is what makes an
+ * action signed for one network invalid on another.
+ *
+ * `chain_id` null **or absent** means the server has not published it. It does
+ * not mean zero, and it is not an invitation to fall back to a default or to a
+ * value cached from another network: a client that cannot obtain a `chain_id`
+ * must refuse to sign. Mainnet runs against Ethereum Mainnet rather than a Nexus
+ * L1 chain, so a Nexus L1 chain id is never correct there.
+ */
+export interface SigningDomain {
+  /** EIP-712 domain `name`, e.g. `"Nexus Exchange"`. */
+  name?: string;
+  /** EIP-712 domain `version`, e.g. `"1"`. */
+  version?: string;
+  /** EIP-712 domain `chainId`; `null`/absent means unpublished — refuse to sign. */
+  chain_id?: number | null;
+}
+
+/**
+ * Connection targets and funds semantics for one network: an entry of
+ * `/metadata`'s `networks` map, field-for-field the same shape as an entry of
+ * the spec's static `x-nexus-networks.networks`.
+ */
+export interface NetworkTarget {
+  /**
+   * Network identifier — known values `mainnet` (real funds), `testnet` (play
+   * funds), `local`. Deliberately an open string so a network added later cannot
+   * break deserialization: treat an identifier you do not recognize as **real
+   * funds** and require explicit confirmation before moving money.
+   */
+  network: OpenUnion<"mainnet" | "testnet" | "local">;
+  /** Human-readable name, for display only — never key logic off it. */
+  label?: string;
+  /**
+   * Bare host (with port if non-default) serving this network — what belongs in
+   * CORS allowlists, certificate pinning, and egress rules. Do not assemble
+   * request URLs from it (use `rest_base`), and never derive it by interpolating
+   * `network` into a template: mainnet is deliberately off-pattern.
+   */
+  host?: string;
+  /**
+   * REST base URL, version segment included; bare operation paths append to it.
+   * The request path is part of the HMAC canonical string, so changing base also
+   * changes what you sign.
+   */
+  rest_base: string;
+  /** WebSocket origin. Market data is `<ws_url>/stream`, authenticated `<ws_url>/ws`. */
+  ws_url?: string;
+  /** Fully-qualified public market-data WebSocket URL. */
+  ws_market_data_url?: string;
+  /** Fully-qualified authenticated WebSocket URL; append `?token=…`. */
+  ws_authenticated_url?: string;
+  /**
+   * `real` — balances are real money. `play` — synthetic, no real-world value.
+   * Open string for the same reason as `network`: treat an unrecognized value as
+   * `real`.
+   */
+  funds?: OpenUnion<"real" | "play">;
+  /** Whether synthetic funding exists here (`POST /faucet`, `POST /account/credit`). */
+  faucet?: boolean;
+  signing_domain?: SigningDomain;
+}
+
+/**
+ * Payload of the edge's `/metadata` endpoint.
+ *
+ * Only `current_api_version` and `min_api_version` are required — those are what
+ * the edge has always served. Every other field is optional so an older edge
+ * stays conformant; when one is absent, fall back to the SDK's static map.
+ * `signing_domain` is the one field with no safe fallback: if it is absent and
+ * you have no value for the network you are on, refuse to sign.
+ *
+ * The response describes reachable targets only. It confers nothing —
+ * credentials are minted per network and remain invalid everywhere else, so
+ * discovering a sibling network here does not mean your keys work there.
+ */
+export interface Metadata {
+  /** Latest released spec tag this edge serves, e.g. `"v0.7.3"`. */
+  current_api_version: string;
+  /**
+   * Oldest released spec tag still accepted. A client pinned below this may
+   * receive `426 Upgrade Required`.
+   */
+  min_api_version: string;
+  /**
+   * The network **this host** serves — the one your credentials must belong to.
+   * An unrecognized or absent value must not be assumed to be play funds: treat
+   * it as real funds and confirm before acting.
+   */
+  network?: OpenUnion<"mainnet" | "testnet" | "local">;
+  /** WebSocket origin for this host's network, inlined from `networks[network]`. */
+  ws_url?: string;
+  signing_domain?: SigningDomain;
+  /**
+   * Every network the edge knows about, keyed by network identifier. Do not
+   * derive a host by interpolating a key into a template — mainnet is
+   * deliberately off-pattern.
+   */
+  networks?: Record<string, NetworkTarget>;
+}
+
+// ─── Jurisdiction controls (v0.7.3) ──────────────────────────────────────────
+
+/**
+ * Error body returned with a `403` from a jurisdiction control, on the
+ * state-changing operations (orders, amends, deposits, margin moves, faucet).
+ *
+ * Flat `code`/`message`, like the other top-level error bodies — not the nested
+ * {@link BridgeError} envelope. Surfaced by this SDK as an `ApiError` with
+ * `status === 403`, whose `code` is the field below; all reasons are permanent
+ * for the caller's origin, and `ApiError.transient` is correspondingly `false`.
+ */
+export interface JurisdictionError {
+  /**
+   * Stable machine-readable reason, identical to the `x-nexus-block-reason`
+   * response header. Match on this, not on `message`, and treat an unrecognized
+   * code exactly like the named ones: permanent, never retry.
+   *
+   * `RESTRICTED_JURISDICTION` — sanctions list, reads and writes alike.
+   * `US_RESTRICTED` — US write restriction, state-changing operations only.
+   * `GEO_UNRESOLVED` — the request's origin could not be resolved and the write
+   * failed closed; **not** a statement about the caller's location.
+   */
+  code: OpenUnion<
+    "RESTRICTED_JURISDICTION" | "US_RESTRICTED" | "GEO_UNRESOLVED"
+  >;
+  /** Human-readable explanation. Wording is not stable — do not match on it. */
+  message: string;
 }

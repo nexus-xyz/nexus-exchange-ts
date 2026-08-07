@@ -234,8 +234,17 @@ export enum Network {
  */
 export const API_BASE_PATH = "/api/v1";
 
-/** The EIP-712 domain a network's signatures are scoped to. */
-export interface SigningDomain {
+/**
+ * The EIP-712 domain a network's signatures are scoped to, **as this SDK
+ * publishes it** — the static per-network constants behind {@link NETWORKS}.
+ *
+ * Distinct from the spec's `SigningDomain` model (exported from ./models), which
+ * is the *wire* shape of `/metadata`'s `signing_domain`: snake_case `chain_id`,
+ * every field optional, and server-authoritative at runtime. Two names because
+ * they are two things — what this package hardcodes versus what the edge reports.
+ * Prefer the reported one when you have it.
+ */
+export interface NetworkSigningDomain {
   readonly name: string;
   readonly version: string;
   /**
@@ -273,12 +282,13 @@ export interface NetworkConfig {
    * override.
    */
   readonly wsUrl: string | null;
-  readonly signingDomain: SigningDomain;
+  readonly signingDomain: NetworkSigningDomain;
 }
 
 // One `name`/`version` pair across all networks; only the chain id is
-// per-network, and it is deliberately unpublished here (see `SigningDomain`).
-const SIGNING_DOMAIN: SigningDomain = Object.freeze({
+// per-network, and it is deliberately unpublished here (see
+// `NetworkSigningDomain`).
+const SIGNING_DOMAIN: NetworkSigningDomain = Object.freeze({
   name: "Nexus Exchange",
   version: "1",
   chainId: null,

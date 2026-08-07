@@ -63,8 +63,32 @@ BridgeAssetsResponse
 CreateBridgeDepositAddressRequest
 BridgeDepositAddress
 BridgeDeposit
+
+# Withdrawal wallets (v0.7.3). Two-step ownership proof; no client method yet.
+CreateBridgeWalletChallengeRequest
+BridgeWalletChallenge
+RegisterBridgeWalletRequest
+BridgeWallet
+BridgeWalletsResponse
+
 StatsSnapshot
 ThroughputSample
 ServiceHealth
+
+# Liquidations (v0.7.3) — payloads of the per-account `liquidations` WS channel.
+LiquidationEvent
+LiquidationAlert
+PortfolioLiquidation
+PortfolioLiquidationClosure
+
+# Network discovery (v0.7.3) — the edge's `/metadata` payload. Deliberately not an
+# operation in the contract, so these are models only.
+Metadata
+NetworkTarget
+SigningDomain
+
+# Jurisdiction controls (v0.7.3) — the 403 body on state-changing operations.
+JurisdictionError
+
 Decimal
 TimestampMs

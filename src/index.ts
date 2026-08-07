@@ -51,7 +51,10 @@ export {
   EQUITY_HISTORY_LIMIT_MAX,
   type ClientOptions,
   type NetworkConfig,
-  type SigningDomain,
+  // The SDK's static per-network EIP-712 domain. The spec's `SigningDomain`
+  // model (the `/metadata` wire shape) comes from ./models above — same concept,
+  // two shapes, so they carry two names.
+  type NetworkSigningDomain,
 } from "./client.js";
 
 export {

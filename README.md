@@ -46,6 +46,13 @@ Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 `transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
 `transient`), and `MissingCredentialsError`.
 
+State-changing operations (orders, amends, deposits, margin moves, faucet) can
+answer `403` from a jurisdiction control: an `ApiError` whose `code` is
+`RESTRICTED_JURISDICTION`, `US_RESTRICTED`, or `GEO_UNRESOLVED` (the
+`JurisdictionError` model; the same value as the `x-nexus-block-reason` header).
+Match on `code`, never the message, and treat every reason — including one you do
+not recognize — as permanent: `transient` is `false`, so retrying cannot help.
+
 ### Authentication
 
 Authenticated requests are signed with HMAC-SHA256 over a canonical string,
@@ -94,6 +101,15 @@ positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
 `placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
+
+Market-family orders can carry `max_slippage_bps` (spec v0.7.3), a server-enforced
+cap: the engine pins the book mid at submission and holds the running fill VWAP
+inside `mid ± mid × bps / 10000`, cancelling the unfilled remainder with a
+`SlippageCap` reason on a normal success response rather than an error. Two traps
+— `0` is not "no cap" (it collapses the band onto the mid, so the order cancels
+with zero fills; omit the field instead), and a capped order needs **both** sides
+of the book populated or it is rejected with `InsufficientLiquidity`. Ignored on
+the limit family, and accepted-but-not-applied by `previewOrder`.
 
 ### Portfolio
 
@@ -273,13 +289,16 @@ new Client({
 
 ### Signing domain
 
-`networkConfig(n).signingDomain` is the EIP-712 domain, with
-`chainId: null` — meaning **this SDK does not publish the value**, not that it is
-zero. The domain is per-network and server-authoritative: read
+`networkConfig(n).signingDomain` (type `NetworkSigningDomain`) is the EIP-712
+domain this SDK publishes statically, with `chainId: null` — meaning **this SDK
+does not publish the value**, not that it is zero. The `SigningDomain` model is
+the different, server-reported shape: the wire form of `/metadata`'s
+`signing_domain` (snake*case `chain_id`, all fields optional), authoritative at
+runtime — see `Metadata` and `NetworkTarget` for the rest of that payload. The domain is per-network and server-authoritative: read
 `signing_domain.chain_id` from `GET /metadata` for the network you are connected
 to and pass it to `EthSigner.registerAgent({ chainId })`. If you cannot obtain
 it, refuse to sign rather than defaulting — a wrong domain either fails
-verification or produces a signature valid on a _different_ network. `0` and
+verification or produces a signature valid on a \_different* network. `0` and
 out-of-range values are rejected for exactly that reason. Do not assume a Nexus
 L1 chain id: mainnet runs against Ethereum Mainnet via the USDX bridge.
 
@@ -435,9 +454,19 @@ for await (const evt of book.events) {
 ```
 
 Public channels (`book`, `trades`, `candles`) need no authentication.
-Account-scoped channels (`orders`, `fills`, `positions`, `balances`) require a
-short-lived token: pass a `tokenProvider` that mints one. It is called on every
-(re)connect, so it always supplies a fresh token.
+Account-scoped channels (`orders`, `fills`, `positions`, `balances`,
+`liquidations`) require a short-lived token: pass a `tokenProvider` that mints
+one. It is called on every (re)connect, so it always supplies a fresh token.
+
+`liquidations` (spec v0.7.3) delivers pre-liquidation warnings and the terminal
+portfolio-liquidation notice; cast `evt.data` to `LiquidationEvent`, which is
+externally tagged — exactly one of `LiquidationAlert` / `PortfolioLiquidation` is
+present, and unrecognized keys should be ignored. Alerts are **edge-triggered**:
+one per worsening severity transition, never on recovery and never repeated while
+a severity holds, so treat each event as the whole notification rather than a
+level to poll. The spec's venue-wide `engine` channel is deliberately not
+accepted yet — it acks subscriptions but publishes no frames and is documented as
+reserved.
 
 ```ts
 const client = createWsClient({

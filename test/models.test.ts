@@ -35,6 +35,14 @@ import type {
   PortfolioHistory,
   PortfolioWindow,
   Position,
+  BridgeWalletChallenge,
+  RegisterBridgeWalletRequest,
+  BridgeWalletsResponse,
+  LiquidationEvent,
+  LiquidationAlert,
+  PortfolioLiquidation,
+  Metadata,
+  JurisdictionError,
 } from "../src/models.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -270,6 +278,139 @@ test("v0.7.1 surface: trailing orders, cancel-on-disconnect, bridge deposits", (
   assert.equal(assets.chains[0]!.deposit_assets[0]!.symbol, "USDC");
   assert.equal(addr.accepts.length, 2);
   assert.equal(deposit.status, "confirming");
+});
+
+// ─── v0.7.3 surface ──────────────────────────────────────────────────────────
+
+test("v0.7.3 surface: slippage cap, withdrawal wallets, liquidations, metadata", () => {
+  // A market order with the server-enforced slippage cap. `0` is a legal value
+  // that means "collapse the band onto the mid", NOT "no cap" — omitting the
+  // field is how you ask for no cap, so both must typecheck.
+  const capped: OrderRequest = {
+    market_id: "BTC-USDX-PERP",
+    side: "Buy",
+    order_type: "Market",
+    quantity: "0.5",
+    time_in_force: "IOC",
+    max_slippage_bps: 25,
+  };
+  const collapsed: OrderRequest = { ...capped, max_slippage_bps: 0 };
+  const uncapped: OrderRequest = { ...capped, max_slippage_bps: null };
+  assert.equal(capped.max_slippage_bps, 25);
+  assert.equal(collapsed.max_slippage_bps, 0);
+  assert.equal(uncapped.max_slippage_bps, null);
+
+  // Echoed on the order. Optional, so a pre-v0.7.3 server omitting it is not
+  // the same as a v0.7.3 server reporting `null` (placed without a cap).
+  const echoed: Pick<Order, "order_type" | "max_slippage_bps"> = {
+    order_type: "Market",
+    max_slippage_bps: 25,
+  };
+  const old: Pick<Order, "order_type"> = { order_type: "Market" };
+  assert.equal(echoed.max_slippage_bps, 25);
+  assert.equal((old as Order).max_slippage_bps, undefined);
+
+  // Withdrawal-wallet ownership proof: the challenge is echoed back verbatim.
+  const challenge: BridgeWalletChallenge = {
+    address: "0xabc",
+    nonce: "n-1",
+    message: "Nexus Exchange wants you to prove control of 0xabc\nnonce: n-1",
+    expires_at: 1776033911836,
+  };
+  const register: RegisterBridgeWalletRequest = {
+    address: challenge.address,
+    message: challenge.message,
+    signature: "0xsig",
+  };
+  const wallets: BridgeWalletsResponse = {
+    wallets: [{ address: "0xabc", verified: true, is_default: true }],
+  };
+  assert.equal(register.message, challenge.message);
+  assert.equal(wallets.wallets[0]!.address, "0xabc");
+
+  // The liquidations channel payload is externally tagged: exactly one variant.
+  const alert: LiquidationAlert = {
+    account_id: "0xabc",
+    // Portfolio-level alerts carry a null market_id — what the engine emits
+    // today, so a consumer must handle it.
+    market_id: null,
+    severity: "Critical",
+    equity: "1100",
+    maintenance_margin: "1000",
+    sequence: 42,
+    epoch: 7,
+    emitted_at: 1776033911836,
+  };
+  const closed: PortfolioLiquidation = {
+    account_id: "0xabc",
+    closures: [
+      {
+        market_id: "BTC-USDX-PERP",
+        position_size_closed: "0.5",
+        settlement_price: "48000",
+        settlement_amount: "24000",
+      },
+    ],
+    equity_before: "1000",
+    equity_after: "0",
+    sequence: 43,
+    epoch: 7,
+    emitted_at: 1776033911836,
+  };
+  const warning: LiquidationEvent = { LiquidationAlert: alert };
+  const terminal: LiquidationEvent = { PortfolioLiquidation: closed };
+  assert.equal(warning.LiquidationAlert?.severity, "Critical");
+  assert.equal(warning.PortfolioLiquidation, undefined);
+  assert.equal(terminal.PortfolioLiquidation?.closures.length, 1);
+  // `Unknown` is the forward-compatibility tier, not a severity claim.
+  const unknown: LiquidationAlert["severity"] = "Unknown";
+  assert.equal(unknown, "Unknown");
+
+  // /metadata: only the two version fields are required, so an older edge that
+  // reports nothing else must still typecheck.
+  const minimal: Metadata = {
+    current_api_version: "v0.7.3",
+    min_api_version: "v0.6.0",
+  };
+  const full: Metadata = {
+    ...minimal,
+    network: "testnet",
+    ws_url: "wss://api.testnet.nexus.xyz",
+    signing_domain: { name: "Nexus Exchange", version: "1", chain_id: null },
+    networks: {
+      testnet: {
+        network: "testnet",
+        label: "Testnet",
+        host: "api.testnet.nexus.xyz",
+        rest_base: "https://api.testnet.nexus.xyz/v1",
+        funds: "play",
+        faucet: true,
+        signing_domain: {
+          name: "Nexus Exchange",
+          version: "1",
+          chain_id: null,
+        },
+      },
+    },
+  };
+  assert.equal(minimal.signing_domain, undefined);
+  assert.equal(
+    full.networks!.testnet!.rest_base,
+    "https://api.testnet.nexus.xyz/v1",
+  );
+  // `network`/`funds` are open strings: an unrecognized value must still parse
+  // (and be treated as real funds by the caller).
+  const future: Metadata["network"] = "some-new-network";
+  assert.equal(future, "some-new-network");
+
+  // The 403 jurisdiction body, with an unrecognized code still assignable.
+  const blocked: JurisdictionError = {
+    code: "US_RESTRICTED",
+    message: "state-changing operations are unavailable from this origin",
+  };
+  const unrecognized: JurisdictionError["code"] = "SOME_NEW_CONTROL";
+  assert.equal(blocked.code, "US_RESTRICTED");
+  assert.equal(unrecognized, "SOME_NEW_CONTROL");
 });
 
 test("vendored spec carries no internal hosts or ENG/Linear references", () => {

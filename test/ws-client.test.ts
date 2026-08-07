@@ -5,6 +5,8 @@ import {
   createWsClient,
   type WsEvent,
   type WebSocketCtor,
+  type Channel,
+  type LiquidationEvent,
 } from "../src/index.ts";
 
 // ── Fake WebSocket harness ───────────────────────────────────────────────────
@@ -145,6 +147,72 @@ test("account-scoped channel without a tokenProvider throws", () => {
   reset();
   const client = createWsClient({ url: "ws://test", WebSocketImpl: Ctor });
   assert.throws(() => client.subscribe("orders"), /account-scoped/);
+  client.close();
+});
+
+// The per-account `liquidations` channel arrived in spec v0.7.3. Before it was
+// admitted here, `subscribe("liquidations")` threw and — worse — inbound frames
+// on it were dropped by the same guard in the message path, so an account could
+// miss a liquidation notice entirely. Pinned in both directions.
+test("liquidations is an account-scoped channel: gated, subscribable, delivered", async () => {
+  reset();
+  const unauthed = createWsClient({ url: "ws://test", WebSocketImpl: Ctor });
+  assert.throws(() => unauthed.subscribe("liquidations"), /account-scoped/);
+  unauthed.close();
+
+  reset();
+  const client = createWsClient({
+    url: "wss://test",
+    tokenProvider: makeTokenProvider(),
+    WebSocketImpl: Ctor,
+  });
+  const sub = client.subscribe("liquidations");
+  const iter = sub.events[Symbol.asyncIterator]();
+  const ws = await waitForSocket();
+  ws.open();
+  await tick();
+  assert.deepEqual(
+    ws.sent.map((m) => (m as { channel?: string }).channel),
+    ["liquidations"],
+  );
+
+  ws.emit({
+    op: "event",
+    channel: "liquidations",
+    market: null,
+    seq: 1,
+    payload: {
+      LiquidationAlert: {
+        account_id: "0xabc",
+        market_id: null,
+        severity: "Imminent",
+        equity: "1010",
+        maintenance_margin: "1000",
+        sequence: 9,
+        epoch: 1,
+        emitted_at: 1776033911836,
+      },
+    },
+  });
+
+  const evt = await nextEvent(iter);
+  assert.ok(evt !== "timeout", "liquidations frame was dropped");
+  assert.equal(evt.channel, "liquidations");
+  const payload = evt.data as LiquidationEvent;
+  assert.equal(payload.LiquidationAlert?.severity, "Imminent");
+  assert.equal(payload.PortfolioLiquidation, undefined);
+  client.close();
+});
+
+// Documented as reserved in v0.7.3: it acks subscriptions but publishes no
+// frames, so the SDK does not admit it yet.
+test("the reserved public `engine` channel is not accepted", () => {
+  reset();
+  const client = createWsClient({ url: "ws://test", WebSocketImpl: Ctor });
+  assert.throws(
+    () => client.subscribe("engine" as unknown as Channel),
+    /unknown channel/i,
+  );
   client.close();
 });
 
