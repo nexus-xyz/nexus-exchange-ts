@@ -491,6 +491,39 @@ one over an insecure `ws://` connection to a non-loopback host — use `wss://`.
 On Node < 22 (no global `WebSocket`), pass `WebSocketImpl` (e.g. the `ws`
 package). Call `client.close()` to tear everything down.
 
+### Cancel-on-disconnect
+
+Cancel-on-disconnect (COD) is an opt-in, per-account dead man's switch: when the
+account's last authenticated `/ws` connection drops and nothing reconnects within
+the exchange's grace window, every resting order is cancelled, so a crashed
+client cannot leave orders exposed.
+
+```ts
+const status = await client.setCancelOnDisconnect(true);
+if (!status.active) {
+  // Opted in, but the exchange has the feature switched off — nothing will
+  // cancel. `enabled` alone does NOT mean you are covered.
+}
+```
+
+Two things to get right, because neither raises an error:
+
+- **Check `active`, not `enabled`.** `enabled` is only your opt-in; `active` also
+  requires the exchange-side feature switch. `enabled: true, active: false` means
+  no cancel will fire. `grace_secs: null` likewise means the feature is
+  unavailable on that deployment. Use the status returned by
+  `setCancelOnDisconnect` rather than a follow-up `getCancelOnDisconnect` — a
+  separate read can race another session changing the same setting.
+- **Keep your reconnect backoff under `grace_secs`.** COD fires when nothing
+  reconnects in time, and `createWsClient` backs off up to `maxReconnectDelayMs`
+  (default `10_000`) — already at or past a `grace_secs` of 10. Under a sustained
+  outage a reconnect can land after the window has closed. Set
+  `maxReconnectDelayMs` comfortably below `grace_secs`, and treat any reconnect as
+  "my resting orders may be gone" — refetch rather than assume.
+
+COD covers `/ws` connections only. A client that trades purely over REST and never
+opens a socket is not protected no matter what the status says.
+
 ## Typed models
 
 `import { ... } from "@nexus-xyz/exchange-ts"` gives you typed

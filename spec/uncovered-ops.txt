@@ -41,6 +41,8 @@ GET /account/state
 GET /account/fees
 GET /account/portfolio-history
 GET /account/rate-limit
+GET /account/cancel-on-disconnect
+PUT /account/cancel-on-disconnect
 GET /positions
 GET /positions/closed
 GET /fills
@@ -88,11 +90,6 @@ GET /status
 GET /markets/{market_id}/risk-params
 GET /markets/{market_id}/adl-events
 GET /account/{address}/adl-history
-# Cancel-on-disconnect (both stacks).
-GET /account/cancel-on-disconnect
-PUT /account/cancel-on-disconnect
-GET /api/v1/account/cancel-on-disconnect
-PUT /api/v1/account/cancel-on-disconnect
 # Withdrawal wallets (v0.7.3). The two-step ownership proof:
 # `POST …/challenge` issues a message, the wallet signs it EIP-191, and
 # `POST …/wallets` registers the address. Modeled already

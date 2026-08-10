@@ -54,6 +54,8 @@ GET /api/v1/account/state
 GET /api/v1/account/fees
 GET /api/v1/account/portfolio-history
 GET /api/v1/account/rate-limit
+GET /api/v1/account/cancel-on-disconnect
+PUT /api/v1/account/cancel-on-disconnect
 GET /api/v1/positions
 GET /api/v1/positions/closed
 GET /api/v1/fills

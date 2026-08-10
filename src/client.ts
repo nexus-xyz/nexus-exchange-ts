@@ -39,6 +39,7 @@ import type {
   BridgeDeposit,
   BridgeDepositAddress,
   BridgeDepositStatus,
+  CancelOnDisconnectStatus,
   Candle,
   ClosedPosition,
   CreateBridgeDepositAddressRequest,
@@ -1326,6 +1327,71 @@ export class Client {
       signed: true,
       signal: opts?.signal,
     });
+  }
+
+  /**
+   * `GET /account/cancel-on-disconnect` — the account's cancel-on-disconnect
+   * (COD) status.
+   *
+   * COD is an opt-in, per-account **dead man's switch**: when the account's last
+   * authenticated `/ws` connection drops and nothing reconnects within the grace
+   * window, the exchange cancels every resting order, so a crashed client cannot
+   * leave orders exposed.
+   *
+   * **Read {@link CancelOnDisconnectStatus.active}, not `enabled`.** `enabled` is
+   * only the account's own opt-in; `active` additionally requires the
+   * exchange-side feature switch. `enabled: true, active: false` means the
+   * exchange has COD switched off and **no cancel will fire** — the protection a
+   * caller thinks it armed is not there. Same for `grace_secs: null`, which means
+   * the feature is unavailable on this deployment. Neither is an error, so
+   * nothing throws; a caller that only checks `enabled` gets silent false
+   * comfort.
+   *
+   * **COD covers `/ws` connections only.** A client that trades purely over REST
+   * and never opens a socket is not protected no matter what this returns.
+   */
+  getCancelOnDisconnect(opts?: {
+    signal?: AbortSignal;
+  }): Promise<CancelOnDisconnectStatus> {
+    return this.#request<CancelOnDisconnectStatus>(
+      "GET",
+      "/account/cancel-on-disconnect",
+      { signed: true, signal: opts?.signal },
+    );
+  }
+
+  /**
+   * `PUT /account/cancel-on-disconnect` — arm or disarm cancel-on-disconnect for
+   * the account. Off by default: a passive resting order left deliberately while
+   * offline should not be cancelled by a brief blip. Returns the **resulting**
+   * status, which is the value to trust — see {@link getCancelOnDisconnect} for
+   * why `active` and not `enabled` is the field that says whether COD will fire.
+   * Use the returned status rather than following up with a read: a separate
+   * read can race another session changing the same account setting.
+   *
+   * Safe to retry. `PUT` is in the idempotent set, so a transient failure is
+   * retried automatically — correct here only because the body carries an
+   * absolute state (`enabled: true|false`), not a toggle, so applying it twice
+   * lands on the same setting.
+   *
+   * **Mind the grace window against your reconnect backoff.** COD fires when
+   * nothing reconnects within `grace_secs`, and this SDK's own WebSocket client
+   * backs off up to `maxReconnectDelayMs` (default `10_000`) between attempts —
+   * already at or past a `grace_secs` of 10. Under a sustained outage the
+   * reconnect can therefore land *after* the window has closed and the orders are
+   * gone. If you arm COD, set `maxReconnectDelayMs` comfortably below
+   * `grace_secs` and treat a reconnect as "positions may have changed" — refetch
+   * rather than assuming your resting orders survived.
+   */
+  setCancelOnDisconnect(
+    enabled: boolean,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CancelOnDisconnectStatus> {
+    return this.#request<CancelOnDisconnectStatus>(
+      "PUT",
+      "/account/cancel-on-disconnect",
+      { body: { enabled }, signed: true, signal: opts?.signal },
+    );
   }
 
   /** `POST /account/credit` — claim testnet faucet credit. */
