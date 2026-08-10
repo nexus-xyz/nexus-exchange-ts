@@ -746,15 +746,21 @@ function isRedirectResponse(res: Response): boolean {
  * The terminal error for a redirect stopped by {@link isRedirectResponse}.
  *
  * `Location` is attacker-influenced text, so it goes through the same scrub and
- * length bound as any other error body before it is surfaced or logged. On an
- * opaque redirect it is unreadable, and `status` is `0`; the message says so
- * rather than implying the server sent no target.
+ * length bound as any other error body before it is surfaced or logged.
+ *
+ * Three cases, kept distinct because they point at different things when someone
+ * is debugging: a readable target; an opaque redirect, where the runtime hides
+ * the target from us (`status` is `0` too); and a real 3xx that carried no
+ * `Location` at all, which is the server misbehaving rather than the runtime
+ * withholding.
  */
 function redirectError(res: Response): ApiError {
   const target = res.headers.get("location");
   const where = target
     ? `to ${JSON.stringify(sanitizeErrorBody(target))}`
-    : "(target not readable from this runtime)";
+    : res.type === "opaqueredirect"
+      ? "(target not readable from this runtime)"
+      : "(no Location header)";
   return new ApiError(res.status, "", {
     message:
       `refusing to follow a redirect ${where}. The API declares no 3xx on any ` +

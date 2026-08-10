@@ -53,11 +53,15 @@ answer `403` from a jurisdiction control: an `ApiError` whose `code` is
 Match on `code`, never the message, and treat every reason — including one you do
 not recognize — as permanent: `transient` is `false`, so retrying cannot help.
 
-Redirects are never followed. No operation in the spec answers 3xx, so a redirect
-means the path is not served at the configured `baseUrl` — and following one would
-drop the request body, turn a `POST` into a `GET`, and forward the request's
-signature headers to another host. The client stops at the redirect and raises a
-terminal `ApiError` naming the target instead.
+Redirects are never followed, because following one would leak a credential:
+`fetch`'s default forwards the `X-Nexus-Key-Id` / `X-Nexus-Signature` headers
+across an origin change (it strips `Authorization`, but not custom headers), so a
+signed request answered with a `301` would hand a valid HMAC signature to a host
+that is not the API — while also dropping the body and turning the `POST` into a
+`GET`. No operation in the spec answers 3xx, so a redirect only ever means the
+path is not served at the configured `baseUrl`. The client stops at it and raises
+a terminal `ApiError` naming the target instead — terminal, so a retry cannot send
+further copies of the signature.
 
 ### Authentication
 

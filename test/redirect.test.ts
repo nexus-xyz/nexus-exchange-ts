@@ -103,7 +103,9 @@ test("adjustMargin surfaces the redirect too, and never re-sends", async () => {
   assert.equal(calls.length, 1);
 });
 
-test("a redirect with no readable Location still fails loudly", async () => {
+// A 3xx that carried no `Location` is the server misbehaving; the message says
+// that, rather than the runtime-withheld wording the opaque case below gets.
+test("a 3xx with no Location still fails loudly", async () => {
   const { client: c } = client(redirect(303, null));
   const err = await c.getAccountSummary().then(
     () => null,
@@ -111,7 +113,7 @@ test("a redirect with no readable Location still fails loudly", async () => {
   );
   assert.ok(err instanceof ApiError);
   assert.equal(err.status, 303);
-  assert.match(err.message, /target not readable/);
+  assert.match(err.message, /no Location header/);
 });
 
 // A browser under `redirect: "manual"` returns an *opaque* redirect instead of the
