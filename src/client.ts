@@ -709,6 +709,69 @@ function basePathOf(baseUrl: string): string {
 }
 
 /**
+ * Whether the server answered with a redirect, which this client refuses to
+ * follow (`redirect: "manual"` on every request).
+ *
+ * **Why not follow it.** No operation in the API declares a 3xx, so a redirect
+ * always means "the path you asked for is not served here" — and following one is
+ * not a harmless re-send of the same request. Measured against
+ * `exchange.nexus.xyz` while verifying ENG-8463, every host-root path answers
+ * `301 → https://nexus.xyz/exchange/…` (the marketing site), and `fetch`'s default
+ * would then:
+ *
+ *   * rewrite the `POST` to a `GET` and drop the body, per the redirect rules for
+ *     301/302 — so a money-moving call (`deposit()`, `adjustMargin()`) silently
+ *     becomes a read of an unrelated page instead of failing;
+ *   * strip `Authorization` across the origin change but **forward** the custom
+ *     `X-Nexus-Key-Id` / `X-Nexus-Signature` headers, handing a valid HMAC
+ *     signature to a host that is not the API.
+ *
+ * Neither is recoverable by retrying, so {@link redirectError} reports it as a
+ * terminal {@link ApiError} (not a transient {@link TransportError}) — one loud
+ * failure rather than `maxRetries` further copies of the signature.
+ *
+ * Two response shapes, because `redirect: "manual"` differs by runtime: Node
+ * returns the real 3xx with `Location` readable, while a browser returns an
+ * *opaque* redirect (`type: "opaqueredirect"`, `status: 0`, no headers). Both are
+ * matched. A `304` cannot arise — the client sends no conditional headers — and if
+ * one somehow did, failing loudly here is still the right answer.
+ */
+function isRedirectResponse(res: Response): boolean {
+  return (
+    res.type === "opaqueredirect" || (res.status >= 300 && res.status <= 399)
+  );
+}
+
+/**
+ * The terminal error for a redirect stopped by {@link isRedirectResponse}.
+ *
+ * `Location` is attacker-influenced text, so it goes through the same scrub and
+ * length bound as any other error body before it is surfaced or logged.
+ *
+ * Three cases, kept distinct because they point at different things when someone
+ * is debugging: a readable target; an opaque redirect, where the runtime hides
+ * the target from us (`status` is `0` too); and a real 3xx that carried no
+ * `Location` at all, which is the server misbehaving rather than the runtime
+ * withholding.
+ */
+function redirectError(res: Response): ApiError {
+  const target = res.headers.get("location");
+  const where = target
+    ? `to ${JSON.stringify(sanitizeErrorBody(target))}`
+    : res.type === "opaqueredirect"
+      ? "(target not readable from this runtime)"
+      : "(no Location header)";
+  return new ApiError(res.status, "", {
+    message:
+      `refusing to follow a redirect ${where}. The API declares no 3xx on any ` +
+      `operation, so this means the requested path is not served at this base ` +
+      `URL — check \`baseUrl\`/\`network\`. Following it would drop the request ` +
+      `body, turn a POST into a GET, and forward this request's signature ` +
+      `headers to another host.`,
+  });
+}
+
+/**
  * Build a URL-encoded query string from the given params, dropping `undefined`
  * and `null` values. Insertion order is preserved so the signed canonical query
  * and the sent query are byte-for-byte identical.
@@ -2020,6 +2083,10 @@ export class Client {
       // Never attach ambient cookies/credentials to API calls — auth is
       // explicit via signed headers only.
       credentials: "omit",
+      // Stop at a redirect instead of following it (`fetch`'s default). See
+      // {@link isRedirectResponse} for why following one is unsafe here, and for
+      // what each runtime returns under `"manual"`.
+      redirect: "manual",
     };
     // `cache` is a browser-only fetch option (not in Node's RequestInit types);
     // set it at runtime so browser consumers don't serve stale market data.
@@ -2033,6 +2100,12 @@ export class Client {
         err instanceof Error ? err.message : String(err),
         { cause: err },
       );
+    }
+
+    if (isRedirectResponse(res)) {
+      // Drain the (uninteresting) redirect body so the socket is released.
+      await res.text().catch(() => "");
+      throw redirectError(res);
     }
 
     if (!res.ok) {

@@ -63,9 +63,11 @@ DELETE /orders
 # and these lines stay put.
 #
 # The first two are different: ENG-8463 — `POST /api/v1/account/deposit` and
-# `POST /api/v1/account/margin` appear to be routed nowhere, so `deposit()` and
-# `adjustMargin()` are probably calling a path that 404s. If that is confirmed,
-# the client moves to the bare paths below and these two lines go away.
+# `POST /api/v1/account/margin` were measured to 404, but so is every other
+# `/api/v1` path on the public host, and the bare forms below 301 to the marketing
+# site rather than reaching the engine. The client therefore keeps its `/api/v1`
+# paths (see the CODE_ONLY_OPS group-(2) note in check-spec-drift.mjs for the probe
+# results) and these two lines stay put with the rest.
 POST /account/deposit
 POST /account/margin
 GET /deposits
