@@ -42,6 +42,10 @@ export {
   API_BASE_PATH,
   networkConfig,
   baseUrlForNetwork,
+  // A target this SDK does not name — a private stage, a preview host — built by
+  // the caller so no hostname for one is published here. Accepted as `network`
+  // anywhere a `Network` member is.
+  customNetwork,
   DEFAULT_USER_AGENT,
   // Per-endpoint `limit` (page size) maxima for the cursor-paginated endpoints.
   TRADES_LIMIT_MAX,
@@ -51,6 +55,12 @@ export {
   EQUITY_HISTORY_LIMIT_MAX,
   type ClientOptions,
   type NetworkConfig,
+  type CustomNetworkOptions,
+  // `Network | NetworkConfig` — what every network-taking API accepts.
+  type NetworkSelector,
+  // Tri-state funds classification: "real" | "play" | "unknown", required on a
+  // custom target and never defaulted.
+  type Funds,
   // The SDK's static per-network EIP-712 domain. The spec's `SigningDomain`
   // model (the `/metadata` wire shape) comes from ./models above — same concept,
   // two shapes, so they carry two names.
