@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Nexus Exchange API",
-    "description": "Perpetual futures exchange with HMAC API key authentication for trading endpoints, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Networks\n\nThe API is served per **network**, and the network is the *host* — not a path, not a header, and not a release channel. Two public networks:\n\n| Network | REST base | WebSocket | Funds |\n|---|---|---|---|\n| **Testnet** | `https://api.testnet.nexus.xyz/v1` | `wss://api.testnet.nexus.xyz` | play — synthetic USDX from the faucet, no real-world value |\n| **Mainnet** | `https://api.nexus.xyz/v1` | `wss://api.nexus.xyz` | **real** — USDX bridged from Ethereum Mainnet |\n\nWebSocket paths are identical on every host: market data at `…/stream`, authenticated at `…/ws?token=…`. `x-nexus-networks` is the machine-readable form of this table and the single place to copy the map from; it also carries `local` (`http://localhost:9090`) as a developer convenience.\n\nMainnet is the real-funds exchange running against **Ethereum Mainnet via the USDX bridge** — it is not a Nexus L1 chain. Testnet has a faucet (`POST /faucet`, `POST /account/credit`); mainnet has none, and collateral arrives through the bridge instead.\n\n**Mainnet is deliberately off-pattern.** It takes the bare `api.nexus.xyz`, so `api.{network}.nexus.xyz` is wrong for exactly one network — the real-funds one. Interpolating the network into the host resolves in dev, staging and testnet and fails only where it cannot be rehearsed. Copy the explicit map instead, with mainnet as a named case.\n\n**Credentials do not cross networks.** Session tokens, HMAC API keys, and agent keys are per-network; a key minted on testnet cannot sign for mainnet. Signatures, nonces, and agent registrations are network-scoped too — the EIP-712 signing domain differs per network (see `POST /agents/register`), which is what makes an action signed for one network invalid on the other. Never replay one network's signed payloads against another, and if you cannot determine the signing domain for the network you are on, refuse to sign rather than guess.\n\n**No implicit default, and no blanket redirect.** There is no default network — select one explicitly. `servers[0]` is still the legacy gateway base `https://exchange.nexus.xyz/api/exchange`, which serves **testnet**, so existing clients keep working unchanged; when it retires, its traffic belongs on `api.testnet.nexus.xyz`, never on the bare `api.nexus.xyz`. Pointing the legacy host at mainnet would silently move play-funds clients onto real funds.\n\n### Base paths and the signed path\n\nBare operation paths in this document (`/orders`) resolve against whichever base you select: `…/api/exchange/orders` on the legacy gateway base, `…/v1/orders` on a per-network `api.` base. Operations whose path already begins with `/api/v1` are the legacy host's spelling of the same direct versioned surface and carry their own `servers` override; on the `api.` hosts that surface is reached as `/v1/<path>`, because the `api.` prefix moved into the host rather than being repeated in the path. Operations still served only by the transitional gateway proxy move under `/v1` as it is retired.\n\nMigrating is two independent steps, in this order: the base-path move on the current host (`/api/exchange/*` → `/api/v1/*`), then the host move (`exchange.nexus.xyz/api/v1/*` → `api.testnet.nexus.xyz/v1/*`). Both change the request path — and **the path is part of the HMAC canonical string** — so a client that repoints its base URL without signing the new path gets `401`. Change the signed path and the base together.\n\n### Discovering targets at runtime\n\n`/metadata` — served by the edge, not an operation in this contract — publishes the network it is serving, the per-network REST and WebSocket targets, and the EIP-712 signing domain, so clients and agents can discover targets rather than hardcode them. The `Metadata` schema documents the payload. Everything beyond `current_api_version` and `min_api_version` is optional: an older edge may omit it, in which case fall back to `x-nexus-networks` — except the signing domain, which must never be guessed.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never uses them for authentication, authorization, or routing, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.\n\n## API version support\n\nThe version identifier is the released spec tag of this contract (`vMAJOR.MINOR.PATCH`) — the tag every official SDK pins and reports in `X-Nexus-Api-Version`. The edge publishes the versions it accepts at the `/metadata` endpoint — served by the edge, not an operation in this contract — returning `current_api_version` (latest tag served) and `min_api_version` (oldest tag still accepted), so clients and agents can discover the support window programmatically.\n\nPre-1.0 (`v0.x.y`), breaking changes are frequent and `min_api_version` may advance with any breaking release; a released tag stays supported for at least 14 days after the release that supersedes it, and this window widens after 1.0. A request whose `X-Nexus-Api-Version` names a recognized tag older than `min_api_version` receives a machine-readable `426 Upgrade Required` (error code `api_version_unsupported`) with a link to the current spec, so tooling and agents can detect the skew and upgrade. A missing, malformed, or unknown version header is treated as an unknown/legacy client and is not blocked. Because the header is unauthenticated (excluded from the HMAC canonical string), this version gate is a compatibility courtesy, not a security control — authentication and authorization never depend on it, and spoofing the header only relaxes the gate.\n\n## Jurisdiction restrictions\n\nTwo independent geo controls can refuse a request with `403`. They are told apart by the machine-readable `code` in the body and the identical `x-nexus-block-reason` response header, never by the status code alone.\n\n- **`RESTRICTED_JURISDICTION`** — the venue's published sanctions list. It applies to **every** operation in this contract, reads included, so it is not repeated per-operation below. Treat it as possible on any request.\n- **`US_RESTRICTED`** — state-changing operations only. Market data, order-book, account and position reads, the WebSocket stream, order cancellation and withdrawals are unaffected: this is a read-only posture, not a block. The operations it can refuse declare a `403` explicitly.\n- **`GEO_UNRESOLVED`** — a state-changing operation could not be attributed to a country (no usable client address), so it failed closed. This is **not** a claim about where the caller is; it is an operational signal, kept distinct precisely so that a proxy misconfiguration is never reported as \"you are in the United States\".\n\n**Do not retry any of them.** All three are permanent for the caller's origin: no amount of backoff changes the outcome, and a retry loop against a permanent condition is the failure mode this taxonomy exists to prevent. That is what separates a `403` here from `401` (re-authenticate, then retry) and `429` (back off, then retry). Surface it to the operator instead — and for `GEO_UNRESOLVED`, surface it as a configuration problem rather than a jurisdiction one.\n\nTreat an unrecognized `code` on a `403` that carries `x-nexus-block-reason` the same way: refused, permanent, not retryable. Codes are added additively, so a closed client-side enum will go stale.\n\nWhich controls are in force, and over which countries, is per-deployment configuration and is not part of this contract; testnet deployments are not subject to the write restriction. Write clients should handle the error regardless of which deployment they are pointed at.\n\n**Over WebSocket** there is no refusal frame, because there is no state-changing WebSocket operation: the inbound `/ws` envelope accepts `subscribe` and `unsubscribe` only, and order submission is REST-only. If a state-changing inbound op is ever added it must carry these same codes so both surfaces agree.",
-    "version": "0.7.3"
+    "description": "Perpetual futures exchange with HMAC API key authentication for trading endpoints, tiered rate limiting, and real-time WebSocket streaming across 32 markets.\n\n## Networks\n\nThe API is served per **network**, and the network is the *host* — not a path, not a header, and not a release channel. Two public networks:\n\n| Network | REST base | WebSocket | Funds |\n|---|---|---|---|\n| **Testnet** | `https://api.testnet.nexus.xyz/v1` | `wss://api.testnet.nexus.xyz` | play — synthetic USDX from the faucet, no real-world value |\n| **Mainnet** | `https://api.nexus.xyz/v1` | `wss://api.nexus.xyz` | **real** — USDX bridged from Ethereum Mainnet |\n\nWebSocket paths are identical on every host: market data at `…/stream`, authenticated at `…/ws?token=…`. `x-nexus-networks` is the machine-readable form of this table and the single place to copy the map from; it also carries `local` (`http://localhost:9090`) as a developer convenience.\n\nMainnet is the real-funds exchange running against **Ethereum Mainnet via the USDX bridge** — it is not a Nexus L1 chain. Testnet has a faucet (`POST /faucet`, `POST /account/credit`); mainnet has none, and collateral arrives through the bridge instead.\n\n**Mainnet is deliberately off-pattern.** It takes the bare `api.nexus.xyz`, so `api.{network}.nexus.xyz` is wrong for exactly one network — the real-funds one. Interpolating the network into the host resolves in dev, staging and testnet and fails only where it cannot be rehearsed. Copy the explicit map instead, with mainnet as a named case.\n\n**Credentials do not cross networks.** Session tokens, HMAC API keys, and agent keys are per-network; a key minted on testnet cannot sign for mainnet. Signatures, nonces, and agent registrations are network-scoped too — the EIP-712 signing domain differs per network (see `POST /agents/register`), which is what makes an action signed for one network invalid on the other. Never replay one network's signed payloads against another, and if you cannot determine the signing domain for the network you are on, refuse to sign rather than guess.\n\n**No implicit default, and no blanket redirect.** There is no default network — select one explicitly. `servers[0]` is still the legacy gateway base `https://exchange.nexus.xyz/api/exchange`, which serves **testnet**, so existing clients keep working unchanged; when it retires, its traffic belongs on `api.testnet.nexus.xyz`, never on the bare `api.nexus.xyz`. Pointing the legacy host at mainnet would silently move play-funds clients onto real funds.\n\n### Base paths and the signed path\n\nBare operation paths in this document (`/orders`) resolve against whichever base you select: `…/api/exchange/orders` on the legacy gateway base, `…/v1/orders` on a per-network `api.` base. Operations whose path already begins with `/api/v1` are the legacy host's spelling of the same direct versioned surface and carry their own `servers` override; on the `api.` hosts that surface is reached as `/v1/<path>`, because the `api.` prefix moved into the host rather than being repeated in the path. Operations still served only by the transitional gateway proxy move under `/v1` as it is retired.\n\nMigrating is two independent steps, in this order: the base-path move on the current host (`/api/exchange/*` → `/api/v1/*`), then the host move (`exchange.nexus.xyz/api/v1/*` → `api.testnet.nexus.xyz/v1/*`). Both change the request path — and **the path is part of the HMAC canonical string** — so a client that repoints its base URL without signing the new path gets `401`. Change the signed path and the base together.\n\n### Discovering targets at runtime\n\n`/metadata` — served by the edge, not an operation in this contract — publishes the network it is serving, the per-network REST and WebSocket targets, and the EIP-712 signing domain, so clients and agents can discover targets rather than hardcode them. The `Metadata` schema documents the payload. Everything beyond `current_api_version` and `min_api_version` is optional: an older edge may omit it, in which case fall back to `x-nexus-networks` — except the signing domain, which must never be guessed.\n\n## API keys are bound to one network\n\nAn API key is valid on exactly one network. There is no shared key store across networks, so a testnet key cannot authenticate against the real-funds mainnet instance and a mainnet key cannot authenticate against testnet. The rule to internalize is narrower — and simpler — than “one key per network”: **a credential belongs to the host that minted it.**\n\n**Calling `POST /keys` is the binding decision, and the host is its only input.** There is no network parameter in the request and none in the response: the key belongs to the network of the instance that minted it. Mint against `api.testnet.nexus.xyz` and you hold a play-funds key; mint against `api.nexus.xyz` and you hold a real-funds one. `POST /auth/login` is scoped the same way, so sign in and mint on the host you intend to trade against — a session token borrowed from another network is refused at `POST /keys` like any invalid token.\n\n**The guarantee does not come from the signature.** The HMAC canonical string has no network component (see `hmacAuth`), so a signed request is byte-identical on every host; what refuses it elsewhere is that the key is absent from that host's key store entirely. Refusal happens where the store is loaded rather than per request, which is what makes this a structural property of the deployment rather than a check some future code path could skip. Do not read the network's absence from the canonical string as licence to replay a signed payload against another host.\n\n**A wrong-network key is deliberately indistinguishable from one that never existed.** It is refused with the same opaque `401` as an unknown key, with no hint that the key is live elsewhere, so that a guessed key id cannot be confirmed against the other network. Two consequences for clients:\n\n- **Do not retry, and never fail over to another host.** The refusal is permanent for that key on that host: no backoff changes it, and re-sending the request to the other network is the one “recovery” that must never be automated — it points a client that believed it was on play funds at real ones.\n- **Do not read it as key loss.** A `401` straight after a base-URL change is almost always the credential and the host disagreeing, not a deleted key; check which host minted the key before re-minting or escalating. The same `401` is equally consistent with a stale timestamp or a signature computed over the old path (see “Base paths and the signed path”), which is a further reason not to infer the cause from the status alone.\n\n**Revocation is scoped the same way.** `GET /keys` lists only the keys of the host serving the request, and `DELETE /keys/{key_id}` deletes only there. A key missing from that list, or a `404` from the delete, says nothing about any other network and is never evidence that a key has been retired — to retire a leaked key, revoke it on the host that minted it and confirm the revocation there.\n\n**Keys minted before network stamping existed** are adopted on first load by testnet and local instances and refused outright by mainnet: an unstamped key proves nothing about where it came from, and a real-funds instance will not assume. A long-lived key that stops working on mainnet and nowhere else needs replacing with one minted against mainnet.\n\nTreat network scoping as the *weakest* isolation you are promised, never the strongest. Keys are guaranteed not to cross networks; nothing here promises they are shared between two deployments of the same network. The minting host stays the only host a credential is known to be valid on.\n\n## Request conventions\n\nEvery official client (SDK, CLI, MCP server) sends two advisory headers on **every** request:\n\n- **`X-Nexus-Api-Version`** — the released spec tag the client was compiled/pinned against, e.g. `v0.7.0` (format `vMAJOR.MINOR.PATCH`, matching the client's `.api-version`). Lets the edge attribute traffic to a spec version and enables future compatibility handling.\n- **`User-Agent`** — `nexus-exchange-<lang>/<version>`, e.g. `nexus-exchange-rs/0.5.1`, for per-client usage metering.\n\nBoth are **advisory and optional**: the server accepts requests when a header is missing, malformed, or names an unknown tag — it never uses them for authentication, authorization, or routing, and treats a missing value as an unknown/legacy client. They are **not** part of the HMAC canonical signing string, so they are unauthenticated and can be altered in transit; never trust them for authentication, authorization, or access control. They are for observability and usage metering only. See the reusable `NexusApiVersion` and `UserAgent` header parameters under `components.parameters`.\n\n## Rate limits\n\nEvery authenticated request is charged against a **token bucket that refills continuously at your tier's per-second rate**, with a capacity of exactly one second of tokens — so the sustained rate and the burst are the same number, and `remaining` never exceeds `limit`.\n\n**`limit` is a budget of weight per second, not a count of requests.** Most requests cost one unit. Heavy aggregate and history reads cost **5**, because each folds or scans a large per-account buffer: `/account/summary`, `/fills`, `/orders/history` and `/account/portfolio-history`. A batch order submit costs `1 + floor(order_count / 40)`, so up to 40 orders cost the same as one and every further 40 adds a unit; a batch the server cannot parse is charged the base unit rather than rejected over weighting. A Pro caller at `limit: 20` can therefore make 20 ticker reads per second — or 4 `/fills` reads. Pace on the weight, not on the request count. A single request's cost is capped at one second of tokens, so an oversized batch can never be permanently unsatisfiable.\n\nOperations costing more than one unit carry **`x-nexus-rate-limit-weight`** (an integer), and those whose cost depends on the request body also carry **`x-nexus-rate-limit-weight-formula`**. **Absence of the marker means weight 1.** They are the machine-readable form of the paragraph above, for client-side limiters; like every ceiling here they are current configuration rather than a frozen contract.\n\n### Resource classes\n\nThree budgets, independent of one another. Spending one does not spend the others, and each refuses separately:\n\n| Class | Covers | Charged against |\n|---|---|---|\n| **Requests** | every REST operation that is not an order write | the per-key and per-owner request buckets |\n| **Trading actions** | `POST`, `PATCH` and `DELETE` under `/orders`, marked `x-nexus-rate-limit-class: trading` | a dedicated order bucket of the same per-second size |\n| **WebSocket control plane** | connections, subscriptions and inbound client frames | per-tier ceilings, documented on `/ws` |\n\nAn order write is charged to the trading bucket **instead of** the request bucket, not in addition — so order flow cannot be starved by polling, nor polling by order flow. That independence is a property of the per-owner tiers and does **not** extend to `Unlimited`, which draws reads and order writes from one shared per-IP bucket — see “Tiers and current ceilings”. The consequence worth internalizing: a healthy `x-ratelimit-remaining` on your last read says nothing about your order-placement headroom, and `/account/rate-limit` reports the request class only.\n\n`POST /orders/preview` is a trading action as well, which catches people out: it is a write on the `/orders` surface and costs a trading-class unit exactly as placing an order does. Previewing before every order therefore halves your effective placement rate — budget two trading-class charges per order placed that way, or skip the preview once you already know the sizing.\n\nA caller presenting an HMAC key passes a per-key bucket and then the per-owner bucket for its tier; the effective ceiling is whichever binds first. `/account/rate-limit` reports that minimum, and polling it is free — it is the one operation that consumes no tokens.\n\n### Headers\n\n- On every authenticated response: **`x-ratelimit-limit`** and **`x-ratelimit-remaining`**.\n- On a `429` only, additionally: **`x-ratelimit-reset`** (unix seconds) and **`retry-after`** (seconds, never below 1). Do not expect either on a success — a client that reads `x-ratelimit-reset` off a 2xx will read nothing.\n\n**`remaining` and `retry-after` are deliberately in different units.** `remaining` is expressed in unit-cost requests — `x-ratelimit-remaining: 10` means ten weight-1 requests *or* two heavy ones — while `retry-after` is derived from the weighted cost of the request that was refused. A limiter that reads `remaining` as “requests of the kind I am about to send” will over-send on heavy endpoints and 429 itself.\n\nA `429` body is `{\"code\": \"RATE_LIMIT_EXCEEDED\", \"message\": …, \"tier\": …}`. Branch on `code`. The `message` names which pool bottlenecked — `Rate limit exceeded`, `API key rate limit exceeded`, or `Order placement rate limit exceeded` — and is a diagnostic: its wording is not stable and must not be matched programmatically.\n\nUnlike the `403` jurisdiction refusals, a `429` **is** retryable: honour `retry-after` and back off. Pacing off `x-ratelimit-remaining` beats discovering the ceiling by hitting it.\n\n### Tiers and current ceilings\n\nTiers are multipliers on one model, not different models. These numbers are per-deployment configuration and not part of this contract — read `/account/rate-limit` rather than hardcoding them:\n\n| Tier | Requests | Trading actions | WS connections | WS subscriptions | WS inbound frames |\n|---|---|---|---|---|---|\n| `Pro` | 20/s | 20/s | 5 | 50 | 10/s |\n| `MarketMaker` | 2,000/s | 2,000/s | 100 | 1,000 | 50/s |\n| `Unlimited` | per-IP, 50/s | per-IP, 50/s — the same bucket as reads | exempt | exempt | exempt |\n\n`Unlimited` is for gateway keys that multiplex many users; it is never assigned to a trading account, and its traffic is bucketed per client IP instead. Order writes on that tier are **not** exempt from rate limiting: they skip the dedicated trading bucket and are charged to the same per-IP bucket as reads, so the class independence above does not hold there — a gateway's order flow can be crowded out by its own polling, on the tier whose traffic mix is least predictable. The WS ceilings it is exempt from are the **per-account** ones; the per-IP connection cap described on `/ws` still applies. Requests whose client IP cannot be resolved are not admitted unthrottled — they share one strict bucket, so an unresolvable origin degrades to a low ceiling rather than to no ceiling.\n\n**Budgets are per-network**, because each network is its own deployment: spending on testnet does not reduce mainnet headroom, and neither does the reverse. Credentials do not cross networks either — see “Networks”.\n\n## API version support\n\nThe version identifier is the released spec tag of this contract (`vMAJOR.MINOR.PATCH`) — the tag every official SDK pins and reports in `X-Nexus-Api-Version`. The edge publishes the versions it accepts at the `/metadata` endpoint — served by the edge, not an operation in this contract — returning `current_api_version` (latest tag served) and `min_api_version` (oldest tag still accepted), so clients and agents can discover the support window programmatically.\n\nPre-1.0 (`v0.x.y`), breaking changes are frequent and `min_api_version` may advance with any breaking release; a released tag stays supported for at least 14 days after the release that supersedes it, and this window widens after 1.0. A request whose `X-Nexus-Api-Version` names a recognized tag older than `min_api_version` receives a machine-readable `426 Upgrade Required` (error code `api_version_unsupported`) with a link to the current spec, so tooling and agents can detect the skew and upgrade. A missing, malformed, or unknown version header is treated as an unknown/legacy client and is not blocked. Because the header is unauthenticated (excluded from the HMAC canonical string), this version gate is a compatibility courtesy, not a security control — authentication and authorization never depend on it, and spoofing the header only relaxes the gate.\n\n## Jurisdiction restrictions\n\nTwo independent geo controls can refuse a request with `403`. They are told apart by the machine-readable `code` in the body and the identical `x-nexus-block-reason` response header, never by the status code alone.\n\n- **`RESTRICTED_JURISDICTION`** — the venue's published sanctions list. It applies to **every** operation in this contract, reads included, so it is not repeated per-operation below. Treat it as possible on any request.\n- **`US_RESTRICTED`** — state-changing operations only. Market data, order-book, account and position reads, the WebSocket stream, order cancellation and withdrawals are unaffected: this is a read-only posture, not a block. The operations it can refuse declare a `403` explicitly.\n- **`GEO_UNRESOLVED`** — a state-changing operation could not be attributed to a country (no usable client address), so it failed closed. This is **not** a claim about where the caller is; it is an operational signal, kept distinct precisely so that a proxy misconfiguration is never reported as \"you are in the United States\".\n\n**Do not retry any of them.** All three are permanent for the caller's origin: no amount of backoff changes the outcome, and a retry loop against a permanent condition is the failure mode this taxonomy exists to prevent. That is what separates a `403` here from `401` (re-authenticate, then retry) and `429` (back off, then retry). Surface it to the operator instead — and for `GEO_UNRESOLVED`, surface it as a configuration problem rather than a jurisdiction one.\n\nTreat an unrecognized `code` on a `403` that carries `x-nexus-block-reason` the same way: refused, permanent, not retryable. Codes are added additively, so a closed client-side enum will go stale.\n\nWhich controls are in force, and over which countries, is per-deployment configuration and is not part of this contract; testnet deployments are not subject to the write restriction. Write clients should handle the error regardless of which deployment they are pointed at.\n\n**Over WebSocket** there is no refusal frame, because there is no state-changing WebSocket operation: the inbound `/ws` envelope accepts `subscribe` and `unsubscribe` only, and order submission is REST-only. If a state-changing inbound op is ever added it must carry these same codes so both surfaces agree.",
+    "version": "0.8.1"
   },
   "servers": [
     {
@@ -24,7 +24,7 @@
     }
   ],
   "x-nexus-networks": {
-    "description": "Authoritative network → target map. The public network axis is **testnet** (play funds) vs **mainnet** (real funds); `local` is a developer convenience, not a public network. The network is carried in the host, not in the path, and each host is its own origin terminating its own TLS and WebSocket upgrades.\n\n**Never derive a host by interpolating the network name.** Mainnet is deliberately off-pattern — `api.nexus.xyz`, not `api.mainnet.nexus.xyz` — so `api.{network}.nexus.xyz` resolves for every environment that can be tested and fails only on real funds, which is the one environment that cannot be rehearsed. Consumers (SDK network enums, CLI config, CORS allowlists, deploy env blocks) must copy this map with mainnet as a named case.\n\n**Credentials never cross networks.** Session tokens, HMAC API keys, and agent keys are minted per network and are invalid on any other, so a key leaked or misconfigured on testnet cannot sign for real funds. A client that switches network must also switch credentials, and must never carry a signature, nonce, or agent registration across networks.\n\n**Operation availability.** An operation carrying `x-nexus-network-availability` is served only on the networks it lists — today just the synthetic-funding operations, which are testnet-only. No marker means the operation is not network-restricted.\n\n**Non-public environments are deliberately absent.** Internal mainnet, staging, and devnet have no decided public API host; nothing here should be extrapolated to them. Treat a network identifier you do not recognize as **real funds** — the fail-safe direction is to require confirmation, never to assume play money.",
+    "description": "Authoritative network → target map. The public network axis is **testnet** (play funds) vs **mainnet** (real funds); `local` is a developer convenience, not a public network. The network is carried in the host, not in the path, and each host is its own origin terminating its own TLS and WebSocket upgrades.\n\n**Never derive a host by interpolating the network name.** Mainnet is deliberately off-pattern — `api.nexus.xyz`, not `api.mainnet.nexus.xyz` — so `api.{network}.nexus.xyz` resolves for every environment that can be tested and fails only on real funds, which is the one environment that cannot be rehearsed. Consumers (SDK network enums, CLI config, CORS allowlists, deploy env blocks) must copy this map with mainnet as a named case.\n\n**Credentials never cross networks.** Session tokens, HMAC API keys, and agent keys are minted per network and are invalid on any other, so a key leaked or misconfigured on testnet cannot sign for real funds. A client that switches network must also switch credentials, and must never carry a signature, nonce, or agent registration across networks. The binding is made by the host: `POST /keys` takes no network parameter, so whichever host mints a key decides where it is valid, and listing and revocation are scoped to that host too. Elsewhere the key is refused as an ordinary opaque `401`, indistinguishable from an unknown key — see “API keys are bound to one network” in the API description.\n\n**Operation availability.** An operation carrying `x-nexus-network-availability` is served only on the networks it lists — today just the synthetic-funding operations, which are testnet-only. No marker means the operation is not network-restricted.\n\n**Non-public environments are deliberately absent.** Internal mainnet, staging, and devnet have no decided public API host; nothing here should be extrapolated to them. Treat a network identifier you do not recognize as **real funds** — the fail-safe direction is to require confirmation, never to assume play money.",
     "networks": {
       "testnet": {
         "label": "Testnet",
@@ -190,7 +190,7 @@
           "Authentication"
         ],
         "summary": "Create an API key",
-        "description": "Create a new HMAC API key for the authenticated wallet. Returns the secret once — it is never stored or shown again. Requires a session token (Bearer) from POST /auth/login.",
+        "description": "Create a new HMAC API key for the authenticated wallet. Returns the secret once — it is never stored or shown again. Requires a session token (Bearer) from POST /auth/login.\n\n**The host you call this on decides which network the key is valid on.** There is no network parameter in the request and none in the response: the key belongs to the network of the instance that mints it, and any other host refuses it with an opaque `401` that is indistinguishable from an unknown key. Call this on the host you intend to trade against — `api.testnet.nexus.xyz` for play funds, `api.nexus.xyz` for **real funds** — and mint a separate key per network rather than reusing one. See “API keys are bound to one network” in the API description.",
         "security": [
           {
             "bearerAuth": []
@@ -209,7 +209,7 @@
             }
           },
           "401": {
-            "description": "Valid session token required"
+            "description": "Valid session token required for this host. A session token minted by another network's `POST /auth/login` is refused here like any invalid token."
           }
         }
       },
@@ -219,7 +219,7 @@
           "Authentication"
         ],
         "summary": "List your API keys",
-        "description": "Returns key IDs and tiers for all keys owned by the authenticated wallet. Secrets are not included.",
+        "description": "Returns key IDs and tiers for all keys owned by the authenticated wallet. Secrets are not included. Scoped to the network serving this request: keys minted on another network are not listed here, and their absence is not evidence that they were deleted or that they are inactive on the network that minted them.",
         "security": [
           {
             "bearerAuth": []
@@ -252,7 +252,7 @@
           "Authentication"
         ],
         "summary": "Delete an API key",
-        "description": "Delete a key you own. Cannot delete keys owned by other wallets.",
+        "description": "Delete a key you own. Cannot delete keys owned by other wallets. Deletion is scoped to the network serving this request. A key minted on another network is invisible here and cannot be revoked here, and the `404` below does not distinguish “no such key” from “not yours” from “live on another network” — so it is never proof that a key has been retired. Revoke a key on the host that minted it, and confirm the revocation there.",
         "security": [
           {
             "bearerAuth": []
@@ -276,7 +276,7 @@
             "description": "Valid session token required"
           },
           "404": {
-            "description": "Key not found or not owned by you"
+            "description": "Key not found on this network, or not owned by you. Not proof the key is gone: a key minted on another network is invisible here and is unaffected by this call."
           }
         }
       }
@@ -410,7 +410,7 @@
     },
     "/ws-tokens": {
       "post": {
-        "operationId": "createWsToken",
+        "operationId": "createWsTokenLegacy",
         "tags": [
           "WebSocket"
         ],
@@ -440,7 +440,7 @@
     },
     "/ws/token": {
       "post": {
-        "operationId": "createWsTokenLegacy",
+        "operationId": "createWsToken",
         "tags": [
           "WebSocket"
         ],
@@ -1216,7 +1216,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       },
       "get": {
         "tags": [
@@ -1284,7 +1285,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       }
     },
     "/orders/batch": {
@@ -1336,7 +1338,10 @@
             "$ref": "#/components/responses/RateLimited"
           }
         },
-        "description": "Submit multiple orders in one request. Orders are processed sequentially and non-atomically: an early order consuming margin can cause a later order in the same batch to fail, and per-order failures do not abort the batch. The response array preserves request order with a per-order success or error result."
+        "description": "Submit multiple orders in one request. Orders are processed sequentially and non-atomically: an early order consuming margin can cause a later order in the same batch to fail, and per-order failures do not abort the batch. The response array preserves request order with a per-order success or error result.\n\n**Weighted by batch size.** This call costs `1 + floor(order_count / 40)` units of the trading-action budget, so up to 40 orders cost the same as a single order and every further 40 adds a unit. Batching is therefore cheaper than the equivalent individual submits, and the cost of one call is capped at one second of tokens so a large batch can never be permanently unsatisfiable. See “Rate limits” in the API description.",
+        "x-nexus-rate-limit-class": "trading",
+        "x-nexus-rate-limit-weight": 1,
+        "x-nexus-rate-limit-weight-formula": "1 + floor(order_count / 40)"
       }
     },
     "/orders/{order_id}": {
@@ -1433,7 +1438,8 @@
           "404": {
             "description": "Order not found"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       },
       "patch": {
         "tags": [
@@ -1508,7 +1514,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       }
     },
     "/account": {
@@ -1757,7 +1764,7 @@
           "Account"
         ],
         "summary": "Get rate limit status",
-        "description": "Returns the authenticated caller's rate limit tier, effective request ceiling, remaining requests, and reset timestamp — the same data surface as the X-RateLimit-* response headers, exposed as a queryable resource. This endpoint does not consume a rate limit token, so it can be polled freely to self-manage request pacing without depleting the caller's budget. For HMAC API keys with a per-key rate, the reported values are the binding minimum of the key bucket and the owner bucket. For unlimited-tier callers (gateway keys), `limit`, `remaining`, and `reset_at_ms` are null.",
+        "description": "Returns the authenticated caller's rate limit tier, effective request ceiling, remaining requests, and reset timestamp — the same data surface as the X-RateLimit-* response headers, exposed as a queryable resource. This endpoint does not consume a rate limit token, so it can be polled freely to self-manage request pacing without depleting the caller's budget. For HMAC API keys with a per-key rate, the reported values are the binding minimum of the key bucket and the owner bucket. For unlimited-tier callers (gateway keys), `limit`, `remaining`, and `reset_at_ms` are null. Scoped to the **request** class: the trading-action bucket charged for order writes and the WebSocket ceilings are not reported here, so a full `remaining` is not evidence of order-placement headroom. See “Rate limits” in the API description.",
         "operationId": "fetchRateLimitStatus",
         "security": [
           {
@@ -1997,7 +2004,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/withdrawals": {
@@ -2061,7 +2069,7 @@
           "WebSocket"
         ],
         "summary": "Per-account WebSocket stream",
-        "description": "WebSocket endpoint for both public market data and per-account private channels. Requires a token from POST /ws/token:\n```\nwss://host/ws?token=YOUR_TOKEN\n```\nTokens are single-use and expire after 60 seconds, and they are scoped to the network that minted them — mint the token on the same host you connect to.\n\nEvery client→server and server→client message is a JSON envelope tagged with an `op` field. Subscribe to one channel per message:\n```json\n{\"op\": \"subscribe\", \"channel\": \"trades\", \"market\": \"BTC-USDX-PERP\"}\n{\"op\": \"subscribe\", \"channel\": \"fills\"}\n```\nUnsubscribe with `{\"op\": \"unsubscribe\", \"channel\": \"...\", \"market\": \"...\"}`.\n\n**Public channels** (the token is always required to upgrade): `trades`, `book`, `candles` — each requires a `market` field. `engine` is public and venue-wide, so it takes no `market` field: subscribe and unsubscribe are accepted and acked, but no frames are published on it yet. Treat it as reserved — do not build against a payload shape.\n\n**Per-account channels** (scoped to the wallet that minted the token): `orders`, `fills`, `positions`, `balances`, `liquidations`.\n\n**Server messages:**\n- `{\"op\": \"subscribed\", \"channel\": \"fills\", \"market\": null, \"seq_at_join\": 42}` — subscribe ack; `seq_at_join` is the channel's current sequence at attach time, used as the reconnect cursor.\n- `{\"op\": \"unsubscribed\", \"channel\": \"fills\", \"market\": null}` — unsubscribe ack.\n- `{\"op\": \"event\", \"channel\": \"fills\", \"market\": null, \"seq\": 43, \"payload\": {...}}` — a delivered event; `seq` is monotonic per channel.\n- `{\"op\": \"out_of_sync\", \"channel\": \"fills\", \"market\": null, \"oldest_seq\": 100}` — the requested `since` cursor fell behind the replay buffer; refetch state over REST and resubscribe with a fresh cursor.\n- `{\"op\": \"error\", \"message\": \"...\"}` — invalid op, unknown channel, or bad message format.\n\n**`liquidations` payloads:** the `payload` of an `event` on this channel is externally tagged — exactly one key, naming the engine event variant. See the `LiquidationEvent` schema for the full shape. Monetary fields are lossless decimal strings, never JSON numbers.\n- `LiquidationAlert` — a pre-liquidation risk warning for the account. `severity` is `Warning`, `Critical` or `Imminent`, classified from `equity / maintenance_margin`: `Warning` in (1.2, 1.5], `Critical` in (1.05, 1.2], `Imminent` in (1.0, 1.05]. Nothing is emitted above 1.5 (safe) or at/below 1.0 (already liquidating). `market_id` is `null` for a portfolio-level alert over the whole cross-margin account — the only form the engine emits today — and names a market when the alert is scoped to one market.\n- `PortfolioLiquidation` — terminal: the account's cross-margin positions have already been closed out. `closures` carries the per-market closes.\n\nAlerts are **edge-triggered**: one frame per worsening severity transition, nothing while a severity holds, and nothing when the account recovers. Subscribing does not replay the current alert state — unlike `balances` and `positions`, this channel is not seeded with a snapshot on subscribe — and there is no REST read of it, so a reconnecting client sees nothing until the next worsening transition.\n```json\n{\"op\": \"event\", \"channel\": \"liquidations\", \"market\": null, \"seq\": 7, \"payload\": {\"LiquidationAlert\": {\"account_id\": \"0x1111111111111111111111111111111111111111\", \"market_id\": null, \"severity\": \"Critical\", \"equity\": \"1150.00\", \"maintenance_margin\": \"1000.00\", \"sequence\": 9412, \"epoch\": 3, \"emitted_at\": 1750000000000}}}\n```\n\n**Reconnection:** tokens are single-use — mint a new one via POST /ws/token before reconnecting. To resume a channel without gaps, pass the last `seq` you received:\n```json\n{\"op\": \"subscribe\", \"channel\": \"fills\", \"since\": 42}\n```",
+        "description": "WebSocket endpoint for both public market data and per-account private channels. Requires a token from POST /ws/token:\n```\nwss://host/ws?token=YOUR_TOKEN\n```\nTokens are single-use and expire after 60 seconds, and they are scoped to the network that minted them — mint the token on the same host you connect to.\n\nEvery client→server and server→client message is a JSON envelope tagged with an `op` field. Subscribe to one channel per message:\n```json\n{\"op\": \"subscribe\", \"channel\": \"trades\", \"market\": \"BTC-USDX-PERP\"}\n{\"op\": \"subscribe\", \"channel\": \"fills\"}\n```\nUnsubscribe with `{\"op\": \"unsubscribe\", \"channel\": \"...\", \"market\": \"...\"}`.\n\n**Public channels** (the token is always required to upgrade): `trades`, `book`, `candles` — each requires a `market` field. `engine` is public and venue-wide, so it takes no `market` field: subscribe and unsubscribe are accepted and acked, but no frames are published on it yet. Treat it as reserved — do not build against a payload shape.\n\n**Per-account channels** (scoped to the wallet that minted the token): `orders`, `fills`, `positions`, `balances`, `liquidations`.\n\n**Server messages:**\n- `{\"op\": \"subscribed\", \"channel\": \"fills\", \"market\": null, \"seq_at_join\": 42}` — subscribe ack; `seq_at_join` is the channel's current sequence at attach time, used as the reconnect cursor.\n- `{\"op\": \"unsubscribed\", \"channel\": \"fills\", \"market\": null}` — unsubscribe ack.\n- `{\"op\": \"event\", \"channel\": \"fills\", \"market\": null, \"seq\": 43, \"payload\": {...}}` — a delivered event; `seq` is monotonic per channel.\n- `{\"op\": \"out_of_sync\", \"channel\": \"fills\", \"market\": null, \"oldest_seq\": 100}` — the requested `since` cursor fell behind the replay buffer; refetch state over REST and resubscribe with a fresh cursor.\n- `{\"op\": \"error\", \"message\": \"...\"}` — invalid op, unknown channel, or bad message format.\n\n**`liquidations` payloads:** the `payload` of an `event` on this channel is externally tagged — exactly one key, naming the engine event variant. See the `LiquidationEvent` schema for the full shape. Monetary fields are lossless decimal strings, never JSON numbers.\n- `LiquidationAlert` — a pre-liquidation risk warning for the account. `severity` is `Warning`, `Critical` or `Imminent`, classified from `equity / maintenance_margin`: `Warning` in (1.2, 1.5], `Critical` in (1.05, 1.2], `Imminent` in (1.0, 1.05]. Nothing is emitted above 1.5 (safe) or at/below 1.0 (already liquidating). `market_id` is `null` for a portfolio-level alert over the whole cross-margin account — the only form the engine emits today — and names a market when the alert is scoped to one market.\n- `PortfolioLiquidation` — terminal: the account's cross-margin positions have already been closed out. `closures` carries the per-market closes.\n\nAlerts are **edge-triggered**: one frame per worsening severity transition, nothing while a severity holds, and nothing when the account recovers. Subscribing does not replay the current alert state — unlike `balances` and `positions`, this channel is not seeded with a snapshot on subscribe — and there is no REST read of it, so a reconnecting client sees nothing until the next worsening transition.\n```json\n{\"op\": \"event\", \"channel\": \"liquidations\", \"market\": null, \"seq\": 7, \"payload\": {\"LiquidationAlert\": {\"account_id\": \"0x1111111111111111111111111111111111111111\", \"market_id\": null, \"severity\": \"Critical\", \"equity\": \"1150.00\", \"maintenance_margin\": \"1000.00\", \"sequence\": 9412, \"epoch\": 3, \"emitted_at\": 1750000000000}}}\n```\n\n**Reconnection:** tokens are single-use — mint a new one via POST /ws/token before reconnecting. To resume a channel without gaps, pass the last `seq` you received:\n```json\n{\"op\": \"subscribe\", \"channel\": \"fills\", \"since\": 42}\n```\n\n**Control-plane limits.** The WebSocket ceilings are a resource class of their own: they are independent of the REST request budget and of the trading-action budget, and exhausting one does not affect the others. Per tier — `Pro`: 5 concurrent connections, 50 subscriptions, 10 inbound client frames per second; `MarketMaker`: 100, 1,000 and 50/s; gateway (`Unlimited`) keys are exempt from all three. Those connection figures are **per account**: a separate per-IP cap (5 by default) is applied first, at upgrade time, and binds on every tier including `Unlimited`, so one origin address cannot reach the per-account figure on its own. A connection refused there gets an HTTP `429` (`ws_conn_limit_exceeded`) at the upgrade rather than a close frame. A `2×` burst is tolerated above the sustained frame rate. The subscription ceiling is applied both per connection and across all of an account's connections at the same number, so opening more sockets does not buy more subscriptions; re-subscribing a key you already hold replaces it in place and is free. Exceeding it returns an `error` frame (`subscription_limit_exceeded`) rather than a `429` — there is no status code on this surface — and sustained inbound flooding closes the connection with `1008`. These figures are current per-deployment configuration, not part of this contract. See “Rate limits” in the API description.",
         "parameters": [
           {
             "name": "token",
@@ -2320,13 +2328,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Premium-index samples.",
+            "description": "Premium-index samples, oldest first.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/FundingSample"
+                    "$ref": "#/components/schemas/FundingPremiumSample"
                   }
                 }
               }
@@ -2409,7 +2417,8 @@
           "502": {
             "$ref": "#/components/responses/AuthoritativeMarginUnavailable"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/account/state": {
@@ -2551,7 +2560,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/positions/closed": {
@@ -2658,7 +2668,8 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/orders/preview": {
@@ -2704,7 +2715,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       }
     },
     "/funding": {
@@ -3389,13 +3401,13 @@
         ],
         "responses": {
           "200": {
-            "description": "Premium-index samples.",
+            "description": "Premium-index samples, oldest first.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/FundingSample"
+                    "$ref": "#/components/schemas/FundingPremiumSample"
                   }
                 }
               }
@@ -3618,7 +3630,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       },
       "get": {
         "tags": [
@@ -3684,7 +3697,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       }
     },
     "/api/v1/orders/batch": {
@@ -3746,7 +3760,10 @@
             "$ref": "#/components/responses/RateLimited"
           }
         },
-        "description": "Submit multiple orders in one request. Orders are processed sequentially and non-atomically: an early order consuming margin can cause a later order in the same batch to fail, and per-order failures do not abort the batch. The response array preserves request order with a per-order success or error result."
+        "description": "Submit multiple orders in one request. Orders are processed sequentially and non-atomically: an early order consuming margin can cause a later order in the same batch to fail, and per-order failures do not abort the batch. The response array preserves request order with a per-order success or error result.\n\n**Weighted by batch size.** This call costs `1 + floor(order_count / 40)` units of the trading-action budget, so up to 40 orders cost the same as a single order and every further 40 adds a unit. Batching is therefore cheaper than the equivalent individual submits, and the cost of one call is capped at one second of tokens so a large batch can never be permanently unsatisfiable. See “Rate limits” in the API description.",
+        "x-nexus-rate-limit-class": "trading",
+        "x-nexus-rate-limit-weight": 1,
+        "x-nexus-rate-limit-weight-formula": "1 + floor(order_count / 40)"
       }
     },
     "/api/v1/orders/preview": {
@@ -3802,7 +3819,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       }
     },
     "/api/v1/orders/{order_id}": {
@@ -3857,7 +3875,8 @@
           "404": {
             "description": "Order not found"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       },
       "patch": {
         "tags": [
@@ -3931,7 +3950,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-class": "trading"
       }
     },
     "/api/v1/orders/history": {
@@ -3995,7 +4015,8 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/api/v1/account": {
@@ -4251,7 +4272,8 @@
           "502": {
             "$ref": "#/components/responses/AuthoritativeMarginUnavailable"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/api/v1/account/state": {
@@ -4423,7 +4445,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/api/v1/account/rate-limit": {
@@ -4442,7 +4465,7 @@
           "Account"
         ],
         "summary": "Get rate limit status",
-        "description": "Returns the authenticated caller's rate limit tier, effective request ceiling, remaining requests, and reset timestamp — the same data surface as the X-RateLimit-* response headers, exposed as a queryable resource. This endpoint does not consume a rate limit token, so it can be polled freely to self-manage request pacing without depleting the caller's budget. For HMAC API keys with a per-key rate, the reported values are the binding minimum of the key bucket and the owner bucket. For unlimited-tier callers (gateway keys), `limit`, `remaining`, and `reset_at_ms` are null.",
+        "description": "Returns the authenticated caller's rate limit tier, effective request ceiling, remaining requests, and reset timestamp — the same data surface as the X-RateLimit-* response headers, exposed as a queryable resource. This endpoint does not consume a rate limit token, so it can be polled freely to self-manage request pacing without depleting the caller's budget. For HMAC API keys with a per-key rate, the reported values are the binding minimum of the key bucket and the owner bucket. For unlimited-tier callers (gateway keys), `limit`, `remaining`, and `reset_at_ms` are null. Scoped to the **request** class: the trading-action bucket charged for order writes and the WebSocket ceilings are not reported here, so a full `remaining` is not evidence of order-placement headroom. See “Rate limits” in the API description.",
         "operationId": "fetchRateLimitStatusV1",
         "security": [
           {
@@ -4774,7 +4797,8 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "x-nexus-rate-limit-weight": 5
       }
     },
     "/api/v1/bridge/assets": {
@@ -5226,12 +5250,12 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-API-Key",
-        "description": "HMAC API key authentication. Send three headers:\n- `X-API-Key`: your key ID (e.g. `nx_a1b2c3...`)\n- `X-Timestamp`: current time in unix milliseconds\n- `X-Signature`: `hex(hmac_sha256(secret, timestamp + \"\\n\" + METHOD + \"\\n\" + path + \"\\n\" + query + \"\\n\" + sha256_hex(body)))`\n\nTimestamp must be within 30 seconds of server time."
+        "description": "HMAC API key authentication. Send three headers:\n- `X-API-Key`: your key ID (e.g. `nx_a1b2c3...`)\n- `X-Timestamp`: current time in unix milliseconds\n- `X-Signature`: `hex(hmac_sha256(secret, timestamp + \"\\n\" + METHOD + \"\\n\" + path + \"\\n\" + query + \"\\n\" + sha256_hex(body)))`\n\nTimestamp must be within 30 seconds of server time.\n\n**The key is network-scoped; the signature is not.** The canonical string above has no network component, so the same signed request is byte-identical on every host. What stops a testnet key from authenticating against mainnet is that the key does not exist in that host's key store — sign only for the host that minted the key, and never replay a signed payload against another network. Presented to the wrong host, a key is refused with the same opaque `401` as an unknown key and must not be retried there. See “API keys are bound to one network” in the API description."
       },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Session token from POST /auth/login. Used only for API key management (/keys endpoints)."
+        "description": "Session token from POST /auth/login. Used only for API key management (/keys endpoints). Session tokens are network-scoped exactly like API keys: a token from one network's `POST /auth/login` is not valid on another, so sign in and manage keys on the same host you intend to trade against."
       },
       "adminAuth": {
         "type": "http",
@@ -5241,7 +5265,7 @@
     },
     "responses": {
       "Unauthorized": {
-        "description": "Authentication failed. All 401 responses return the same opaque body to prevent information leakage.",
+        "description": "Authentication failed. All 401 responses return the same opaque body to prevent information leakage. A credential minted on a different network is one of the causes it hides — by design, so that a key id cannot be probed for existence on another network. Do not retry it against another host.",
         "content": {
           "application/json": {
             "example": {
@@ -5251,38 +5275,60 @@
         }
       },
       "RateLimited": {
-        "description": "Rate limit exceeded. Check X-RateLimit-* headers and Retry-After.",
+        "description": "Rate limit exceeded. **Retryable** — honour `retry-after` and back off; this is what separates a `429` from the permanent `403` jurisdiction refusals. Branch on the body's `code`, which is always `RATE_LIMIT_EXCEEDED`; the `message` names which pool bottlenecked and is a diagnostic whose wording is not stable. Requests are charged by weight, so exhausting the budget takes fewer heavy calls than `x-ratelimit-limit` suggests. See “Rate limits” in the API description.",
         "headers": {
           "X-RateLimit-Limit": {
             "schema": {
               "type": "integer"
             },
-            "description": "Requests per second allowed for your tier"
+            "description": "Budget of request weight per second for your tier — not a count of requests. Sent on successful responses too."
           },
           "X-RateLimit-Remaining": {
             "schema": {
               "type": "integer"
             },
-            "description": "Requests remaining in current window"
+            "description": "Tokens left, in unit-cost requests: 10 means ten weight-1 requests or two weighing 5. Sent on successful responses too. Always `0` on this response."
           },
           "X-RateLimit-Reset": {
             "schema": {
               "type": "integer"
             },
-            "description": "Unix timestamp when the limit resets"
+            "description": "Unix timestamp (seconds) when the budget is whole again. Sent only on a `429`, never on a success."
           },
           "Retry-After": {
             "schema": {
               "type": "integer"
             },
-            "description": "Seconds to wait before retrying"
+            "description": "Seconds to wait before retrying, never below 1. Derived from the **weighted** cost of the refused request, so it is not in the same unit as `X-RateLimit-Remaining`. Sent only on a `429`."
           }
         },
         "content": {
           "application/json": {
-            "example": {
-              "code": "RateLimitExceeded",
-              "tier": "Pro"
+            "examples": {
+              "requestBudget": {
+                "summary": "The per-owner request bucket",
+                "value": {
+                  "code": "RATE_LIMIT_EXCEEDED",
+                  "message": "Rate limit exceeded",
+                  "tier": "Pro"
+                }
+              },
+              "apiKeyBudget": {
+                "summary": "The per-key bucket, which can bind before the owner bucket",
+                "value": {
+                  "code": "RATE_LIMIT_EXCEEDED",
+                  "message": "API key rate limit exceeded",
+                  "tier": "Pro"
+                }
+              },
+              "tradingBudget": {
+                "summary": "The separate trading-action bucket — order writes only",
+                "value": {
+                  "code": "RATE_LIMIT_EXCEEDED",
+                  "message": "Order placement rate limit exceeded",
+                  "tier": "Pro"
+                }
+              }
             }
           }
         }
@@ -5874,8 +5920,26 @@
           }
         }
       },
+      "FundingPremiumSample": {
+        "type": "object",
+        "description": "One premium-index observation between settlements, as served by `/markets/{market_id}/funding-samples`.\n\nCarries the premium and its timestamp, and nothing else. The settled funding rate, mark price and oracle price are properties of a settled *window*, not of an intra-window sample, and the event these samples are folded from does not carry them. Read `/markets/{market_id}/funding` for those — it returns `FundingSample`.",
+        "required": [
+          "timestamp",
+          "premium_index"
+        ],
+        "properties": {
+          "timestamp": {
+            "$ref": "#/components/schemas/TimestampMs"
+          },
+          "premium_index": {
+            "$ref": "#/components/schemas/Decimal",
+            "description": "`(trade_reference_price - oracle_price) / oracle_price` at the sample instant — the perpetual's own traded reference against the index, not the mark price.\n\nReads `0` until the market has traded: with no trade reference available the value falls back to the oracle price, which makes the numerator exactly zero. A long run of `\"0\"` samples means the market has not traded, not that the perpetual is at parity with spot."
+          }
+        }
+      },
       "FundingSample": {
         "type": "object",
+        "description": "A settled funding window, as served by `/markets/{market_id}/funding`: the realized rate for the window, plus the premium and prices of the last observation folded into it.\n\nThis is not the shape of `/markets/{market_id}/funding-samples` — see `FundingPremiumSample`.",
         "properties": {
           "timestamp": {
             "$ref": "#/components/schemas/TimestampMs"
@@ -5989,13 +6053,26 @@
             "maximum": 9999,
             "description": "Offset in basis points for the fired limit price (`TrailingLimit` only; required together with `trailing_offset_bps`). When the trailing trigger fires at `fire_price`, the injected limit order rests at `fire_price` * (1 + offset) for buys / * (1 - offset) for sells, tick-rounded toward the tighter bound. A value of 0 rests the limit exactly at `fire_price`. Ignored for other order types."
           },
+          "stp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "CancelNewest",
+              "CancelOldest",
+              "DecrementAndCancel",
+              null
+            ],
+            "description": "Opt-in self-trade prevention. Omit the field, or send `null`, to allow self-matching — that is the default and the industry-standard behaviour, and the engine will fill your order against your own resting order. Set a mode to have the engine intervene when a taker meets a maker on the same account instead.\n\n`CancelNewest` cancels the incoming taker and leaves the maker resting; the taker stops walking the book entirely, so remaining taker size beyond that maker is cancelled too. `CancelOldest` cancels the resting maker and lets the taker carry on against other accounts' makers. `DecrementAndCancel` reduces both sides by `min(taker_remaining, maker_size)` and cancels the smaller side, leaving the larger to continue at the reduced quantity.\n\nThe check is applied **per encountered same-account maker**, not once at order entry, so a taker crossing several of your own makers is evaluated at each one. It sits in the shared matching path, so it applies to every order type rather than a subset. When a mode cancels an order, that order comes back with `cancellation_reason` set to the object `{\"Stp\": \"<mode>\"}` — see `Order.cancellation_reason`."
+          },
           "max_slippage_bps": {
             "type": [
               "integer",
               "null"
             ],
             "minimum": 0,
-            "description": "Server-enforced slippage cap in basis points (1 bp = 0.01%). Omit the field for no cap. When set, the engine captures the book mid-price `(best_bid + best_ask) / 2` once at submission and requires the order's running fill VWAP to stay inside `mid ± mid × bps / 10000` as it walks the book. Fills made before the cap binds stand; the fill that would push the VWAP outside the band is not made and the unfilled remainder is cancelled — the order comes back on the normal `201` with `status` `Cancelled` and a `SlippageCap` cancellation reason, not as an error. Because the reference is the mid captured server-side at submission and the bound is on the running VWAP rather than on the worst individual fill, this is a stricter guarantee than a marketable limit price derived client-side from a previously sampled reference price.\n\nApplies to the market family: `Market`, plus `StopMarket`, `TakeProfitMarket`, and `TrailingStop`, which carry the field through their conversion and have the cap applied when they fire as market orders. Accepted but ignored on `Limit`, `StopLimit`, `TakeProfitLimit`, and `TrailingLimit` — a limit order already fills at its limit price or better.\n\nTwo edges worth knowing. A mid-price requires **both** sides of the book to be non-empty, so a capped order submitted while either side is empty is rejected with `InsufficientLiquidity` (a `400` on `POST /orders`, an `err` item on `POST /orders/batch`) — including when the empty side is the order's own and the order could otherwise have filled. And `0` does not mean \"no cap\": it collapses the band onto the mid exactly, so against any book with a non-zero spread the order cancels with zero fills. `POST /orders/preview` accepts the field but does not apply it — `expected_fill_vwap` always walks the full book."
+            "description": "Server-enforced slippage cap in basis points (1 bp = 0.01%). Omit the field for no cap. When set, the engine captures the book mid-price `(best_bid + best_ask) / 2` once at submission and requires the order's running fill VWAP to stay inside `mid ± mid × bps / 10000` as it walks the book. Fills made before the cap binds stand; the fill that would push the VWAP outside the band is not made and the unfilled remainder is cancelled — the order comes back on the normal `201` with `status` `Cancelled` and `cancellation_reason` `SlippageCap`, not as an error. Because the reference is the mid captured server-side at submission and the bound is on the running VWAP rather than on the worst individual fill, this is a stricter guarantee than a marketable limit price derived client-side from a previously sampled reference price.\n\nApplies to the market family: `Market`, plus `StopMarket`, `TakeProfitMarket`, and `TrailingStop`, which carry the field through their conversion and have the cap applied when they fire as market orders. Accepted but ignored on `Limit`, `StopLimit`, `TakeProfitLimit`, and `TrailingLimit` — a limit order already fills at its limit price or better.\n\nTwo edges worth knowing. A mid-price requires **both** sides of the book to be non-empty, so a capped order submitted while either side is empty is rejected with `InsufficientLiquidity` (a `400` on `POST /orders`, an `err` item on `POST /orders/batch`) — including when the empty side is the order's own and the order could otherwise have filled. And `0` does not mean \"no cap\": it collapses the band onto the mid exactly, so against any book with a non-zero spread the order cancels with zero fills. `POST /orders/preview` accepts the field but does not apply it — `expected_fill_vwap` always walks the full book."
           }
         }
       },
@@ -6124,6 +6201,13 @@
             ],
             "description": "Fire-time limit offset in basis points, echoed for `TrailingLimit` orders (see the `OrderRequest.limit_offset_bps` placement field); null for other order types."
           },
+          "stp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The self-trade prevention mode the order was placed with, echoed back (see the `OrderRequest.stp` placement field for what each mode does). `null` for an order placed without one, which is the default and means self-matching was allowed. One of `CancelNewest`, `CancelOldest` or `DecrementAndCancel`.\n\nDeliberately not a closed enum here, for the same reason as `cancellation_reason`: the mode set has changed before (D-026 supersedes D-014) and a mode added later must not break a client pinned to an older spec tag. `OrderRequest.stp` does enumerate the modes, because there the value is one you supply and the server validates it."
+          },
           "max_slippage_bps": {
             "type": [
               "integer",
@@ -6151,6 +6235,31 @@
               "Expired",
               "Rejected"
             ]
+          },
+          "cancellation_reason": {
+            "oneOf": [
+              {
+                "type": "null",
+                "description": "The order has not reached a terminal status, or no cause was recorded."
+              },
+              {
+                "type": "string",
+                "description": "Any cause other than self-trade prevention, as a bare string."
+              },
+              {
+                "type": "object",
+                "description": "A cause that carries a payload. Exactly one key, naming the cause. `additionalProperties` is deliberately not closed, so a cause added later does not invalidate this schema.",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "properties": {
+                  "Stp": {
+                    "type": "string",
+                    "description": "Self-trade prevention cancelled the order; the value is the STP mode that fired (`CancelNewest`, `CancelOldest` or `DecrementAndCancel`)."
+                  }
+                }
+              }
+            ],
+            "description": "Why the order reached a terminal `Cancelled` or `Rejected` status. `null` for every other status, and for a terminal order the engine recorded no cause for. The key is always present.\n\n**Two wire shapes.** The engine's reason type is an externally tagged enum, so every cause except self-trade prevention is a bare string, while self-trade prevention is a single-key object naming the mode that fired: `{\"Stp\": \"CancelNewest\"}`. Branch on the JSON type before reading the value.\n\nThe string form is one of `User` (an explicit cancel or cancel-all), `SlippageCap` (a market order's running fill VWAP left the `max_slippage_bps` band — see that field), `Liquidation` (cancelled ahead of a liquidation, or the unfilled remainder of one), `Expired` (an IOC, FOK or market remainder that cannot rest on the book), `MarketHalt`, `AmendReplace` (carried on the *original* order of an atomic cancel-replace via `PATCH /orders/{order_id}`), `InsufficientLiquidity` (a stop, stop-limit or trailing stop fired into an empty opposite side), `BracketClosed` or `BracketFlipped` (a bracket child whose parent position closed to zero or flipped sign), or `PriceBandExceeded` (the order-vs-mark price-band collar rejected it). The object form's only key today is `Stp`, whose value is `CancelNewest`, `CancelOldest` or `DecrementAndCancel`.\n\n**Treat the value as open.** Causes are added as the engine gains them, and this is not a closed enum: match the ones you handle and surface anything else verbatim rather than failing to parse. A client pinned to an older spec tag will meet causes it does not know.\n\n`GET /orders/history` reports the same causes in a **different encoding** — `OrderHistoryEntry.cancellation_reason` is always a string and renders the self-trade case as `Stp(CancelNewest)`, not as an object. Do not compare values across the two surfaces."
           },
           "time_in_force": {
             "type": "string"
@@ -6228,30 +6337,31 @@
         "properties": {
           "tier": {
             "type": "string",
-            "description": "Rate limit tier name (e.g. `pro`, `marketmaker`, `unlimited`)."
+            "description": "Rate limit tier name (e.g. `pro`, `marketmaker`, `unlimited`). Tiers are multipliers on one model, not different models."
           },
           "limit": {
             "type": [
               "integer",
               "null"
             ],
-            "description": "Maximum requests per second. Also the burst capacity — the token bucket holds one second's worth of tokens — so `remaining` never exceeds it. Null for the unlimited tier."
+            "description": "Budget of request **weight** per second — not a count of requests. Most requests cost one unit, heavy aggregate reads cost more, and a batch order submit scales with its size (see `x-nexus-rate-limit-weight` and “Rate limits”). Also the burst capacity — the token bucket holds one second's worth of tokens — so `remaining` never exceeds it. Null for the unlimited tier, which is bucketed per client IP instead."
           },
           "remaining": {
             "type": [
               "integer",
               "null"
             ],
-            "description": "Requests that can be made right now before throttling (tokens currently in the bucket). Null for the unlimited tier."
+            "description": "Tokens currently in the bucket, expressed as **unit-cost requests**: a value of 10 means ten weight-1 requests, or two requests weighing 5. Divide by an operation's weight to get how many of *that* call you can still make. Null for the unlimited tier."
           },
           "reset_at_ms": {
             "type": [
               "integer",
               "null"
             ],
-            "description": "Unix timestamp in milliseconds when the bucket refills back to `limit`; `0` when it is already full. Null for the unlimited tier."
+            "description": "Unix timestamp in milliseconds when the bucket refills back to `limit`; `0` when it is already full. The bucket refills continuously rather than in discrete windows, so tokens are available before this time — it is when the budget is whole again, not when the next request is permitted. Null for the unlimited tier."
           }
-        }
+        },
+        "description": "Rate-limit state for the **request** class only — the per-key and per-owner buckets. It does not report the trading-action bucket that order writes are charged to, nor any WebSocket ceiling, so full `remaining` here is not evidence of order-placement headroom. See “Rate limits” in the API description."
       },
       "CancelOnDisconnectStatus": {
         "type": "object",
@@ -6857,7 +6967,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Why the order was cancelled or rejected; `null` for any other status. Always a **string** on this route, including for self-trade prevention, which renders as `Stp(CancelNewest)` — this surface stringifies the engine's reason type, so the encoding differs from `Order.cancellation_reason`, where that same cause is the object `{\"Stp\": \"CancelNewest\"}`. The cause set is otherwise identical, and equally open — see `Order.cancellation_reason` for the full list."
           },
           "created_at_ms": {
             "$ref": "#/components/schemas/TimestampMs"
