@@ -729,10 +729,16 @@ function buildDescriptor(
 ): NetworkConfig {
   const label = normalizeLabel(fields.label);
   const where = `customNetwork({ label: ${JSON.stringify(label)} })`;
-  const baseUrl = normalizeCustomBaseUrl(fields.baseUrl, where);
+  // The parsed base is kept, not just its string: the WS check below compares
+  // schemes, and only the parsed form has them normalized.
+  const base = parseCustomUrl(where, "baseUrl", fields.baseUrl, [
+    "http:",
+    "https:",
+  ]);
+  const baseUrl = base.trimmed;
   const funds = normalizeFunds(fields.funds, where);
   const faucet = normalizeFaucet(fields.faucet, funds, where);
-  const wsUrl = normalizeCustomWsUrl(fields.wsUrl, baseUrl, where);
+  const wsUrl = normalizeCustomWsUrl(fields.wsUrl, base.url, where);
   const chainId = normalizeSigningChainId(signingChainId, where);
   const config = Object.freeze({
     label,
@@ -924,17 +930,9 @@ function parseCustomUrl(
   return { url, trimmed };
 }
 
-function normalizeCustomBaseUrl(raw: unknown, where: string): string {
-  const { trimmed } = parseCustomUrl(where, "baseUrl", raw, [
-    "http:",
-    "https:",
-  ]);
-  return trimmed;
-}
-
 function normalizeCustomWsUrl(
   raw: unknown,
-  baseUrl: string,
+  base: URL,
   where: string,
 ): string | null {
   // `null` as well as `undefined`: a NetworkConfig spells "none declared" as
@@ -949,7 +947,11 @@ function normalizeCustomWsUrl(
         `here would be doubled.`,
     );
   }
-  if (url.protocol === "ws:" && baseUrl.startsWith("https:")) {
+  // Both sides compared as *parsed* schemes, which `URL` lowercases. A raw-string
+  // prefix test would read "HTTPS://…" as not-TLS and wave the downgrade
+  // through — the base is kept byte-exact (see `basePathOf`), so its string form
+  // carries whatever case the caller wrote.
+  if (url.protocol === "ws:" && base.protocol === "https:") {
     throw new NexusExchangeError(
       `${where} wsUrl is insecure "ws://" while baseUrl is "https://". That ` +
         `downgrades the socket a short-lived ws token is spent on to ` +

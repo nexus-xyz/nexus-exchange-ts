@@ -160,6 +160,30 @@ test("a wsUrl with a path, or a plaintext one under https, is refused", () => {
   );
 });
 
+// A scheme is case-insensitive, and the base is stored byte-exact, so the
+// downgrade check has to compare parsed schemes rather than the raw string —
+// otherwise "HTTPS://" reads as not-TLS and the plaintext socket is accepted.
+test("the ws downgrade check is case-insensitive about the base's scheme", () => {
+  for (const baseUrl of [
+    "HTTPS://exchange.example.com/api/v1",
+    "Https://exchange.example.com/api/v1",
+  ]) {
+    assert.throws(
+      () =>
+        customNetwork(options({ baseUrl, wsUrl: "ws://stream.example.com" })),
+      /downgrades the socket/,
+      `expected ${baseUrl} to refuse a plaintext stream`,
+    );
+  }
+  // The mixed-case base is still accepted on its own — only the pairing is
+  // refused — and it is kept byte-exact.
+  assert.equal(
+    customNetwork(options({ baseUrl: "HTTPS://exchange.example.com/api/v1" }))
+      .baseUrl,
+    "HTTPS://exchange.example.com/api/v1",
+  );
+});
+
 // ── Funds: required, tri-state, and failing closed ───────────────────────────
 
 test("funds must be declared explicitly — there is no default", () => {
