@@ -3,7 +3,7 @@
 //
 // One copy instead of eight, because the network axis (ENG-6453) turned this
 // from three cases into four, one of which ("beta") is no longer a network at
-// all but a `baseUrl` override on testnet.
+// all but a caller-declared target on testnet's funds (ENG-9825).
 //
 // It also fixes an argv trap the duplicated version was one literal away from
 // hitting. `process.argv[process.argv.indexOf("--network") + 1]` yields
@@ -14,15 +14,26 @@
 // invocation as soon as the value was validated against a closed set. `flag()`
 // returns `undefined` for an absent flag instead.
 
-import { Network } from "../src/index.js";
+import { Network, customNetwork } from "../src/index.js";
 import type { ClientOptions } from "../src/index.js";
 
 /**
  * The beta deployment is a *testnet* base, not a network of its own — that is
  * what "demote beta to a baseUrl override" means. Its credentials and signing
  * domain are testnet's.
+ *
+ * Expressed as a `customNetwork` rather than a bare `baseUrl`, because a bare
+ * override declares *nothing* about the target: its funds would be `"unknown"`
+ * and the funding helpers would refuse. Declaring play funds and a faucet says
+ * out loud what was previously being inherited from whichever network was named
+ * alongside the override.
  */
-const BETA_BASE_URL = "https://beta.exchange.nexus.xyz/api/v1";
+const BETA = customNetwork({
+  label: "beta",
+  baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+  funds: "play",
+  faucet: true,
+});
 
 /** Value of `--flag <value>`, or `undefined` when absent or trailing. */
 export function flag(
@@ -49,7 +60,7 @@ export function networkOptions(argv = process.argv.slice(2)): ClientOptions {
     case "local":
       return { network: Network.Local };
     case "beta":
-      return { network: Network.Testnet, baseUrl: BETA_BASE_URL };
+      return { network: BETA };
     case "mainnet":
       return { network: Network.Mainnet };
     default:

@@ -206,15 +206,29 @@ its own TLS and WebSocket upgrades.
 | `Network.Local`             | play     | yes    | `http://localhost:9090/api/v1`      | `ws://localhost:9090`      |
 
 `networkConfig(network)` returns the bundled config (label, funds, faucet, base
-URLs, signing domain); `NETWORKS` is the whole frozen map.
+URLs, signing domain); `NETWORKS` is the whole frozen map. Anywhere a `Network`
+member is accepted, a `customNetwork()` descriptor is too — see
+[Custom networks](#custom-networks).
 
 ```ts
 const client = new Client({ network: Network.Testnet });
 
-client.network; // Network.Testnet
-client.isRealFunds; // false — gate destructive actions on this, not on the name
+client.network; // Network.Testnet (or the descriptor, for a custom target)
+client.label; // "Testnet"
+client.funds; // "play" — gate money-moving actions on this, not on the name
+client.isRealFunds; // false — true for "real" *and* "unknown" (it fails closed)
+client.hasFaucet; // true
 client.baseUrl; // "https://exchange.nexus.xyz/api/v1"
 client.wsUrl; // "wss://exchange.nexus.xyz" — hand to createWsClient({ url })
+```
+
+`funds` is a **tri-state** — `"play" | "real" | "unknown"` — because a boolean
+has no honest value for a target that never declared what it moves. Match
+`"play"` positively so `"unknown"` fails closed:
+
+```ts
+if (client.funds === "play") fund(); // correct — "unknown" is refused
+if (client.funds !== "real") fund(); // WRONG — "unknown" passes as safe
 ```
 
 > [!IMPORTANT]
@@ -228,6 +242,74 @@ client.wsUrl; // "wss://exchange.nexus.xyz" — hand to createWsClient({ url })
 
 Defaults are chosen to fail safe: omitting `network` gives **testnet**, and an
 unrecognized network identifier is refused rather than assumed to be play money.
+
+### Custom networks
+
+To reach a deployment this SDK does not name — a private stage, a preview host, a
+local cluster — build a descriptor and pass it as `network`:
+
+```ts
+import { Client, customNetwork } from "@nexus-xyz/exchange-ts";
+
+const client = new Client({
+  network: customNetwork({
+    label: "dev",
+    baseUrl: "https://exchange.example.com/api/v1",
+    funds: "play", // required — no default
+    faucet: true, // optional, defaults to false
+    wsUrl: "wss://stream.example.com", // optional; derived from baseUrl if omitted
+    signingChainId: 1234, // optional; omit and signing is refused
+  }),
+});
+```
+
+This exists so the package can reach **any** deployment while shipping a hostname
+for **none** of them: enumerating private stages in a published artifact would
+expose them to every external user, permanently and discoverably, and the list
+would grow with every new environment. You supply the host; nothing here checks
+it against an allowlist or a denylist, because that would put a hostname back in.
+
+It carries the whole bundle rather than just a URL, because a URL alone is what
+lets a client report play-funds guardrails while pointed at a real-funds host:
+
+| Field            | Required | Notes                                                                     |
+| ---------------- | -------- | ------------------------------------------------------------------------- |
+| `label`          | yes      | `[A-Za-z0-9._-]`, ≤64 chars, not `.`/`..` — it is a credential-store key  |
+| `baseUrl`        | yes      | absolute `http(s)`, prefix included, no userinfo/query/fragment           |
+| `funds`          | yes      | `"play" \| "real" \| "unknown"` — no default                              |
+| `faucet`         | no       | defaults to `false`; only valid with `funds: "play"`                      |
+| `wsUrl`          | no       | origin only; omitted ⇒ derived from `baseUrl`'s origin                    |
+| `signingChainId` | no       | omitted ⇒ `requireSigningChainId()` refuses rather than guessing a domain |
+
+Everything optional is **absent until declared**, never inferred. A rejected
+field throws from `customNetwork()`, before a client exists; a hand-written
+object literal is re-validated by the `Client` constructor rather than trusted,
+since untyped callers and `JSON.parse` bypass the types.
+
+The label is constrained because sibling clients namespace **stored credentials**
+by it (the CLI puts it in a keyring entry or a path), so `../other` or `one/two`
+must not be able to address another target's keys.
+
+`Custom` is client-side only: not a value the server accepts, and not present in
+the spec's `x-nexus-networks`.
+
+#### Money guardrails read the descriptor
+
+The funding helpers refuse locally — before a request is built, let alone signed —
+unless the target declares both play funds and a faucet:
+
+| Target                                          | `claimFaucet()` / `claimCredit()`      |
+| ----------------------------------------------- | -------------------------------------- |
+| `funds: "play"` + `faucet: true`                | claims                                 |
+| `funds: "play"`, no faucet                      | refused — nothing to claim from        |
+| `funds: "real"`                                 | refused — never claims free collateral |
+| `funds: "unknown"` (including a bare `baseUrl`) | refused — undeclared is not "safe"     |
+
+Unlike `Network.Mainnet`, a **real-funds custom target is reachable**. That is not
+a contradiction: mainnet is refused because this release cannot build correct URLs
+for its durable base (the version sits in the base, `…/v1`, not the path), which
+is a URL-layout problem rather than a funds one — and with a custom target you
+supply the URL and own the layout.
 
 ### What `baseUrl` is
 
@@ -244,9 +326,33 @@ alone would send `/orders`, not `/api/v1/orders`:
 new Client({ baseUrl: "https://your-host/api/v1" });
 ```
 
+`baseUrl` is **sugar for `customNetwork()` with nothing declared**, so there is
+one mechanism for pointing at a host and every guardrail reads the same fields.
+It builds a target whose `funds` are `"unknown"`, with no faucet and no signing
+domain, and it **replaces** `network` rather than modifying it:
+
+```ts
+const client = new Client({
+  network: Network.Testnet,
+  baseUrl: "https://your-host/api/v1",
+});
+
+client.funds; // "unknown" — not testnet's "play"
+client.isRealFunds; // true — undeclared fails closed
+client.claimFaucet(); // rejects locally, before anything is signed
+```
+
+That is the point: previously the override kept the _selected_ network's safety
+metadata, so a testnet-selected client reported play-funds guardrails while
+pointed at whatever host you gave it. Declare the target with `customNetwork()`
+to get those guardrails back honestly.
+
 This SDK never uses the legacy `/api/exchange` gateway — no route it implements
-is served there — and an `/api/exchange` base is **refused at construction**
-rather than 404ing with a signature over the wrong path.
+is served there — and an `/api/exchange` base passed as `baseUrl` is **refused at
+construction** rather than 404ing with a signature over the wrong path. The
+rejection is on this shortcut only, since it is the field a py/mcp gateway base
+gets pasted into; `customNetwork({ baseUrl })` accepts one, because there you are
+declaring the whole bundle and own the URL layout.
 
 That matters when porting a base URL between the Nexus SDKs, because the field
 named `base_url`/`baseUrl` does not mean the same thing in each. All of them
@@ -277,9 +383,11 @@ real funds — the one environment that cannot be rehearsed:
    `/api/v1` paths against a host-root base. Pointing it at `…/v1` would send —
    and sign — `/v1/api/v1/orders`.
 
-Pass an explicit `baseUrl` to target a host deliberately. Note the network still
-selects the funds classification and which credentials are valid, so an override
-is not a way to cross the funds boundary.
+Pass a `customNetwork()` descriptor to target a host deliberately, declaring what
+it moves; a bare `baseUrl` reaches it too, but with `funds: "unknown"`, so the
+money guardrails refuse. Either way, the credentials you pass must belong to the
+target — pointing at another network's host is not a way to reuse keys across the
+funds boundary.
 
 Never derive a host by interpolating the network name: mainnet is deliberately
 off-pattern (`api.nexus.xyz`, not `api.mainnet.nexus.xyz`), so
@@ -288,12 +396,17 @@ money.
 
 ### Beta
 
-Beta is a testnet base, not a network of its own:
+Beta is a testnet base, not a network of its own — so it is a custom target that
+declares testnet's funds rather than a bare override that would declare nothing:
 
 ```ts
 new Client({
-  network: Network.Testnet,
-  baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+  network: customNetwork({
+    label: "beta",
+    baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+    funds: "play",
+    faucet: true,
+  }),
 });
 ```
 
@@ -303,12 +416,23 @@ new Client({
 domain this SDK publishes statically, with `chainId: null` — meaning **this SDK
 does not publish the value**, not that it is zero. The `SigningDomain` model is
 the different, server-reported shape: the wire form of `/metadata`'s
-`signing_domain` (snake*case `chain_id`, all fields optional), authoritative at
-runtime — see `Metadata` and `NetworkTarget` for the rest of that payload. The domain is per-network and server-authoritative: read
+`signing_domain` (snake_case `chain_id`, all fields optional), authoritative at
+runtime — see `Metadata` and `NetworkTarget` for the rest of that payload. The
+domain is per-network and server-authoritative: read
 `signing_domain.chain_id` from `GET /metadata` for the network you are connected
-to and pass it to `EthSigner.registerAgent({ chainId })`. If you cannot obtain
-it, refuse to sign rather than defaulting — a wrong domain either fails
-verification or produces a signature valid on a \_different* network. `0` and
+to and pass it to `EthSigner.registerAgent({ chainId })`. A custom target can
+declare one up front (`customNetwork({ signingChainId })`);
+`client.requireSigningChainId()` then returns it, and **throws** when none is
+known, which is the refusal spelled out as one call:
+
+```ts
+signer.registerAgent({ agent, chainId: client.requireSigningChainId(), ... });
+```
+
+Only the chain id is ever caller-supplied — the EIP-712 `name`/`version` are
+contract-level constants, identical on every deployment. If you cannot obtain a
+chain id, refuse to sign rather than defaulting — a wrong domain either fails
+verification or produces a signature valid on a _different_ network. `0` and
 out-of-range values are rejected for exactly that reason. Do not assume a Nexus
 L1 chain id: mainnet runs against Ethereum Mainnet via the USDX bridge.
 

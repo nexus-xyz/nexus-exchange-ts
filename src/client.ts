@@ -223,6 +223,50 @@ export enum Network {
 }
 
 /**
+ * How much a target's balances are worth — the classification every money
+ * guardrail in this client reads.
+ *
+ * **Three states, not a boolean, and no default.** A caller-supplied target
+ * (see {@link customNetwork}) has to declare this, and neither boolean default
+ * is honest: `false` makes every guardrail lie in the direction that costs
+ * money, `true` makes a dev deployment unusable. `"unknown"` is the third,
+ * genuine state — the target was reached by a bare `baseUrl` override, so
+ * nothing declared what it moves.
+ *
+ * **Match `"play"` positively.** `funds !== "real"` lets `"unknown"` through as
+ * if it were safe, which is the whole failure this type exists to prevent:
+ *
+ * ```ts
+ * if (funds === "play") allow();   // correct — "unknown" fails closed
+ * if (funds !== "real") allow();   // WRONG — "unknown" falls through as safe
+ * ```
+ *
+ * A faucet is a **separate** flag ({@link NetworkConfig.faucet}): "not real
+ * money" does not imply "there is a faucet to claim from".
+ */
+export type Funds = "real" | "play" | "unknown";
+
+/** The three declarable {@link Funds} values, for validating untyped input. */
+const FUNDS_VALUES: readonly Funds[] = Object.freeze([
+  "real",
+  "play",
+  "unknown",
+]);
+
+/**
+ * Anywhere this SDK takes a network, it takes either a member of the
+ * {@link Network} axis or a full {@link NetworkConfig} descriptor from
+ * {@link customNetwork} — a deployment this package does not name.
+ *
+ * There is deliberately no `Network.Custom` **enum member**: `Network` is a
+ * string used as a key into {@link NETWORKS}, so a bare member would key into a
+ * map entry that cannot exist and would have nowhere to carry its own base URL,
+ * funds classification or signing domain. The descriptor carries the whole
+ * bundle instead.
+ */
+export type NetworkSelector = Network | NetworkConfig;
+
+/**
  * Path prefix every non-`root` request is sent under, and the single source of
  * truth for it. `scripts/check-spec-drift.mjs` reads this constant to derive
  * the spec paths the client targets (invariant H), so it must stay a plain
@@ -259,16 +303,47 @@ export interface NetworkSigningDomain {
   readonly chainId: number | null;
 }
 
-/** Everything needed to reach one network. See {@link NETWORKS}. */
+/**
+ * Everything needed to reach one target: the bundle, not just a URL.
+ *
+ * Two ways to get one — {@link NETWORKS}, for the named axis, and
+ * {@link customNetwork}, for a deployment this package does not name — and it is
+ * accepted anywhere a {@link Network} is (see {@link NetworkSelector}).
+ *
+ * A URL alone is what makes a client report play-funds guardrails while pointed
+ * at a real-funds host, so the descriptor carries the safety metadata with the
+ * transport: {@link funds}, {@link faucet}, and the {@link signingDomain} travel
+ * with {@link baseUrl} and cannot be left behind.
+ *
+ * Prefer {@link customNetwork} over a hand-written object literal. A literal
+ * type-checks, so the `Client` constructor **re-validates** every descriptor it
+ * is handed rather than trusting the type — but the helper reports the same
+ * rejections up front, where they are easier to read.
+ */
 export interface NetworkConfig {
-  /** Human-readable label, e.g. `"Testnet"`. */
+  /**
+   * Short name for this target, e.g. `"Testnet"` or `"dev"`.
+   *
+   * Not decoration: sibling clients namespace **stored credentials** by it (the
+   * CLI puts it in a keyring entry or a path), so {@link customNetwork}
+   * constrains it to `[A-Za-z0-9._-]`, caps it at 64 characters and rejects `.`
+   * and `..` — otherwise one target's label could address another target's keys.
+   */
   readonly label: string;
   /**
-   * `"real"` means orders here move real money. Branch on this rather than on
-   * the network name if you gate destructive actions behind a confirmation.
+   * What this target's balances are worth. `"real"` means orders here move real
+   * money; `"unknown"` means nothing declared it. Branch on this — never on the
+   * network name — when you gate money-moving actions, and match `"play"`
+   * positively so `"unknown"` fails closed. See {@link Funds}.
    */
-  readonly funds: "play" | "real";
-  /** Whether a faucet exists (never on mainnet). */
+  readonly funds: Funds;
+  /**
+   * Whether a faucet exists to claim play funds from (never on mainnet).
+   *
+   * Independent of {@link funds}, and absent until declared: a custom descriptor
+   * defaults to `false`, because routing a funding call to a faucet that is not
+   * there is worse than refusing locally.
+   */
   readonly faucet: boolean;
   /**
    * REST base the SDK sends to, or `null` when no host is live yet — in which
@@ -277,12 +352,23 @@ export interface NetworkConfig {
    */
   readonly baseUrl: string | null;
   /**
-   * WebSocket base (origin only, no path), or `null` alongside a `null`
-   * `baseUrl`. Append `/ws` for authenticated streams and `/stream` for market
-   * data; {@link Client.wsUrl} resolves this for you, honoring a `baseUrl`
-   * override.
+   * WebSocket base (origin only, no path), or `null` when there is none to
+   * declare. Append `/ws` for authenticated streams and `/stream` for market
+   * data; {@link Client.wsUrl} resolves this for you.
+   *
+   * `null` on a custom descriptor means **derive it from the REST origin**,
+   * which is what {@link Client.wsUrl} has always done — so the stream cannot
+   * end up on a different host than the one the token was minted on. Declare it
+   * only for a deployment that genuinely serves its stream elsewhere.
    */
   readonly wsUrl: string | null;
+  /**
+   * EIP-712 domain for this target, with `chainId: null` when it is unknown.
+   *
+   * Unknown means **refuse to sign**, never fall back to a constant — see
+   * {@link Client.requireSigningChainId}. A custom descriptor starts with
+   * `null` and only carries a chain id if the caller declared one.
+   */
   readonly signingDomain: NetworkSigningDomain;
 }
 
@@ -359,50 +445,87 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
 );
 
 /**
- * Resolve a network's bundled config.
+ * The built-in descriptors, by identity — the ones {@link networkConfig} may
+ * trust without re-validating, because this module built and froze them.
+ * `Network.Mainnet`'s entry is intentionally among them despite its `null` base;
+ * the base is checked where a client is constructed, not here.
+ */
+const BUILT_IN_CONFIGS: ReadonlySet<NetworkConfig> = new Set(
+  Object.values(NETWORKS),
+);
+
+/**
+ * Resolve a {@link NetworkSelector} — a {@link Network} member or a
+ * {@link NetworkConfig} descriptor — into a validated bundle.
  *
  * Throws on an identifier this SDK does not recognize. That is the fail-safe
  * direction the spec mandates — an unknown network must be treated as real funds
  * and refused, never assumed to be play money. The guard is not redundant with
  * the `Network` type: this is a published JavaScript package, so a plain string
  * can reach here from untyped callers, `JSON.parse`, or an env var.
+ *
+ * A descriptor is **re-validated** unless this module built it, for the same
+ * reason: an object literal satisfies `NetworkConfig` at compile time while
+ * carrying an unusable base URL, an unsafe label, or no funds declaration at
+ * all. Validation is idempotent, so passing a {@link customNetwork} result back
+ * through is free of surprises.
  */
-export function networkConfig(network: Network): NetworkConfig {
-  const config = Object.prototype.hasOwnProperty.call(NETWORKS, network)
-    ? NETWORKS[network]
-    : undefined;
-  if (!config) {
-    throw new NexusExchangeError(
-      `unrecognized network ${JSON.stringify(String(network))}; refusing to ` +
-        `guess a target. An unknown network must be treated as real funds. ` +
-        `Known networks: ${Object.keys(NETWORKS).join(", ")}.`,
-    );
+export function networkConfig(network: NetworkSelector): NetworkConfig {
+  if (typeof network === "string") {
+    const config = Object.prototype.hasOwnProperty.call(NETWORKS, network)
+      ? NETWORKS[network]
+      : undefined;
+    if (!config) {
+      throw new NexusExchangeError(
+        `unrecognized network ${JSON.stringify(String(network))}; refusing to ` +
+          `guess a target. An unknown network must be treated as real funds. ` +
+          `Known networks: ${Object.keys(NETWORKS).join(", ")}. For a ` +
+          `deployment this SDK does not name, build a descriptor with ` +
+          `\`customNetwork({ label, baseUrl, funds })\` and pass that instead.`,
+      );
+    }
+    return config;
   }
-  return config;
+  if (network !== null && typeof network === "object") {
+    // Identity, not structure: a descriptor this module built and froze is
+    // already validated, so it comes back unchanged — which keeps
+    // `client.network === target` true for the caller and makes re-resolving one
+    // free.
+    if (BUILT_IN_CONFIGS.has(network) || VALIDATED_CONFIGS.has(network)) {
+      return network;
+    }
+    return normalizeDescriptor(network);
+  }
+  throw new NexusExchangeError(
+    `network must be a Network member or a NetworkConfig descriptor from ` +
+      `customNetwork(), got ${typeToken(network)}. An unknown network must be ` +
+      `treated as real funds, so there is nothing safe to fall back to.`,
+  );
 }
 
 /**
- * Resolve a network's default REST base URL.
+ * Resolve a target's default REST base URL.
  *
  * Throws for a network with no live host (see {@link NETWORKS}) rather than
  * returning a URL that cannot work — including `Network.Mainnet`, where a
- * plausible-looking wrong base would fail only against real funds.
+ * plausible-looking wrong base would fail only against real funds. A custom
+ * descriptor always has one, because {@link customNetwork} requires it.
  */
-export function baseUrlForNetwork(network: Network): string {
+export function baseUrlForNetwork(network: NetworkSelector): string {
   const config = networkConfig(network);
   if (config.baseUrl === null) {
-    throw new NexusExchangeError(unavailableNetworkMessage(network, config));
+    throw new NexusExchangeError(unavailableNetworkMessage(config));
   }
   return config.baseUrl;
 }
 
-function unavailableNetworkMessage(
-  network: Network,
-  config: NetworkConfig,
-): string {
+function unavailableNetworkMessage(config: NetworkConfig): string {
   return (
-    `network ${JSON.stringify(network)} (${config.label}) has no public base ` +
-    `URL in this SDK version yet, so there is nothing safe to send to. ` +
+    `network ${JSON.stringify(config.label)} has no public base URL in this ` +
+    `SDK version yet, so there is nothing safe to send to. ` +
+    // Matched positively on `real` rather than by negating `play`, so an
+    // undeclared target is described with the cautious wording, not the relaxed
+    // one.
     (config.funds === "real"
       ? `This is the REAL-FUNDS network, so it fails closed rather than ` +
         `guessing a host: DNS/TLS is still pending (ENG-8155), and the ` +
@@ -412,6 +535,494 @@ function unavailableNetworkMessage(
     `Pass an explicit \`baseUrl\` to target it deliberately, or use ` +
     `\`Network.Testnet\` for play funds.`
   );
+}
+
+/**
+ * Blank out `user:password@` before a rejected URL is echoed into an error.
+ *
+ * The userinfo checks below refuse such a URL and deliberately do not print it,
+ * but a URL can fail *earlier* — unparseable, or no host — and those messages do
+ * echo it to make the mistake obvious. `https://u:pw@` hits both at once, so the
+ * password would otherwise land in an error message and every log that captures
+ * it. Applied to the raw string, since an unparseable URL cannot be taken apart.
+ */
+function redactUrlUserinfo(raw: string): string {
+  return raw.replace(
+    /^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/,
+    "$1<redacted>@",
+  );
+}
+
+/** What a rejected value *was*, for an error message that never prints it. */
+function typeToken(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  return `a ${typeof value}`;
+}
+
+// ── Custom networks ──────────────────────────────────────────────────────────
+
+/** Longest accepted {@link CustomNetworkOptions.label}. */
+const LABEL_MAX_LENGTH = 64;
+
+/**
+ * Characters a label may contain. Everything else is rejected rather than
+ * escaped or normalized, because the label is a **credential-storage key** in
+ * sibling clients: `../other`, `one/two`, `one:two`, `one two`, an embedded
+ * newline or NUL would each let one target address another target's stored
+ * credentials, which is exactly where "credentials never cross networks" has to
+ * hold. Non-ASCII is out for the same reason — Unicode normalization makes two
+ * distinct labels resolve to one key.
+ */
+const LABEL_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/** Options for {@link customNetwork}. Three are required; nothing is guessed. */
+export interface CustomNetworkOptions {
+  /**
+   * Short name for the target, e.g. `"dev"`. Required — a target with no name
+   * has nowhere to put its credentials in the clients that namespace them by it.
+   *
+   * Trimmed, then constrained to `[A-Za-z0-9._-]` and 64 characters, with `.`
+   * and `..` refused outright. See {@link LABEL_PATTERN} for why the rejections
+   * matter.
+   */
+  label: string;
+  /**
+   * REST base, **including the path prefix** the deployment serves the API under
+   * (for the direct indexer surface that is {@link API_BASE_PATH}, e.g.
+   * `https://exchange.example.com/api/v1`). Method paths are appended to it, and
+   * the host-root routes plus {@link Client.wsUrl} are derived from its origin.
+   * Trailing slashes are trimmed.
+   *
+   * Validated as an absolute `http(s)` URL with no userinfo, query or fragment,
+   * and no whitespace or control characters — each of those would otherwise
+   * build a *wrong* request rather than fail outright. A query is the sharp one:
+   * it swallows the appended path, so the request lands somewhere other than
+   * where the signature says and surfaces as a signature error rather than an
+   * obvious bad URL. Userinfo is refused rather than stripped, because it would
+   * leak into every log and error that prints the base.
+   *
+   * Unlike the {@link ClientOptions.baseUrl} shortcut, an `/api/exchange`
+   * gateway prefix is **not** rejected here: you are declaring the whole bundle
+   * and you own the URL layout, and some deployments this exists for are only
+   * reachable through the gateway.
+   */
+  baseUrl: string;
+  /**
+   * What this target's balances are worth. **Required, with no default** —
+   * see {@link Funds} for why neither boolean default is honest. Pass
+   * `"unknown"` deliberately if you genuinely do not know; the money guardrails
+   * then refuse rather than assume.
+   */
+  funds: Funds;
+  /**
+   * Whether the target has a faucet to claim play funds from. Defaults to
+   * `false` — absent until declared — and may only be `true` alongside
+   * `funds: "play"`, since {@link Client.claimFaucet} claims only for a declared
+   * play-funds target and a faucet flag on any other target could never be used.
+   */
+  faucet?: boolean;
+  /**
+   * WebSocket base, origin only (`wss://stream.example.com`). Omit it and
+   * {@link Client.wsUrl} derives one from {@link baseUrl}'s origin, which keeps
+   * the stream on the host the ws token was minted on — declare it only for a
+   * deployment that really serves its stream from another origin.
+   *
+   * Validated as an absolute `ws(s)` URL with no path, userinfo, query or
+   * fragment (the SDK appends `/ws` or `/stream` itself). A `ws://` stream
+   * alongside an `https://` REST base is refused: that is a TLS downgrade for
+   * the socket the ws token is spent on.
+   */
+  wsUrl?: string;
+  /**
+   * EIP-712 domain chain id for the target, if you know it. Omit it and the
+   * descriptor publishes none, so {@link Client.requireSigningChainId} refuses
+   * — the signing domain is never guessed, because a wrong one either fails
+   * verification or produces a signature that is valid on a *different*
+   * network. Read `signing_domain.chain_id` from `GET /metadata` for the host.
+   *
+   * Only the chain id is caller-supplied. The EIP-712 `name`/`version` are
+   * contract-level constants, identical on every deployment, so they stay fixed
+   * and "caller-supplied domain" means the same thing in every Nexus SDK.
+   */
+  signingChainId?: number;
+}
+
+/**
+ * Build a validated {@link NetworkConfig} for a deployment this SDK does not
+ * name — a private stage, a preview host, a local cluster — and pass it as
+ * `network` anywhere a {@link Network} member goes:
+ *
+ * ```ts
+ * const client = new Client({
+ *   network: customNetwork({
+ *     label: "dev",
+ *     baseUrl: "https://exchange.example.com/api/v1",
+ *     funds: "play",
+ *     faucet: true,
+ *   }),
+ * });
+ * ```
+ *
+ * This exists so the package can reach any deployment while **shipping no
+ * hostname for any of them**: enumerating private stages here would publish them
+ * to every external user of a public artifact, permanently and discoverably, and
+ * the list would grow with every new environment. The caller supplies the host;
+ * this SDK adds none, and nothing checks the host against an allowlist or a
+ * denylist — that would put a private hostname back in a published package.
+ *
+ * It carries the **whole bundle**, not just a URL, because a URL alone is what
+ * lets a client report play-funds guardrails while pointed at a real-funds host.
+ * The returned descriptor is frozen, so a target cannot be retargeted after a
+ * client is built from it.
+ *
+ * `Custom` is client-side only: it is not a value the server accepts and it does
+ * not appear in the spec's `x-nexus-networks`.
+ *
+ * @throws {NexusExchangeError} on any rejected field, before a client exists.
+ */
+export function customNetwork(options: CustomNetworkOptions): NetworkConfig {
+  if (options === null || typeof options !== "object") {
+    throw new NexusExchangeError(
+      `customNetwork() needs an options object with at least { label, ` +
+        `baseUrl, funds }, got ${typeToken(options)}`,
+    );
+  }
+  return buildDescriptor(options, options.signingChainId);
+}
+
+/**
+ * Descriptors this module built and froze, so {@link networkConfig} can hand one
+ * back untouched instead of rebuilding it. A `WeakSet` because the entries are
+ * caller-owned objects whose lifetime is the caller's, and holding them strongly
+ * would pin every target a long-running process ever constructed.
+ */
+const VALIDATED_CONFIGS = new WeakSet<NetworkConfig>();
+
+/**
+ * Validate an already-shaped {@link NetworkConfig} — an object literal, or
+ * something out of `JSON.parse` — that did not come from {@link customNetwork}.
+ *
+ * Same rules, one shape difference: a descriptor carries the chain id nested
+ * under `signingDomain` rather than as a flat `signingChainId`. `name`/`version`
+ * are *not* read from it: they are contract-level constants, so a literal
+ * claiming different ones is ignored rather than signed under.
+ */
+function normalizeDescriptor(input: NetworkConfig): NetworkConfig {
+  const domain: unknown = input.signingDomain;
+  const chainId =
+    domain !== null && typeof domain === "object"
+      ? (domain as NetworkSigningDomain).chainId
+      : undefined;
+  return buildDescriptor(input, chainId);
+}
+
+/** The one construction path for a custom descriptor. Validates, then freezes. */
+function buildDescriptor(
+  fields: {
+    label: unknown;
+    baseUrl: unknown;
+    funds: unknown;
+    faucet?: unknown;
+    wsUrl?: unknown;
+  },
+  signingChainId: unknown,
+): NetworkConfig {
+  const label = normalizeLabel(fields.label);
+  const where = `customNetwork({ label: ${JSON.stringify(label)} })`;
+  // The parsed base is kept, not just its string: the WS check below compares
+  // schemes, and only the parsed form has them normalized.
+  const base = parseCustomUrl(where, "baseUrl", fields.baseUrl, [
+    "http:",
+    "https:",
+  ]);
+  const baseUrl = base.trimmed;
+  const funds = normalizeFunds(fields.funds, where);
+  const faucet = normalizeFaucet(fields.faucet, funds, where);
+  const wsUrl = normalizeCustomWsUrl(fields.wsUrl, base.url, where);
+  const chainId = normalizeSigningChainId(signingChainId, where);
+  const config = Object.freeze({
+    label,
+    funds,
+    faucet,
+    baseUrl,
+    wsUrl,
+    signingDomain:
+      chainId === null
+        ? SIGNING_DOMAIN
+        : Object.freeze({ ...SIGNING_DOMAIN, chainId }),
+  }) as NetworkConfig;
+  VALIDATED_CONFIGS.add(config);
+  return config;
+}
+
+function normalizeLabel(label: unknown): string {
+  if (typeof label !== "string") {
+    throw new NexusExchangeError(
+      `customNetwork() label is required and must be a string, got ` +
+        `${typeToken(label)}. It names the target in errors and is the key ` +
+        `sibling clients store credentials under, so it cannot be derived.`,
+    );
+  }
+  const trimmed = label.trim();
+  if (trimmed.length === 0) {
+    throw new NexusExchangeError(`customNetwork() label must not be empty`);
+  }
+  if (trimmed.length > LABEL_MAX_LENGTH) {
+    throw new NexusExchangeError(
+      `customNetwork() label must be at most ${LABEL_MAX_LENGTH} characters, ` +
+        `got ${trimmed.length}`,
+    );
+  }
+  // `.` and `..` pass the character class but are path traversal, not names.
+  if (trimmed === "." || trimmed === "..") {
+    throw new NexusExchangeError(
+      `customNetwork() label must not be "." or ".." — the label is used as a ` +
+        `credential-storage key, and those two address a directory rather ` +
+        `than naming a target`,
+    );
+  }
+  if (!LABEL_PATTERN.test(trimmed)) {
+    throw new NexusExchangeError(
+      `customNetwork() label must contain only letters, digits, ".", "_" and ` +
+        `"-", got ${JSON.stringify(trimmed)}. It is used as a ` +
+        `credential-storage key, so a path separator, a colon, whitespace, a ` +
+        `control character or a non-ASCII character in it could let this ` +
+        `target address another target's stored credentials.`,
+    );
+  }
+  return trimmed;
+}
+
+function normalizeFunds(funds: unknown, where: string): Funds {
+  if (typeof funds !== "string" || !FUNDS_VALUES.includes(funds as Funds)) {
+    throw new NexusExchangeError(
+      `${where} requires an explicit ` +
+        `\`funds\` of ${FUNDS_VALUES.map((f) => JSON.stringify(f)).join(" | ")}` +
+        `, got ${typeToken(funds)}. There is deliberately no default: ` +
+        `assuming "play" would make every money guardrail lie in the ` +
+        `direction that costs money, and assuming "real" would make a dev ` +
+        `deployment unusable. Pass "unknown" if you do not know — the ` +
+        `guardrails then refuse instead of assuming.`,
+    );
+  }
+  return funds as Funds;
+}
+
+function normalizeFaucet(
+  faucet: unknown,
+  funds: Funds,
+  where: string,
+): boolean {
+  if (faucet === undefined) return false;
+  if (typeof faucet !== "boolean") {
+    throw new NexusExchangeError(
+      `${where} \`faucet\` must be a ` +
+        `boolean when given, got ${typeToken(faucet)}`,
+    );
+  }
+  // Matched positively on `play`: `funds !== "real"` would accept a faucet on an
+  // undeclared target, whose claims can never be made anyway.
+  if (faucet && funds !== "play") {
+    throw new NexusExchangeError(
+      `${where} declares a faucet ` +
+        `with \`funds: ${JSON.stringify(funds)}\`. A faucet claim is only ever ` +
+        `made for a declared play-funds target, so this flag could never be ` +
+        `used — declare \`funds: "play"\` if the faucet is real, or drop the ` +
+        `flag.`,
+    );
+  }
+  return faucet;
+}
+
+/**
+ * Reject whitespace and control characters in a caller-supplied URL, **before**
+ * it is parsed.
+ *
+ * `new URL` strips tabs, newlines and surrounding spaces silently, so a base
+ * that reads as one host can parse as another; and a control character would
+ * later be rejected by `fetch` as a cryptic per-request failure instead of a
+ * clear construction-time one.
+ */
+function assertNoWhitespaceOrControl(
+  where: string,
+  field: string,
+  raw: string,
+): void {
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f) {
+      throw new NexusExchangeError(
+        `${where} ${field} must not contain whitespace or control ` +
+          `characters; they are silently stripped when the URL is parsed, so ` +
+          `the base that gets used would not be the one written here`,
+      );
+    }
+  }
+}
+
+/**
+ * Parse and check the parts of a caller-supplied URL that would otherwise build
+ * a wrong request. Returns the parsed URL and the byte-exact trimmed input —
+ * byte-exact because {@link basePathOf} slices the base by string length to keep
+ * the signed path identical to the wire path.
+ *
+ * `where` names the option being validated, since both {@link customNetwork} and
+ * the {@link ClientOptions.baseUrl} shortcut come through here.
+ */
+function parseCustomUrl(
+  where: string,
+  field: string,
+  raw: unknown,
+  schemes: readonly string[],
+): { url: URL; trimmed: string } {
+  const kinds = schemes.map((s) => s.replace(":", "")).join(" or ");
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new NexusExchangeError(
+      `${where} ${field} must be a non-empty absolute ${kinds} URL, got ` +
+        `${typeToken(raw)}`,
+    );
+  }
+  assertNoWhitespaceOrControl(where, field, raw);
+  const trimmed = raw.replace(/\/+$/, "");
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new NexusExchangeError(
+      `${where} ${field} must be an absolute ${kinds} URL, got ` +
+        `${JSON.stringify(redactUrlUserinfo(raw))}. A relative base would ` +
+        `resolve against the hosting page's origin in a browser and send ` +
+        `signed requests there.`,
+    );
+  }
+  if (!schemes.includes(url.protocol)) {
+    throw new NexusExchangeError(
+      `${where} ${field} must use ${schemes.join(" or ")}, got ` +
+        `${JSON.stringify(url.protocol)}`,
+    );
+  }
+  if (!url.hostname) {
+    throw new NexusExchangeError(
+      `${where} ${field} has no host: ${JSON.stringify(redactUrlUserinfo(raw))}`,
+    );
+  }
+  if (url.username || url.password) {
+    throw new NexusExchangeError(
+      `${where} ${field} must not carry "user:password@" credentials. They are ` +
+        `refused rather than stripped, because the base is printed in errors ` +
+        `and logs — put the credentials in \`apiKey\`/\`apiSecret\` instead.`,
+    );
+  }
+  if (url.search) {
+    throw new NexusExchangeError(
+      `${where} ${field} must not carry a query string, got ` +
+        `${JSON.stringify(url.search)}. Paths are appended to the base, so the ` +
+        `query would swallow them and the request would land somewhere other ` +
+        `than where its signature says.`,
+    );
+  }
+  if (url.hash) {
+    throw new NexusExchangeError(
+      `${where} ${field} must not carry a fragment, got ` +
+        `${JSON.stringify(url.hash)}`,
+    );
+  }
+  return { url, trimmed };
+}
+
+function normalizeCustomWsUrl(
+  raw: unknown,
+  base: URL,
+  where: string,
+): string | null {
+  // `null` as well as `undefined`: a NetworkConfig spells "none declared" as
+  // `null`, and re-validating one has to mean the same thing as building it.
+  if (raw === undefined || raw === null) return null;
+  const { url } = parseCustomUrl(where, "wsUrl", raw, ["ws:", "wss:"]);
+  if (url.pathname !== "" && url.pathname !== "/") {
+    throw new NexusExchangeError(
+      `${where} wsUrl must be an origin with no path, got ` +
+        `${JSON.stringify(url.pathname)}. This SDK appends "/ws" for ` +
+        `authenticated streams and "/stream" for market data itself, so a path ` +
+        `here would be doubled.`,
+    );
+  }
+  // Both sides compared as *parsed* schemes, which `URL` lowercases. A raw-string
+  // prefix test would read "HTTPS://…" as not-TLS and wave the downgrade
+  // through — the base is kept byte-exact (see `basePathOf`), so its string form
+  // carries whatever case the caller wrote.
+  if (url.protocol === "ws:" && base.protocol === "https:") {
+    throw new NexusExchangeError(
+      `${where} wsUrl is insecure "ws://" while baseUrl is "https://". That ` +
+        `downgrades the socket a short-lived ws token is spent on to ` +
+        `plaintext; use "wss://".`,
+    );
+  }
+  return `${url.protocol}//${url.host}`;
+}
+
+function normalizeSigningChainId(
+  chainId: unknown,
+  where: string,
+): number | null {
+  if (chainId === undefined || chainId === null) return null;
+  if (
+    typeof chainId !== "number" ||
+    !Number.isSafeInteger(chainId) ||
+    chainId <= 0
+  ) {
+    throw new NexusExchangeError(
+      `${where} signingChainId must ` +
+        `be a positive safe integer when given, got ${JSON.stringify(chainId)}. ` +
+        `\`0\` is rejected too: it is not a real chain id but it is what a ` +
+        `missing one collapses to, and signing under it is indistinguishable ` +
+        `from signing under a guess. Omit it to publish none and refuse to sign.`,
+    );
+  }
+  return chainId;
+}
+
+/**
+ * The descriptor behind the {@link ClientOptions.baseUrl} shortcut: the given
+ * host, and **nothing declared about it**.
+ *
+ * `funds: "unknown"` rather than the selected network's classification, so the
+ * money guardrails refuse instead of reporting whichever network happened to be
+ * named alongside; no faucet, and no signing domain, for the same reason. The
+ * label matches the one the MCP server already synthesizes for this case.
+ *
+ * {@link assertAbsoluteHttpUrl} runs first, so this shortcut keeps the rejections
+ * it always had — a relative or non-`http(s)` base, and a legacy `/api/exchange`
+ * gateway base. That last one stays a rejection *here* because this is the field
+ * a py/mcp gateway base gets pasted into, while being a legitimate layout to
+ * declare deliberately through `customNetwork`.
+ *
+ * Then the same URL hygiene as a declared descriptor: userinfo, a query, a
+ * fragment or embedded whitespace were previously accepted here and each builds
+ * a **wrong** request rather than failing — a query in particular swallows the
+ * appended path, so the request lands somewhere other than where its signature
+ * says and surfaces as a signature error.
+ */
+function undeclaredTarget(baseUrl: string): NetworkConfig {
+  const resolved = baseUrl.replace(/\/+$/, "");
+  assertAbsoluteHttpUrl(resolved);
+  const { trimmed } = parseCustomUrl("the", "`baseUrl` option", resolved, [
+    "http:",
+    "https:",
+  ]);
+  const config = Object.freeze({
+    label: "custom",
+    funds: "unknown",
+    faucet: false,
+    baseUrl: trimmed,
+    wsUrl: null,
+    signingDomain: SIGNING_DOMAIN,
+  }) as NetworkConfig;
+  // Validated, so re-resolving a client's own target through `networkConfig` is
+  // an identity, not a second (stricter, gateway-rejecting) pass.
+  VALIDATED_CONFIGS.add(config);
+  return config;
 }
 
 /**
@@ -433,9 +1044,10 @@ function assertAbsoluteHttpUrl(baseUrl: string): void {
     parsed = new URL(baseUrl);
   } catch {
     throw new NexusExchangeError(
-      `baseUrl must be an absolute http(s) URL, got ${JSON.stringify(baseUrl)}. ` +
-        `A relative base would resolve against the hosting page's origin in a ` +
-        `browser and send signed requests there.`,
+      `baseUrl must be an absolute http(s) URL, got ` +
+        `${JSON.stringify(redactUrlUserinfo(baseUrl))}. A relative base would ` +
+        `resolve against the hosting page's origin in a browser and send ` +
+        `signed requests there.`,
     );
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -524,31 +1136,51 @@ export interface RetryOptions {
 
 export interface ClientOptions {
   /**
-   * Network to target. Defaults to {@link Network.Testnet} (play funds) —
-   * never mainnet, so a caller who omits this cannot send real-money orders by
-   * accident.
+   * Target to talk to: a {@link Network} member, or a {@link customNetwork}
+   * descriptor for a deployment this SDK does not name.
    *
-   * The credentials passed alongside must belong to this network: keys and
+   * Defaults to {@link Network.Testnet} (play funds) — never mainnet, so a
+   * caller who omits this cannot send real-money orders by accident.
+   *
+   * The credentials passed alongside must belong to this target: keys and
    * session tokens are minted per network and are invalid on any other.
    */
-  network?: Network;
+  network?: NetworkSelector;
   /**
-   * Explicit base URL, overriding the network's default. Trailing slashes are
-   * trimmed.
+   * Shortcut for retargeting the transport at a host, with **no safety metadata
+   * declared**. Trailing slashes are trimmed.
    *
-   * This is the supported way to reach a base the axis does not name — e.g. the
-   * beta deployment, which is a testnet base rather than a network of its own:
+   * ```ts
+   * new Client({ baseUrl: "https://exchange.example.com/api/v1" });
+   * ```
+   *
+   * This is sugar over {@link customNetwork}: it builds a descriptor whose
+   * `funds` are `"unknown"`, with no faucet and no signing domain, so there is
+   * one mechanism for pointing at a host and every guardrail reads the same
+   * fields. It therefore **replaces** `network` rather than modifying it — an
+   * overridden client no longer reports the selected network's funds
+   * classification, which used to let a testnet-selected client claim play-funds
+   * guardrails while pointed at a real-funds host.
+   *
+   * Undeclared is not "safe": the money guardrails
+   * ({@link Client.claimFaucet}, {@link Client.claimCredit}) refuse on an
+   * `"unknown"` target, and {@link Client.isRealFunds} reports `true`. Use
+   * `network: customNetwork({ … })` and declare `funds` to get them back:
    *
    * ```ts
    * new Client({
-   *   network: Network.Testnet,
-   *   baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+   *   network: customNetwork({
+   *     label: "dev",
+   *     baseUrl: "https://exchange.example.com/api/v1",
+   *     funds: "play",
+   *     faucet: true,
+   *   }),
    * });
    * ```
    *
-   * The override changes only the target. `network` still selects the signing
-   * domain, the funds classification, and which credentials are valid — so do
-   * not use it to point a testnet client at mainnet.
+   * Cannot be combined with a descriptor `network` — that would be two
+   * declarations of the same thing, and silently preferring one of them is how a
+   * client ends up on a host whose funds classification came from elsewhere.
    */
   baseUrl?: string;
   /** API key for signed requests (paired with `apiSecret`). */
@@ -838,11 +1470,17 @@ function abortSignalFor(timeoutMs: number, caller?: AbortSignal): AbortSignal {
 export class Client {
   // Bound for the client's lifetime, with no setter: credentials are per-network
   // and must never be reused across networks.
-  readonly #network: Network;
+  readonly #network: NetworkSelector;
   readonly #networkConfig: NetworkConfig;
   readonly #baseUrl: string;
   readonly #basePath: string;
   readonly #origin: string;
+  // A WS base the *caller* declared on a custom descriptor, or null to derive one
+  // from #origin. Never read from the NETWORKS map: for a named network the
+  // derivation is the invariant (the stream stays on the REST origin, so a ws
+  // token cannot be minted on one host and spent on another) and a test pins the
+  // map's declared values against it.
+  readonly #declaredWsUrl: string | null;
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
   // Mutable: {@link setSessionToken} / {@link signIn} update it after login.
@@ -862,21 +1500,40 @@ export class Client {
   constructor(options: ClientOptions = {}) {
     // Default to play funds. Defaulting to mainnet would mean a caller who
     // forgot the option sends real-money orders.
-    const network = options.network ?? Network.Testnet;
-    // Resolved before the baseUrl branch so an unrecognized network is refused
-    // even when an explicit `baseUrl` is supplied — the network still selects
-    // the signing domain and the funds classification.
-    const config = networkConfig(network);
-    if (options.baseUrl === undefined && config.baseUrl === null) {
-      throw new NexusExchangeError(unavailableNetworkMessage(network, config));
+    const selector = options.network ?? Network.Testnet;
+    // Resolved before the baseUrl branch so an unrecognized network — or a
+    // hand-written descriptor with an unusable base, an unsafe label or no funds
+    // declaration — is refused whether or not an override is supplied.
+    const selected = networkConfig(selector);
+    if (options.baseUrl !== undefined && typeof selector !== "string") {
+      throw new NexusExchangeError(
+        `pass either \`baseUrl\` or a \`customNetwork()\` descriptor as ` +
+          `\`network\`, not both: the descriptor already carries a base URL ` +
+          `(${JSON.stringify(selected.baseUrl)}) alongside the funds ` +
+          `classification and signing domain that belong to it, and silently ` +
+          `preferring one of the two bases is how a client ends up on a host ` +
+          `whose safety metadata came from somewhere else. Put the host in ` +
+          `\`customNetwork({ baseUrl })\`.`,
+      );
     }
-    this.#network = network;
+    // A bare `baseUrl` is sugar for a custom target with nothing declared: one
+    // mechanism for pointing at a host, so every guardrail below reads the same
+    // descriptor fields. It deliberately does not inherit `selected`'s funds,
+    // faucet or signing domain — that inheritance is what let an overridden
+    // client report the *selected* network's safety metadata rather than the
+    // target's.
+    const config =
+      options.baseUrl === undefined
+        ? selected
+        : undeclaredTarget(options.baseUrl);
+    if (config.baseUrl === null) {
+      throw new NexusExchangeError(unavailableNetworkMessage(config));
+    }
+    this.#network = options.baseUrl === undefined ? selector : config;
     this.#networkConfig = config;
-    // `config.baseUrl` is non-null here: the branch above threw when it was null
-    // and no override was supplied.
-    const resolved = (options.baseUrl ?? config.baseUrl!).replace(/\/+$/, "");
-    assertAbsoluteHttpUrl(resolved);
-    this.#baseUrl = resolved;
+    this.#declaredWsUrl =
+      typeof this.#network === "string" ? null : config.wsUrl;
+    this.#baseUrl = config.baseUrl;
     this.#basePath = basePathOf(this.#baseUrl);
     // The origin (scheme + host [+ port]) is the base URL with its path prefix
     // sliced off — byte-exact, same as `basePathOf`. Used for host-root routes
@@ -933,39 +1590,160 @@ export class Client {
     return Math.max(jittered, retryAfter);
   }
 
+  /**
+   * Refuse a play-funds funding call unless this target declares that it *is*
+   * play funds and that it *has* a faucet.
+   *
+   * The condition matches `"play"` **positively**. Negating `"real"` would let
+   * an `"unknown"` target — every bare `baseUrl` override — through as if it
+   * were safe, which is the one direction that must never be the default. The
+   * faucet flag is checked separately because "not real money" does not imply
+   * "there is a faucet": routing a funding call at a host with none would be a
+   * signed request that can only 404.
+   *
+   * Local and synchronous, so nothing is signed or sent — the refusal cannot be
+   * confused with a server rejection, and no signature reaches a host whose
+   * classification is undeclared.
+   */
+  #requireClaimableFaucet(action: string): void {
+    const { funds, faucet, label } = this.#networkConfig;
+    if (funds === "play" && faucet) return;
+    const because =
+      funds === "real"
+        ? `it targets REAL FUNDS, and this call claims free collateral`
+        : funds === "unknown"
+          ? `it does not declare what its funds are worth — undeclared is not ` +
+            `"play", and treating it as play funds is the direction that costs ` +
+            `money`
+          : `it declares play funds but no faucet, so there is nothing to claim ` +
+            `from`;
+    throw new NexusExchangeError(
+      `${action}() is refused for target ${JSON.stringify(label)} because ` +
+        `${because}. Use \`Network.Testnet\` or \`Network.Local\` for play ` +
+        `funds, or declare the target with ` +
+        `\`customNetwork({ …, funds: "play", faucet: true })\` if it really has ` +
+        `one. (funds: ${JSON.stringify(funds)}, faucet: ${faucet})`,
+    );
+  }
+
   /** Whether this client was given both an API key and secret. */
   get hasCredentials(): boolean {
     return Boolean(this.#apiKey && this.#apiSecret);
   }
 
-  /** The network this client is bound to. Fixed at construction. */
-  get network(): Network {
+  /**
+   * The target this client is bound to. Fixed at construction.
+   *
+   * A {@link Network} member when one was selected, or the
+   * {@link NetworkConfig} descriptor when the target is a custom one — including
+   * when it came from the {@link ClientOptions.baseUrl} shortcut, which builds a
+   * descriptor and *replaces* the named network with it. So a client with an
+   * override does not report the network that was named alongside it: comparing
+   * this against `Network.Testnet` answers "is this the testnet the axis names",
+   * not "is this safe". For the latter read {@link funds} (or
+   * {@link isRealFunds}), which is always answerable; for a name to print, read
+   * {@link label}.
+   */
+  get network(): NetworkSelector {
     return this.#network;
   }
 
   /**
-   * The bundled config for {@link network} — label, funds classification,
-   * faucet availability, and signing domain.
+   * The effective descriptor for this client — label, funds classification,
+   * faucet availability, base URLs, and signing domain — whether it came from
+   * the {@link NETWORKS} map, {@link customNetwork}, or the
+   * {@link ClientOptions.baseUrl} shortcut.
    *
-   * Note `baseUrl`/`wsUrl` here are the network's *defaults*; read
-   * {@link Client.baseUrl} / {@link Client.wsUrl} for what this client actually
-   * uses, which differ when a `baseUrl` override is in play.
+   * `baseUrl` here always equals {@link Client.baseUrl}. `wsUrl` may be `null`,
+   * meaning {@link Client.wsUrl} derives one from the REST origin.
    */
   get networkConfig(): NetworkConfig {
     return this.#networkConfig;
   }
 
+  /** This target's label, e.g. `"Testnet"` or `"dev"`. */
+  get label(): string {
+    return this.#networkConfig.label;
+  }
+
   /**
-   * Whether this client is pointed at real funds. `true` means every order
-   * moves real money.
+   * What this client's balances are worth, read from the descriptor — so it
+   * follows a `baseUrl` override or a custom target instead of reporting the
+   * selected network's classification. `"unknown"` means nothing declared it.
    *
-   * Derived from the selected network, so a `baseUrl` override does not change
-   * it — pointing a `Network.Testnet` client at a mainnet host would report
-   * `false`. Treat this as "which network's rules and credentials apply", and
-   * do not use an override to cross the funds boundary.
+   * This is the honest three-way answer; gate money-moving actions on it and
+   * match `"play"` positively. See {@link Funds}.
+   */
+  get funds(): Funds {
+    return this.#networkConfig.funds;
+  }
+
+  /** Whether this target declares a faucet to claim play funds from. */
+  get hasFaucet(): boolean {
+    return this.#networkConfig.faucet;
+  }
+
+  /**
+   * Whether this client must be treated as pointed at real funds. `true` means
+   * an order here may move real money.
+   *
+   * Read from the descriptor, so a `baseUrl` override or a custom target reports
+   * *its own* classification rather than that of whatever network was named
+   * alongside it. **Fails closed:** an `"unknown"` target reports `true`, because
+   * the alternative is a guardrail that lies in the direction that costs money.
+   * Read {@link funds} to tell "real" from "undeclared".
    */
   get isRealFunds(): boolean {
-    return this.#networkConfig.funds === "real";
+    // Matched positively on `play`: `funds === "real"` would let `"unknown"`
+    // report itself as safe.
+    return this.#networkConfig.funds !== "play";
+  }
+
+  /**
+   * This target's EIP-712 signing domain, with `chainId: null` when this SDK
+   * publishes none (which is every named network — the value is per-network and
+   * server-authoritative). See {@link requireSigningChainId}.
+   */
+  get signingDomain(): NetworkSigningDomain {
+    return this.#networkConfig.signingDomain;
+  }
+
+  /**
+   * The EIP-712 chain id to sign with, or a refusal.
+   *
+   * ```ts
+   * const registration = signer.registerAgent({
+   *   agent,
+   *   chainId: client.requireSigningChainId(),
+   *   expiresAtMs,
+   *   nonce,
+   * });
+   * ```
+   *
+   * The signing domain is **never guessed**. It is per-network and
+   * server-authoritative, so a client that cannot obtain one must refuse to sign
+   * rather than fall back to a constant: a wrong domain either fails
+   * verification or, worse, produces a signature that is valid on a *different*
+   * network. A custom target carries one only if the caller declared
+   * `signingChainId`; otherwise read `signing_domain.chain_id` from
+   * `GET /metadata` for this host and pass that to the signer directly.
+   *
+   * @throws {NexusExchangeError} when no chain id is known for this target.
+   */
+  requireSigningChainId(): number {
+    const { chainId } = this.#networkConfig.signingDomain;
+    if (chainId === null) {
+      throw new NexusExchangeError(
+        `no EIP-712 chain id is known for target ` +
+          `${JSON.stringify(this.#networkConfig.label)}, so this client refuses ` +
+          `to sign rather than guess one — a wrong signing domain either fails ` +
+          `verification or produces a signature that is valid on a different ` +
+          `network. Read \`signing_domain.chain_id\` from GET /metadata for ` +
+          `${JSON.stringify(this.#baseUrl)}, or declare it up front with ` +
+          `\`customNetwork({ signingChainId })\`.`,
+      );
+    }
+    return chainId;
   }
 
   /** The REST base URL this client sends to, including {@link API_BASE_PATH}. */
@@ -988,8 +1766,14 @@ export class Client {
    * override and cannot leave the stream on a different host than the token was
    * minted on. Throws only if the base URL has no `http(s)` origin to convert,
    * which `fetch` would reject anyway.
+   *
+   * The one exception is a custom descriptor that **declares** `wsUrl`, for a
+   * deployment that really serves its stream from another origin; that is
+   * returned as declared, and is the caller's statement that a token minted on
+   * the REST origin is spendable there.
    */
   get wsUrl(): string {
+    if (this.#declaredWsUrl !== null) return this.#declaredWsUrl;
     const url = wsUrlForOrigin(this.#origin);
     if (url === null) {
       throw new NexusExchangeError(
@@ -1339,11 +2123,21 @@ export class Client {
     });
   }
 
-  /** `POST /account/credit` — claim testnet faucet credit. */
-  claimCredit(
+  /**
+   * `POST /account/credit` — claim testnet faucet credit.
+   *
+   * Guarded by {@link Client.hasFaucet} / {@link Client.funds}: refused locally,
+   * before a request is built, unless this target declares both play funds and a
+   * faucet. See {@link claimFaucet}.
+   */
+  // `async` so the guard's refusal arrives as a *rejection*: this method is
+  // typed as returning a promise, and a caller writing `.catch(…)` on it would
+  // never see a synchronous throw.
+  async claimCredit(
     request: CreditRequest = {},
     opts?: { signal?: AbortSignal },
   ): Promise<CreditResponse> {
+    this.#requireClaimableFaucet("claimCredit");
     return this.#request<CreditResponse>("POST", "/account/credit", {
       body: request,
       signed: true,
@@ -1411,8 +2205,21 @@ export class Client {
    * On the 24h cooldown (or cumulative cap) the server responds `429`, surfaced
    * as an {@link ApiError} with `status === 429`; read `available_at_ms` off a
    * prior successful response to know when the next claim is allowed.
+   *
+   * **Refused locally** — before a request is built, let alone signed — unless
+   * this target declares both play funds and a faucet:
+   *
+   * | target                                              | `claimFaucet()` |
+   * | --------------------------------------------------- | --------------- |
+   * | `funds: "play"` + `faucet: true`                    | claims          |
+   * | `funds: "play"`, no faucet                          | refused         |
+   * | `funds: "real"`                                     | refused         |
+   * | `funds: "unknown"` (incl. a bare `baseUrl` override) | refused         |
    */
-  claimFaucet(opts?: { signal?: AbortSignal }): Promise<FaucetResponse> {
+  // `async` for the same reason as {@link claimCredit}: the guard must reject,
+  // not throw synchronously out of a promise-returning method.
+  async claimFaucet(opts?: { signal?: AbortSignal }): Promise<FaucetResponse> {
+    this.#requireClaimableFaucet("claimFaucet");
     return this.#request<FaucetResponse>("POST", "/faucet", {
       signed: true,
       signal: opts?.signal,
