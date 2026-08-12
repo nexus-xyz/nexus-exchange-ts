@@ -1634,7 +1634,7 @@ export interface NetworkTarget {
  * discovering a sibling network here does not mean your keys work there.
  */
 export interface Metadata {
-  /** Latest released spec tag this edge serves, e.g. `"v0.7.3"`. */
+  /** Latest released spec tag this edge serves, e.g. `"v0.8.1"`. */
   current_api_version: string;
   /**
    * Oldest released spec tag still accepted. A client pinned below this may
