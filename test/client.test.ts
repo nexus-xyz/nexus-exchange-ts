@@ -9,6 +9,7 @@ import {
   API_BASE_PATH,
   networkConfig,
   baseUrlForNetwork,
+  customNetwork,
   DEFAULT_USER_AGENT,
 } from "../src/client.js";
 import type { ClientOptions } from "../src/client.js";
@@ -117,16 +118,21 @@ test("selecting mainnet without an explicit baseUrl refuses", () => {
   assert.equal(NETWORKS[Network.Mainnet].faucet, false);
 });
 
+// A bare `baseUrl` is sugar for a custom target with nothing declared, so it
+// *replaces* the named network rather than retargeting it. `isRealFunds` still
+// reports true, but now because undeclared funds fail closed rather than because
+// mainnet was named — and the caller who wants the real classification declares
+// it (see the customNetwork section below).
 test("mainnet is reachable only by opting in with an explicit baseUrl", () => {
   const client = new Client({
     network: Network.Mainnet,
-    baseUrl: "https://api.internal.example/api/v1",
+    baseUrl: "https://api.example.invalid/api/v1",
     fetchImpl: async () => new Response("{}"),
   });
-  assert.equal(client.network, Network.Mainnet);
-  // The override changes the target, never the funds classification.
+  assert.notEqual(client.network, Network.Mainnet);
+  assert.equal(client.funds, "unknown");
   assert.equal(client.isRealFunds, true);
-  assert.equal(client.wsUrl, "wss://api.internal.example");
+  assert.equal(client.wsUrl, "wss://api.example.invalid");
 });
 
 // This is a published JS package, so a plain string reaches here from untyped
@@ -154,18 +160,26 @@ test("an unrecognized network is refused rather than assumed play funds", () => 
   );
 });
 
-// Beta is a testnet base, not a network: it keeps testnet's funds
-// classification and signing domain while retargeting the host.
-test("beta is reachable as a baseUrl override on testnet", () => {
-  const client = new Client({
-    network: Network.Testnet,
+// Beta is a testnet base, not a network of its own — so it is a custom target
+// that *declares* testnet's play funds, rather than a bare override that would
+// inherit nothing.
+test("beta is reachable as a custom testnet base", () => {
+  const beta = customNetwork({
+    label: "beta",
     baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
+    funds: "play",
+    faucet: true,
+  });
+  const client = new Client({
+    network: beta,
     fetchImpl: async () => new Response("{}"),
   });
-  assert.equal(client.network, Network.Testnet);
+  assert.equal(client.network, beta);
+  assert.equal(client.funds, "play");
   assert.equal(client.isRealFunds, false);
+  assert.equal(client.label, "beta");
   assert.equal(client.baseUrl, "https://beta.exchange.nexus.xyz/api/v1");
-  // wsUrl follows the override — the stream cannot end up on the default host.
+  // wsUrl follows the base — the stream cannot end up on the default host.
   assert.equal(client.wsUrl, "wss://beta.exchange.nexus.xyz");
 });
 
