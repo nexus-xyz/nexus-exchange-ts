@@ -51,6 +51,7 @@ import type {
   EquityPoint,
   FaucetResponse,
   Fill,
+  FundingPremiumSample,
   FundingSample,
   FundsEntry,
   MarginAdjustRequest,
@@ -1078,13 +1079,23 @@ export class Client {
     );
   }
 
-  /** `GET /markets/{market_id}/funding-samples` — raw funding-rate samples. */
+  /**
+   * `GET /markets/{market_id}/funding-samples` — premium-index observations
+   * between funding settlements.
+   *
+   * Returns {@link FundingPremiumSample}, which carries the premium and its
+   * timestamp and nothing else. Through spec v0.7.3 this endpoint was typed as
+   * {@link FundingSample}, whose `funding_rate`, `mark_price` and `oracle_price`
+   * describe a settled funding *window* rather than an intra-window sample and
+   * were never populated here; v0.8.0 gave it its own schema. Read
+   * {@link fetchFundingHistory} for a window's settled rate and prices.
+   */
   fetchFundingSamples(
     marketId: string,
     opts: { limit?: number; signal?: AbortSignal } = {},
-  ): Promise<FundingSample[]> {
+  ): Promise<FundingPremiumSample[]> {
     const query = buildQuery({ limit: opts.limit });
-    return this.#request<FundingSample[]>(
+    return this.#request<FundingPremiumSample[]>(
       "GET",
       `/markets/${seg(marketId)}/funding-samples`,
       { query, signal: opts.signal },

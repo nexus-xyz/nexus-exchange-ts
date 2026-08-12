@@ -86,6 +86,83 @@ export type TimeInForce = "GTC" | "IOC" | "FOK" | "PostOnly";
  */
 export type OpenUnion<T extends string> = T | (string & {});
 
+/**
+ * Self-trade prevention mode — what the engine does when a taker meets a maker
+ * on the same account. Opt-in: omit it and self-matching is allowed, which is
+ * the default and the industry-standard behaviour.
+ *
+ * - `CancelNewest` cancels the incoming taker and leaves the maker resting. The
+ *   taker stops walking the book entirely, so taker size beyond that maker is
+ *   cancelled too.
+ * - `CancelOldest` cancels the resting maker and lets the taker carry on
+ *   against other accounts' makers.
+ * - `DecrementAndCancel` reduces both sides by `min(taker_remaining,
+ *   maker_size)` and cancels the smaller side, leaving the larger to continue
+ *   at the reduced quantity.
+ *
+ * The check runs **per encountered same-account maker**, not once at entry, so
+ * a taker crossing several of your own makers is evaluated at each one, and it
+ * sits in the shared matching path, so it applies to every order type.
+ */
+export type StpMode = "CancelNewest" | "CancelOldest" | "DecrementAndCancel";
+
+/**
+ * Documented causes behind {@link Order.cancellation_reason}'s string form.
+ *
+ * Deliberately used through {@link OpenUnion} rather than as a closed union:
+ * causes are added as the engine gains them, so match the ones you handle and
+ * surface anything else verbatim rather than failing to parse.
+ */
+export type CancellationCause =
+  /** An explicit cancel or cancel-all. */
+  | "User"
+  /** A market order's running fill VWAP left the `max_slippage_bps` band. */
+  | "SlippageCap"
+  /** Cancelled ahead of a liquidation, or the unfilled remainder of one. */
+  | "Liquidation"
+  /** An IOC, FOK or market remainder that cannot rest on the book. */
+  | "Expired"
+  | "MarketHalt"
+  /** Carried on the *original* order of an atomic cancel-replace. */
+  | "AmendReplace"
+  /** A stop, stop-limit or trailing stop fired into an empty opposite side. */
+  | "InsufficientLiquidity"
+  /** A bracket child whose parent position closed to zero. */
+  | "BracketClosed"
+  /** A bracket child whose parent position flipped sign. */
+  | "BracketFlipped"
+  /** The order-vs-mark price-band collar rejected it. */
+  | "PriceBandExceeded";
+
+/**
+ * Why an order reached a terminal `Cancelled` or `Rejected` status.
+ *
+ * **Two wire shapes, so branch on the JSON type before reading the value.** The
+ * engine's reason type is an externally tagged enum: every cause except
+ * self-trade prevention arrives as a bare string, while self-trade prevention
+ * arrives as a single-key object naming the mode that fired.
+ *
+ * ```ts
+ * const reason = order.cancellation_reason;
+ * if (reason === null || reason === undefined) {
+ *   // not terminal, or no cause recorded
+ * } else if (typeof reason === "string") {
+ *   // "User", "SlippageCap", … — treat as open, see CancellationCause
+ * } else {
+ *   reason.Stp; // "CancelNewest" | "CancelOldest" | "DecrementAndCancel"
+ * }
+ * ```
+ *
+ * `GET /orders/history` reports the same causes in a **different encoding** —
+ * {@link OrderHistoryEntry.cancellation_reason} is always a string and renders
+ * the self-trade case as `Stp(CancelNewest)`, not as an object. Do not compare
+ * values across the two surfaces.
+ */
+export type CancellationReason =
+  | OpenUnion<CancellationCause>
+  | { Stp: OpenUnion<StpMode> }
+  | null;
+
 /** Lifecycle status of an {@link Order}. */
 export type OrderStatus =
   | "Open"
@@ -359,6 +436,33 @@ export interface FundingSample {
   oracle_price: Decimal;
 }
 
+/**
+ * One premium-index observation between settlements
+ * (`GET /markets/{market_id}/funding-samples`).
+ *
+ * **Not a {@link FundingSample}**, which this endpoint returned through spec
+ * v0.7.3. `funding_rate`, `mark_price` and `oracle_price` are properties of a
+ * settled funding *window*, not of an intra-window sample, and the event these
+ * are folded from never carried them — so v0.8.0 gave the endpoint its own
+ * schema rather than keep serving three fields that were never populated here.
+ * Read `GET /markets/{market_id}/funding` ({@link Client.fetchFundingHistory})
+ * for a settled window's rate and prices.
+ */
+export interface FundingPremiumSample {
+  timestamp: TimestampMs;
+  /**
+   * `(trade_reference_price - oracle_price) / oracle_price` at the sample
+   * instant — the perpetual's own traded reference against the index, not the
+   * mark price.
+   *
+   * Reads `"0"` until the market has traded: with no trade reference available
+   * the value falls back to the oracle price, which makes the numerator exactly
+   * zero. A long run of `"0"` means the market has not traded, **not** that the
+   * perpetual is at parity with spot.
+   */
+  premium_index: Decimal;
+}
+
 // ─── Trading ────────────────────────────────────────────────────────────────
 
 /**
@@ -428,6 +532,16 @@ export interface OrderRequest {
    * `POST /orders/preview` accepts the field but does not apply it.
    */
   max_slippage_bps?: number | null;
+  /**
+   * Opt-in self-trade prevention. Omit the field, or send `null`, to allow
+   * self-matching — that is the default, and the engine will fill your order
+   * against your own resting order. Set a {@link StpMode} to have the engine
+   * intervene instead.
+   *
+   * When a mode cancels an order, that order comes back with
+   * {@link Order.cancellation_reason} set to the object `{ Stp: "<mode>" }`.
+   */
+  stp?: StpMode | null;
 }
 
 /**
@@ -472,6 +586,27 @@ export interface Order {
    * cap. Optional: a server older than v0.7.3 omits the field entirely.
    */
   max_slippage_bps?: number | null;
+  /**
+   * The self-trade prevention mode the order was placed with, echoed back (see
+   * {@link OrderRequest.stp}); `null` for an order placed without one, which is
+   * the default and means self-matching was allowed.
+   *
+   * Open rather than a closed {@link StpMode}, matching the spec: the mode set
+   * has changed before (D-026 supersedes D-014), and a mode added later must
+   * not break a client pinned to an older spec tag. `OrderRequest.stp` *is*
+   * closed, because there the value is one you supply and the server validates.
+   *
+   * Optional: a server older than v0.8.0 omits the field entirely.
+   */
+  stp?: OpenUnion<StpMode> | null;
+  /**
+   * Why the order reached a terminal `Cancelled` or `Rejected` status; `null`
+   * for every other status, and for a terminal order the engine recorded no
+   * cause for. **Two wire shapes** — see {@link CancellationReason}.
+   *
+   * Optional: a server older than v0.8.0 omits the field entirely.
+   */
+  cancellation_reason?: CancellationReason;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }
