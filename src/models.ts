@@ -159,18 +159,11 @@ export type CancellationCause =
  * values across the two surfaces.
  */
 export type CancellationReason =
-  | OpenUnion<CancellationCause>
-  | { Stp: OpenUnion<StpMode> }
-  | null;
+  OpenUnion<CancellationCause> | { Stp: OpenUnion<StpMode> } | null;
 
 /** Lifecycle status of an {@link Order}. */
 export type OrderStatus =
-  | "Open"
-  | "PartiallyFilled"
-  | "Filled"
-  | "Cancelled"
-  | "Expired"
-  | "Rejected";
+  "Open" | "PartiallyFilled" | "Filled" | "Cancelled" | "Expired" | "Rejected";
 
 /** Direction of an open {@link Position}. */
 export type PositionSide = "Long" | "Short";
@@ -1262,10 +1255,7 @@ export type BridgeAssetSymbol = "USDC" | "USDX";
 
 /** Lifecycle of a tracked cross-chain {@link BridgeDeposit}. */
 export type BridgeDepositStatus =
-  | "detected"
-  | "confirming"
-  | "credited"
-  | "failed";
+  "detected" | "confirming" | "credited" | "failed";
 
 /** Error envelope returned by all non-2xx `/bridge` responses. */
 export interface BridgeError {
@@ -1458,10 +1448,7 @@ export interface BridgeWalletsResponse {
  * not name — treat it defensively rather than as a severity claim.
  */
 export type LiquidationSeverity =
-  | "Warning"
-  | "Critical"
-  | "Imminent"
-  | "Unknown";
+  "Warning" | "Critical" | "Imminent" | "Unknown";
 
 /**
  * Pre-liquidation risk warning for one account.

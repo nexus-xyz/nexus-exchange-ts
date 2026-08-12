@@ -7,6 +7,28 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore
+    # Two independent holds, each carrying its own exit condition alongside the
+    # entry. They clear on different conditions — lifting one does not license
+    # removing the other.
+    # Without these, the weekly dev-dependencies group re-proposes an upgrade
+    # that cannot pass CI, and the failure surfaces as a cosmetic
+    # `format:check` warning (the first step in the `check` job) rather than as
+    # the real cause.
+    ignore:
+      # typescript-eslint refuses to load under TS 7.0 — it throws
+      # "typescript-eslint does not support TS 7.0" at require time, so
+      # `pnpm lint` cannot run at all. Support is tracked for TS >= 7.1 in
+      # typescript-eslint#10940. Drop this entry once that ships; the migration
+      # also needs `"types": ["node"]` in tsconfig.json, since TS 7 no longer
+      # auto-includes @types/node (558 type errors without it).
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # @types/node majors track a Node major. `engines` here is ">=20.19" and
+      # CI runs 22 and 24, so jumping the types ahead of the oldest supported
+      # runtime lets code typecheck against APIs that are not there at run time.
+      # Raise this in step with the supported Node floor, not ahead of it.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
