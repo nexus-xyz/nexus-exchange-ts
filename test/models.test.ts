@@ -15,6 +15,9 @@ import { dirname, join } from "node:path";
 
 import type {
   OrderRequest,
+  CancellationReason,
+  FundingPremiumSample,
+  StpMode,
   AmendOrderRequest,
   OrderResult,
   PreviewResponse,
@@ -411,6 +414,86 @@ test("v0.7.3 surface: slippage cap, withdrawal wallets, liquidations, metadata",
   const unrecognized: JurisdictionError["code"] = "SOME_NEW_CONTROL";
   assert.equal(blocked.code, "US_RESTRICTED");
   assert.equal(unrecognized, "SOME_NEW_CONTROL");
+});
+
+test("v0.8.1 surface: STP modes, cancellation reasons, premium samples", () => {
+  // STP is opt-in on the request and CLOSED there, because the server validates
+  // what you supply. All three modes, plus the two ways to say "allow
+  // self-matching" — omitted and explicit null — must typecheck.
+  const base: OrderRequest = {
+    market_id: "BTC-USDX-PERP",
+    side: "Buy",
+    order_type: "Limit",
+    price: "50000",
+    quantity: "1",
+    time_in_force: "GTC",
+  };
+  const modes: StpMode[] = [
+    "CancelNewest",
+    "CancelOldest",
+    "DecrementAndCancel",
+  ];
+  for (const stp of modes) {
+    const guarded: OrderRequest = { ...base, stp };
+    assert.equal(guarded.stp, stp);
+  }
+  const allowed: OrderRequest = { ...base, stp: null };
+  assert.equal(allowed.stp, null);
+  assert.equal((base as OrderRequest).stp, undefined);
+
+  // Echoed on the order it is OPEN, matching the spec: the mode set has changed
+  // before, so a mode added later must not fail to parse on an older pin.
+  const echoed: Pick<Order, "stp"> = { stp: "CancelOldest" };
+  const future: Pick<Order, "stp"> = { stp: "CancelBothAndSulk" };
+  assert.deepEqual(
+    [echoed.stp, future.stp],
+    ["CancelOldest", "CancelBothAndSulk"],
+  );
+
+  // `cancellation_reason` has TWO wire shapes, and a consumer has to branch on
+  // the JSON type. Both must typecheck, and so must a cause this pin has never
+  // heard of — causes are added as the engine gains them.
+  const byUser: CancellationReason = "User";
+  const byFutureCause: CancellationReason = "SomeCauseAddedLater";
+  const byStp: CancellationReason = { Stp: "CancelNewest" };
+  const notTerminal: CancellationReason = null;
+
+  /** The branch every consumer writes; proves the union narrows. */
+  const describe = (reason: CancellationReason): string =>
+    reason === null
+      ? "none"
+      : typeof reason === "string"
+        ? reason
+        : `stp:${reason.Stp}`;
+  assert.deepEqual([byUser, byFutureCause, byStp, notTerminal].map(describe), [
+    "User",
+    "SomeCauseAddedLater",
+    "stp:CancelNewest",
+    "none",
+  ]);
+
+  // Optional on the order, so a pre-v0.8.0 server omitting the field is not the
+  // same as a v0.8.1 server reporting `null` (terminal, no cause recorded).
+  const cancelled: Pick<Order, "status" | "cancellation_reason"> = {
+    status: "Cancelled",
+    cancellation_reason: { Stp: "DecrementAndCancel" },
+  };
+  assert.deepEqual(cancelled.cancellation_reason, {
+    Stp: "DecrementAndCancel",
+  });
+  assert.equal((base as unknown as Order).cancellation_reason, undefined);
+
+  // `/funding-samples` returns premium observations ONLY. The settled-window
+  // fields it used to carry through v0.7.3 (funding_rate, mark_price,
+  // oracle_price) are gone — they belong to FundingSample, from /funding.
+  const sample: FundingPremiumSample = {
+    timestamp: 1776033911836,
+    premium_index: "0.00012",
+  };
+  assert.deepEqual(Object.keys(sample), ["timestamp", "premium_index"]);
+  // "0" means the market has not traded, not parity with spot.
+  const untraded: FundingPremiumSample = { ...sample, premium_index: "0" };
+  assert.equal(untraded.premium_index, "0");
 });
 
 test("vendored spec carries no internal hosts or ENG/Linear references", () => {
