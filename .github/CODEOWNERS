@@ -1,2 +1,10 @@
-# CODEOWNERS — Lucas Campos reviews all changes (per the Gate-3 interfaces plan).
-* @Luc-Campos
+# Default reviewers. Any member of @nexus-xyz/eng can review and unblock — no
+# single-person bottleneck. @Luc-Campos (SDK lead) and @collinjackson are listed
+# explicitly so both are auto-requested on every PR.
+#
+# ts was the last nexus-exchange-* repo with a single owner. That was not a
+# decision — `8d32938` added @collinjackson directly to main with no PR, #33
+# reverted it as an unreviewed push, and the deliberate version #33 promised was
+# never opened (ENG-10544).
+# Docs: https://docs.github.com/articles/about-code-owners
+* @nexus-xyz/eng @Luc-Campos @collinjackson
