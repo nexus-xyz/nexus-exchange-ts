@@ -1181,6 +1181,13 @@ export interface ClientOptions {
    * Cannot be combined with a descriptor `network` — that would be two
    * declarations of the same thing, and silently preferring one of them is how a
    * client ends up on a host whose funds classification came from elsewhere.
+   *
+   * @deprecated Pass `network: customNetwork({ label, baseUrl, funds })`
+   * instead. The descriptor declares what the target *is* — its funds, and
+   * optionally a faucet, stream origin and signing domain — and a bare URL
+   * cannot declare any of it, so it can only resolve to `funds: "unknown"` and
+   * the money guardrails refuse. Nothing is removed and nothing changes at
+   * runtime: this still builds the same undeclared target it always did.
    */
   baseUrl?: string;
   /** API key for signed requests (paired with `apiSecret`). */
