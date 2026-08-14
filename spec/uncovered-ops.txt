@@ -106,10 +106,24 @@ POST /api/v1/bridge/wallets
 GET /api/v1/bridge/wallets
 # ── Deprecated / superseded — intentionally never targeted ─────────────────────
 #
-# POST /ws/token — superseded by the canonical plural POST /ws-tokens, which the
-#   client uses (see Client.mintWsToken).
-# GET /stream    — deprecated SSE stream, superseded by the GET /ws upgrade.
-POST /ws/token
+# POST /ws-tokens — the LEGACY token route, superseded by POST /ws/token, which
+#   the client uses (see Client.mintWsToken). Both still answer, but they are not
+#   equivalents; the spec's prose settles which is canonical ("Legacy endpoint.
+#   Prefer POST /ws/token which supports both HMAC keys and registered agents").
+#   `/ws/token` accepts registered agent keys and mints a token bound to the
+#   account, which is what scopes the per-account channels. `/ws-tokens` mints a
+#   context-less token — the indexer binds the zero address — so it upgrades
+#   cleanly and then delivers nothing on those channels, with no error. This
+#   file previously recorded the opposite, reading the `operationId`s rather
+#   than the descriptions — through v0.7.3 the ids sat on the opposite paths
+#   (`createWsToken` on `/ws-tokens`), and v0.8.0 swapped them to match the
+#   prose, which the current pin carries. See ENG-10492.
+# GET /stream     — the legacy public-only WebSocket endpoint, superseded by the
+#   GET /ws upgrade, which serves the same public channels plus the per-account
+#   ones. Not an SSE stream, as this file previously claimed — it is a WebSocket
+#   with a different, untagged subscribe protocol (`{"subscribe": [...]}`), which
+#   is why it is a separate implementation rather than a path swap.
+POST /ws-tokens
 GET /stream
 
 # ── Admin surface — outside this SDK's audience ────────────────────────────────

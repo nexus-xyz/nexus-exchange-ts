@@ -20,10 +20,11 @@ function mockFetch(body: unknown, init: { status?: number } = {}) {
 const creds = { apiKey: "key", apiSecret: "abcd" };
 const BASE = "https://example.test";
 
-test("mintWsToken POSTs /ws-tokens at the host ROOT (not under /api/v1)", async () => {
+test("mintWsToken POSTs /ws/token at the host ROOT (not under /api/v1)", async () => {
   const { impl, calls } = mockFetch({ token: "wst_abc123" });
   // A base URL WITH an /api/v1 path prefix: the WS-token route is a root route,
-  // so it must drop the prefix and hit the origin, else it 404s at /api/v1/ws-tokens.
+  // so it must drop the prefix and hit the origin, else it 404s at
+  // /api/v1/ws/token.
   const client = new Client({
     fetchImpl: impl,
     baseUrl: "https://example.test/api/v1",
@@ -33,12 +34,51 @@ test("mintWsToken POSTs /ws-tokens at the host ROOT (not under /api/v1)", async 
   const token = await client.mintWsToken();
   assert.equal(token, "wst_abc123");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.url, "https://example.test/ws-tokens");
+  assert.equal(calls[0]!.url, "https://example.test/ws/token");
   assert.equal(calls[0]!.init.method, "POST");
   // Signed over the ROOT path (no /api/v1 prefix) + HMAC headers present.
   const headers = calls[0]!.init.headers as Record<string, string>;
   assert.equal(headers["x-api-key"], "key");
   assert.ok(headers["x-signature"], "expected a signature header");
+});
+
+// The canonical route is the one that accepts registered agent keys; the legacy
+// `/ws-tokens` does not, which is the ceiling ENG-10492 is about. An agent key
+// is an HMAC pair like any other from this client's side, so what is pinned here
+// is that the credential is carried to the canonical path — the part that would
+// regress if the route were swapped back.
+test("mintWsToken signs with a registered agent key against the canonical route", async () => {
+  const { impl, calls } = mockFetch({ token: "wst_agent" });
+  const client = new Client({
+    fetchImpl: impl,
+    baseUrl: "https://example.test/api/v1",
+    apiKey: "nx_agent_key",
+    apiSecret: "00112233445566778899aabbccddeeff",
+  });
+
+  assert.equal(await client.mintWsToken(), "wst_agent");
+  assert.equal(calls[0]!.url, "https://example.test/ws/token");
+  const headers = calls[0]!.init.headers as Record<string, string>;
+  assert.equal(headers["x-api-key"], "nx_agent_key");
+  assert.ok(headers["x-signature"], "expected a signature header");
+});
+
+// The legacy route mints for the public `/stream` endpoint, whose protocol and
+// channel set differ, so a token from it is not what `GET /ws` wants. Pinned so
+// the path cannot drift back without a failing test.
+test("mintWsToken never calls the legacy /ws-tokens route", async () => {
+  const { impl, calls } = mockFetch({ token: "t" });
+  const client = new Client({ fetchImpl: impl, baseUrl: BASE, ...creds });
+
+  await client.mintWsToken();
+  await client.wsTokenProvider()();
+
+  for (const call of calls) {
+    assert.ok(
+      !new URL(call.url).pathname.includes("/ws-tokens"),
+      `expected the canonical /ws/token route, got ${call.url}`,
+    );
+  }
 });
 
 test("mintWsToken throws when the response has no token", async () => {
