@@ -49,11 +49,7 @@ export type PublicChannel = "book" | "trades" | "candles";
  * from ../models (externally tagged — exactly one variant key is present).
  */
 export type AccountChannel =
-  | "orders"
-  | "fills"
-  | "positions"
-  | "balances"
-  | "liquidations";
+  "orders" | "fills" | "positions" | "balances" | "liquidations";
 
 export type Channel = PublicChannel | AccountChannel;
 
