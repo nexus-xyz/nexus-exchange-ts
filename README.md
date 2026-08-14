@@ -313,6 +313,12 @@ supply the URL and own the layout.
 
 ### What `baseUrl` is
 
+> **Deprecated.** The `baseUrl` client option is deprecated in favour of
+> `network: customNetwork({ … })` — the descriptor declares the target's funds,
+> a bare URL cannot. It still works, unchanged, and is not scheduled for removal
+> in this release. Your editor strikes it through and deprecation-aware lint
+> rules flag it; nothing warns at runtime.
+
 `baseUrl` is the **direct `/api/v1` surface, prefix included** — the indexer
 serves `/api/v1` at the host root, so the default is
 `https://exchange.nexus.xyz/api/v1` and a method's path is appended to it
