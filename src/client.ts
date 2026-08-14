@@ -1249,7 +1249,7 @@ interface RequestOptions {
   signal?: AbortSignal;
   /**
    * Address the host root instead of the `/api/v1` base — for endpoints served
-   * directly at the origin (e.g. `POST /ws-tokens`). The URL and the signed path
+   * directly at the origin (e.g. `POST /ws/token`). The URL and the signed path
    * both drop the base path prefix.
    */
   root?: boolean;
@@ -1544,7 +1544,7 @@ export class Client {
     this.#basePath = basePathOf(this.#baseUrl);
     // The origin (scheme + host [+ port]) is the base URL with its path prefix
     // sliced off — byte-exact, same as `basePathOf`. Used for host-root routes
-    // like `/ws-tokens` that live outside the `/api/v1` base.
+    // like `/ws/token` that live outside the `/api/v1` base.
     this.#origin =
       this.#basePath && this.#baseUrl.endsWith(this.#basePath)
         ? this.#baseUrl.slice(0, this.#baseUrl.length - this.#basePath.length)
@@ -2588,8 +2588,9 @@ export class Client {
   // -- authenticated: streaming ---------------------------------------------
 
   /**
-   * `POST /ws-tokens` — mint a short-lived (~60s) token authenticating an
-   * account-scoped WebSocket subscription. Signed; returns the raw token.
+   * `POST /ws/token` — mint a short-lived (~60s), single-use token
+   * authenticating an account-scoped WebSocket subscription. Signed; returns the
+   * raw token.
    *
    * The streaming client re-mints on every (re)connect, so pass
    * {@link wsTokenProvider} rather than a single token:
@@ -2601,21 +2602,48 @@ export class Client {
    * });
    * ```
    *
-   * (The gateway also accepts the legacy `POST /ws/token`; this uses the
-   * canonical plural route.)
+   * ## Why this route and not `POST /ws-tokens`
    *
-   * `root: true` because the WebSocket endpoints (`/ws`, `/ws-tokens`) are
-   * served at the host root, not under the `/api/v1` base — so both the URL
-   * and the signed path drop the base prefix.
+   * Both routes still answer, so neither 404s — but they are not equivalents,
+   * and the legacy one silently breaks the account channels. The spec labels it
+   * in prose — *"Legacy endpoint. Prefer POST /ws/token which supports both
+   * HMAC keys and registered agents"* — and the gap lands on surface this SDK
+   * already exposes:
+   *
+   * - `/ws/token` accepts **registered agent keys**; `/ws-tokens` does not, so
+   *   agent-credential streaming hits a ceiling on the legacy route;
+   * - `/ws/token`'s token is **bound to the authenticated account**, which is
+   *   what scopes the per-account channels (`orders`, `fills`, `positions`,
+   *   `balances`, `liquidations`) that {@link createWsClient} gates behind a
+   *   `tokenProvider`. `/ws-tokens` mints a **context-less** token: the indexer
+   *   binds the **zero address** to it, and the `GET /ws` upgrade scopes the
+   *   connection to whatever the token carries. A legacy token therefore
+   *   upgrades cleanly, subscribes, reports healthy — and then delivers nothing
+   *   for the caller's account, with no error anywhere on the path.
+   *
+   * That second point is why this is a defect rather than a tidy-up: the
+   * failure is silent, on exactly the surface passing a `tokenProvider` is
+   * meant to light up.
+   *
+   * The pinned spec's `operationId`s agree: `createWsToken` names `/ws/token`.
+   * Read them with care in older tags, though — through v0.7.3 the two ids sat
+   * on the opposite paths (`createWsToken` on `/ws-tokens`), and v0.8.0
+   * **swapped** them to match the prose. The descriptions have said the same
+   * thing throughout, so this choice never depended on the ids.
+   *
+   * `root: true` because the WebSocket endpoints (`/ws`, `/ws/token`) are served
+   * at the host root, not under the `/api/v1` base — so both the URL and the
+   * signed path drop the base prefix. Note that makes the signed path
+   * `/ws/token`, not `/api/v1/ws/token`.
    */
   async mintWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
-    const res = await this.#request<{ token?: string }>("POST", "/ws-tokens", {
+    const res = await this.#request<{ token?: string }>("POST", "/ws/token", {
       signed: true,
       root: true,
       signal: opts?.signal,
     });
     if (!res || typeof res.token !== "string" || res.token.length === 0) {
-      throw new TransportError("ws-tokens response did not contain a token");
+      throw new TransportError("ws/token response did not contain a token");
     }
     return res.token;
   }
@@ -2885,7 +2913,7 @@ export class Client {
           // Sign the FULL request path the server verifies (e.g.
           // `/api/v1/orders`), i.e. the base URL's path prefix + the
           // method-relative path — not the stripped `/orders`. Root routes
-          // (e.g. `/ws-tokens`) live outside the base and sign the bare path.
+          // (e.g. `/ws/token`) live outside the base and sign the bare path.
           `${root ? "" : this.#basePath}${path}`,
           query,
           bodyBytes,

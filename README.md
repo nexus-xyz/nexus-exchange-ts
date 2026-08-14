@@ -323,7 +323,7 @@ supply the URL and own the layout.
 serves `/api/v1` at the host root, so the default is
 `https://exchange.nexus.xyz/api/v1` and a method's path is appended to it
 (`…/api/v1/orders`). The few host-root routes (`/auth/login`, `/keys`,
-`/agents/*`, `/ws-tokens`, `/ws`) are derived from that base's **origin**, so one
+`/agents/*`, `/ws/token`, `/ws`) are derived from that base's **origin**, so one
 field covers both surfaces and `client.wsUrl` can never point at a different host
 than the REST calls. Override it with the prefix included — `https://your-host`
 alone would send `/orders`, not `/api/v1/orders`:

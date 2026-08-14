@@ -87,7 +87,9 @@ GET /agents
 DELETE /agents/{address}
 
 # --- Host-root surface (`root: true`) — streaming ---
-POST /ws-tokens
+# The canonical token route. The legacy `POST /ws-tokens` is recorded in
+# spec/uncovered-ops.txt with why (ENG-10492).
+POST /ws/token
 # The WebSocket upgrade itself. Reached by src/ws/client.ts through a `WebSocket`
 # constructor, not a REST call, so it is in NON_REST_TARGETS — see the header.
 GET /ws

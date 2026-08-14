@@ -108,7 +108,7 @@ test("a request is sent to the custom base, and host-root routes to its origin",
     "https://exchange.example.com/gateway/api/v1/markets/summary",
   );
   // Host-root routes drop the whole base path, not just the /api/v1 suffix.
-  assert.equal(urls[1], "https://exchange.example.com/ws-tokens");
+  assert.equal(urls[1], "https://exchange.example.com/ws/token");
 });
 
 test("a declared wsUrl is honoured, and origin-only", () => {
