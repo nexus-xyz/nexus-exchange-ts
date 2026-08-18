@@ -1,6 +1,6 @@
 // Order-book snapshot + spread for one market — no credentials required.
 //
-// Run with:  npx tsx examples/orderbook_snapshot.ts [MARKET_ID] [--network beta]
+// Run with:  npx tsx examples/orderbook_snapshot.ts [MARKET_ID] [--network local]
 
 import { Client } from "../src/index.js";
 import { networkOptions } from "./_network.js";

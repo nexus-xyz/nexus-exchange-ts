@@ -6,7 +6,7 @@
 // market's tick/lot rules or the gateway rejects it.
 //
 // Run with:
-//   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/place_order.ts --network beta
+//   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/place_order.ts --network local
 
 import { Client } from "../src/index.js";
 import { networkOptions } from "./_network.js";

@@ -1,7 +1,7 @@
 // Public market data — no credentials required.
 //
 // Run with:  npx tsx examples/public_market_data.ts
-//        or:  npx tsx examples/public_market_data.ts --network beta
+//        or:  npx tsx examples/public_market_data.ts --network local
 
 import { Client } from "../src/index.js";
 import { networkOptions } from "./_network.js";

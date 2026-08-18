@@ -3,7 +3,7 @@
 //
 // Reads NEXUS_API_KEY / NEXUS_API_SECRET from the environment.
 // Run with:
-//   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/portfolio.ts [--network beta] [--window week]
+//   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/portfolio.ts [--network local] [--window week]
 
 import { Client } from "../src/index.js";
 import type { PortfolioWindow } from "../src/index.js";

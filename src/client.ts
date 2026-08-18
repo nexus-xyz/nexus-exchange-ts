@@ -272,10 +272,21 @@ export type NetworkSelector = Network | NetworkConfig;
  * the spec paths the client targets (invariant H), so it must stay a plain
  * string literal.
  *
- * The `/api/v1` surface is served directly by the indexer at the host root, NOT
- * under the legacy `/api/exchange` gateway prefix (the gateway REST proxy is
- * being eliminated). The signed path therefore includes `/api/v1` — see
- * `basePathOf` and the signing step in `#request`.
+ * This prefix lives in the **path**, never in {@link NetworkConfig.baseUrl}. A
+ * base names a deployment (`https://exchange.nexus.xyz/api/exchange`); the path
+ * names a surface (`/api/v1/orders`), and `#sendOnce` composes the two. Keeping
+ * them separate is what lets the signed path differ from the sent URL, which it
+ * must: the gateway strips its own `/api/exchange` prefix before the indexer
+ * verifies the HMAC, so a request sent to `…/api/exchange/api/v1/orders` is
+ * verified as `/api/v1/orders`. The signature therefore covers the *logical*
+ * path — `/api/v1` included, the base's own path excluded — and is independent
+ * of which deployment the base points at.
+ *
+ * Folding the prefix into the base instead (the pre-0.3 layout) forced those two
+ * to be equal, and no single base could satisfy both: a host-root
+ * `…/exchange.nexus.xyz/api/v1` base signed correctly but 404s to the frontend,
+ * while a gateway base reached the API but signed the un-stripped
+ * `/api/exchange/api/v1/orders` — a path the indexer never sees.
  */
 export const API_BASE_PATH = "/api/v1";
 
@@ -398,22 +409,26 @@ const SIGNING_DOMAIN: NetworkSigningDomain = Object.freeze({
  * independent reasons — and both fail *only* on real funds:
  *
  * 1. **DNS/TLS is not live** (ENG-8155), so the host does not resolve.
- * 2. **The path composition differs.** Those hosts pair a `/v1` base with the
- *    spec's *root* paths (`/v1` + `/orders`), whereas this client signs
- *    {@link API_BASE_PATH} paths against a host-root base
- *    (`https://host` + `/api/v1/orders`). Pointing this client at `…/v1` would
- *    send `/v1/api/v1/orders` and sign that same wrong path — a silent 404 at
- *    best. Switching the client to root paths is its own change.
+ * 2. **The path composition differs.** Those hosts carry the version in the
+ *    *base* (`/v1`) and pair it with the spec's root paths (`/v1` + `/orders`),
+ *    whereas this client puts the version in the path
+ *    ({@link API_BASE_PATH} + `/orders`) and signs it. Pointing this client at
+ *    `…/v1` would send `/v1/api/v1/orders` while signing `/api/v1/orders` — a
+ *    404 whose signature is over a path the server never sees. Switching the
+ *    client to root paths is its own change.
  *
  * So mainnet is declared (the axis and the types are stable, and callers can
  * write network-generic code today) but refuses to construct rather than
- * shipping an untestable guess. Pass an explicit `baseUrl` to opt in
- * deliberately once a host is live.
+ * shipping an untestable guess. Declare it through {@link customNetwork} to opt
+ * in deliberately once a host is live — there you supply the URL and so own its
+ * path layout.
  *
- * Testnet keeps the legacy-but-live base until `api.testnet.nexus.xyz` is
- * resolvable; the spec says the same ("keep pinning the legacy base above until
- * it is live"). Its traffic migrates to `https://api.testnet.nexus.xyz/v1` —
- * never to the bare `api.nexus.xyz`, which is real funds.
+ * Testnet keeps the legacy-but-live gateway base until `api.testnet.nexus.xyz`
+ * is resolvable; the spec says the same ("keep pinning the legacy base above
+ * until it is live"), and the `/api/v1` surface is mounted *under* that prefix
+ * rather than at the host root — measured, see {@link API_BASE_PATH}. Its
+ * traffic migrates to `https://api.testnet.nexus.xyz/v1` — never to the bare
+ * `api.nexus.xyz`, which is real funds.
  */
 export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
   {
@@ -421,7 +436,7 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       label: "Testnet",
       funds: "play",
       faucet: true,
-      baseUrl: `https://exchange.nexus.xyz${API_BASE_PATH}`,
+      baseUrl: "https://exchange.nexus.xyz/api/exchange",
       wsUrl: "wss://exchange.nexus.xyz",
       signingDomain: SIGNING_DOMAIN,
     }) as NetworkConfig,
@@ -437,7 +452,7 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       label: "Local",
       funds: "play",
       faucet: true,
-      baseUrl: `http://localhost:9090${API_BASE_PATH}`,
+      baseUrl: "http://localhost:9090",
       wsUrl: "ws://localhost:9090",
       signingDomain: SIGNING_DOMAIN,
     }) as NetworkConfig,
@@ -588,11 +603,12 @@ export interface CustomNetworkOptions {
    */
   label: string;
   /**
-   * REST base, **including the path prefix** the deployment serves the API under
-   * (for the direct indexer surface that is {@link API_BASE_PATH}, e.g.
-   * `https://exchange.example.com/api/v1`). Method paths are appended to it, and
-   * the host-root routes plus {@link Client.wsUrl} are derived from its origin.
-   * Trailing slashes are trimmed.
+   * REST base for the deployment — scheme, host, and whatever prefix it mounts
+   * the API under (`https://exchange.example.com/api/exchange`, or a bare
+   * origin for a direct-service host). **Without** {@link API_BASE_PATH}: that
+   * comes from the route. Every route is appended to this, including the legacy
+   * ones; {@link Client.wsUrl} is derived from its origin. Trailing slashes are
+   * trimmed.
    *
    * Validated as an absolute `http(s)` URL with no userinfo, query or fragment,
    * and no whitespace or control characters — each of those would otherwise
@@ -602,10 +618,11 @@ export interface CustomNetworkOptions {
    * obvious bad URL. Userinfo is refused rather than stripped, because it would
    * leak into every log and error that prints the base.
    *
-   * Unlike the {@link ClientOptions.baseUrl} shortcut, an `/api/exchange`
-   * gateway prefix is **not** rejected here: you are declaring the whole bundle
-   * and you own the URL layout, and some deployments this exists for are only
-   * reachable through the gateway.
+   * Give the deployment base **without** {@link API_BASE_PATH}: the version
+   * prefix is supplied by the route, not the base, and a base carrying it is
+   * refused (it would send `/api/v1/api/v1/…`). An `/api/exchange` gateway
+   * prefix is expected rather than refused — that is where the public
+   * deployment mounts the surface.
    */
   baseUrl: string;
   /**
@@ -657,7 +674,7 @@ export interface CustomNetworkOptions {
  * const client = new Client({
  *   network: customNetwork({
  *     label: "dev",
- *     baseUrl: "https://exchange.example.com/api/v1",
+ *     baseUrl: "https://exchange.example.com/api/exchange",
  *     funds: "play",
  *     faucet: true,
  *   }),
@@ -736,6 +753,10 @@ function buildDescriptor(
     "http:",
     "https:",
   ]);
+  // Same rule as the `baseUrl` shortcut: the version prefix lives in the path.
+  // A declared descriptor gets no exemption, because the prefix is appended to
+  // every route regardless of how the target was named.
+  assertNotVersionedBase(base.url);
   const baseUrl = base.trimmed;
   const funds = normalizeFunds(fields.funds, where);
   const faucet = normalizeFaucet(fields.faucet, funds, where);
@@ -993,10 +1014,10 @@ function normalizeSigningChainId(
  * label matches the one the MCP server already synthesizes for this case.
  *
  * {@link assertAbsoluteHttpUrl} runs first, so this shortcut keeps the rejections
- * it always had — a relative or non-`http(s)` base, and a legacy `/api/exchange`
- * gateway base. That last one stays a rejection *here* because this is the field
- * a py/mcp gateway base gets pasted into, while being a legitimate layout to
- * declare deliberately through `customNetwork`.
+ * it always had — a relative or non-`http(s)` base — plus the
+ * {@link API_BASE_PATH} check that replaced the old gateway rejection. A
+ * gateway base is now the *expected* shape here rather than a refused one; it
+ * is what the public deployment serves and what the sibling SDKs pass.
  *
  * Then the same URL hygiene as a declared descriptor: userinfo, a query, a
  * fragment or embedded whitespace were previously accepted here and each builds
@@ -1055,43 +1076,39 @@ function assertAbsoluteHttpUrl(baseUrl: string): void {
       `baseUrl must use http:// or https://, got ${JSON.stringify(parsed.protocol)}`,
     );
   }
-  assertNotGatewayBase(parsed);
+  assertNotVersionedBase(parsed);
 }
 
 /**
- * Reject a base URL pointing at the legacy `/api/exchange` gateway.
+ * Reject a base URL that already carries {@link API_BASE_PATH}.
  *
- * This client targets only two surfaces — the direct {@link API_BASE_PATH}
- * indexer surface and a handful of host-root routes (`/auth/login`, `/keys`,
- * `/agents/*`, `/ws*`) — and *no* route it implements is served under the
- * gateway prefix. So an `/api/exchange` base cannot be correct here; it would
- * send (and HMAC-sign) `/api/exchange/api/v1/orders`, a 404 whose signature is
- * also over the wrong path.
+ * The version prefix belongs to the path, and this client appends it to every
+ * non-`root` request. A base that ends in `/api/v1` therefore sends
+ * `/api/v1/api/v1/orders` — a 404 — while signing the correct
+ * `/api/v1/orders`, so it surfaces as a routing error whose signature looks
+ * fine, which is a confusing pair to debug.
  *
- * Worth failing loudly rather than trusting the type, because this is a
- * plausible cross-SDK paste: the Python SDK's `base_url` *is* the gateway base
- * (`https://exchange.nexus.xyz/api/exchange`), with its host-root field named
- * `direct_base_url`. Copying that value into this SDK's single `baseUrl` is the
- * mistake, and the MCP server already strips the same prefix defensively
- * (nexus-exchange-api#41), so it demonstrably happens. See the README's
- * "What `baseUrl` is" for the field-by-field correspondence.
+ * Worth failing loudly rather than trusting the type, because this exact base
+ * was this SDK's own default before 0.3 and is still pasted from older docs and
+ * from `Network.Testnet`'s previous value. Both siblings agree with the layout
+ * enforced here: the Python SDK's `base_url` and the Rust SDK's
+ * `Network::Testnet.base_url()` are both the bare gateway base
+ * (`https://exchange.nexus.xyz/api/exchange`), with `/api/v1` supplied by the
+ * route. See the README's "What `baseUrl` is" for the correspondence.
  */
-function assertNotGatewayBase(parsed: URL): void {
-  const segments = parsed.pathname.split("/").filter(Boolean);
-  const isGateway = segments.some(
-    (segment, i) => segment === "exchange" && segments[i - 1] === "api",
-  );
-  if (!isGateway) return;
+function assertNotVersionedBase(parsed: URL): void {
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (!path.endsWith(API_BASE_PATH)) return;
   throw new NexusExchangeError(
-    `baseUrl must not point at the legacy "/api/exchange" gateway, got ` +
-      `${JSON.stringify(parsed.toString())}. This SDK implements no route ` +
-      `served under that prefix: the direct surface is "${API_BASE_PATH}" at ` +
-      `the host root, and requests would otherwise be sent — and signed — as ` +
-      `"/api/exchange${API_BASE_PATH}/…". Pass the host root plus ` +
-      `"${API_BASE_PATH}" instead, e.g. ` +
-      `${JSON.stringify(`${parsed.origin}${API_BASE_PATH}`)}. ` +
-      `(Porting from the Python SDK? Its "base_url" is the gateway base; the ` +
-      `field matching this one is "direct_base_url" + "${API_BASE_PATH}".)`,
+    `baseUrl must not include "${API_BASE_PATH}", got ` +
+      `${JSON.stringify(parsed.toString())}. This client appends ` +
+      `"${API_BASE_PATH}" to every route, so that base would send ` +
+      `"${API_BASE_PATH}${API_BASE_PATH}/…" while signing "${API_BASE_PATH}/…". ` +
+      `Pass the deployment base without it, e.g. ` +
+      `${JSON.stringify(`${parsed.origin}${path.slice(0, -API_BASE_PATH.length)}`)}. ` +
+      `(On the public deployment that is ` +
+      `"https://exchange.nexus.xyz/api/exchange" — the same value the Python ` +
+      `and Rust SDKs use.)`,
   );
 }
 
@@ -1151,7 +1168,7 @@ export interface ClientOptions {
    * declared**. Trailing slashes are trimmed.
    *
    * ```ts
-   * new Client({ baseUrl: "https://exchange.example.com/api/v1" });
+   * new Client({ baseUrl: "https://exchange.example.com/api/exchange" });
    * ```
    *
    * This is sugar over {@link customNetwork}: it builds a descriptor whose
@@ -1171,7 +1188,7 @@ export interface ClientOptions {
    * new Client({
    *   network: customNetwork({
    *     label: "dev",
-   *     baseUrl: "https://exchange.example.com/api/v1",
+   *     baseUrl: "https://exchange.example.com/api/exchange",
    *     funds: "play",
    *     faucet: true,
    *   }),
@@ -1248,9 +1265,41 @@ interface RequestOptions {
   session?: boolean;
   signal?: AbortSignal;
   /**
-   * Address the host root instead of the `/api/v1` base — for endpoints served
-   * directly at the origin (e.g. `POST /ws/token`). The URL and the signed path
-   * both drop the base path prefix.
+   * Target a route that has no {@link API_BASE_PATH} variant yet (e.g.
+   * `POST /ws/token`). The path is sent and signed bare, but still relative to
+   * `baseUrl` — these routes are gateway-relative, not host-root.
+   *
+   * ## Why one base covers them, and when it would stop
+   *
+   * This is a deliberate simplification over the Python SDK, which carries a
+   * *second* base for exactly these routes (`base_url` for the gateway,
+   * `direct_base_url` for the host root). One field is enough here because on
+   * the public deployment both surfaces are co-mounted under the gateway —
+   * measured, with negative controls, so a permissive catch-all is ruled out:
+   *
+   * ```text
+   * POST /api/exchange/ws/token         401  (exists, wants credentials)
+   * POST /api/exchange/auth/login       422  (exists, parsed and rejected `{}`)
+   * POST /api/exchange/ws/token-zzz     404
+   * POST /ws/token          (host root) 301  -> marketing site
+   * ```
+   *
+   * Two caveats, because this is an assumption about a deployment rather than a
+   * property of the protocol:
+   *
+   * 1. It is measured on `exchange.nexus.xyz` only. Python's split can express
+   *    a deployment where these routes are *not* co-mounted; this SDK cannot.
+   *    Simpler, not strictly more general.
+   * 2. There is no escape hatch today — the Rust SDK's `with_direct_base_url`
+   *    exists for that case. If a deployment ever separates the two surfaces,
+   *    {@link CustomNetworkOptions} needs a matching field; it is not that
+   *    Python's is vestigial.
+   *
+   * Beware one trap when re-measuring: a bodyless `POST` answers `411` on every
+   * path, which masks the 404 and makes any route look real. Send a body. And
+   * under `/api/exchange/account/*` auth runs *before* routing, so a 401 there
+   * proves nothing about whether a route exists — that behaviour is scoped to
+   * that prefix, which is what the 404s above establish.
    */
   root?: boolean;
 }
@@ -1324,12 +1373,14 @@ function assertHeaderValue(name: string, value: string): void {
 }
 
 /**
- * The path portion of a base URL (e.g. `"/api/v1"` for
- * `https://exchange.nexus.xyz/api/v1`), or `""` when it has none. Used as the
- * prefix of the signed canonical path so the HMAC covers the FULL request path
- * the server verifies (`/api/v1/orders`), not the method-relative path
- * (`/orders`). Derived by byte-exact string slicing — never re-encoding — so
- * the signed path matches the wire path exactly.
+ * The path portion of a base URL (e.g. `"/api/exchange"` for
+ * `https://exchange.nexus.xyz/api/exchange`), or `""` when it has none.
+ *
+ * Used only to recover the origin for {@link Client.wsUrl}, which is an origin
+ * with no path. It is deliberately *not* part of the signed path: the gateway
+ * strips its own prefix before the indexer verifies, so signing this would
+ * cover bytes the server never sees. Derived by byte-exact string slicing —
+ * never re-encoding.
  */
 function basePathOf(baseUrl: string): string {
   try {
@@ -1480,7 +1531,7 @@ export class Client {
   readonly #network: NetworkSelector;
   readonly #networkConfig: NetworkConfig;
   readonly #baseUrl: string;
-  readonly #basePath: string;
+  // Only for deriving `wsUrl`; request URLs are built from `#baseUrl` alone.
   readonly #origin: string;
   // A WS base the *caller* declared on a custom descriptor, or null to derive one
   // from #origin. Never read from the NETWORKS map: for a named network the
@@ -1541,13 +1592,14 @@ export class Client {
     this.#declaredWsUrl =
       typeof this.#network === "string" ? null : config.wsUrl;
     this.#baseUrl = config.baseUrl;
-    this.#basePath = basePathOf(this.#baseUrl);
-    // The origin (scheme + host [+ port]) is the base URL with its path prefix
-    // sliced off — byte-exact, same as `basePathOf`. Used for host-root routes
-    // like `/ws/token` that live outside the `/api/v1` base.
+    // The origin (scheme + host [+ port]) is the base URL with its path sliced
+    // off — byte-exact, same as `basePathOf`. Used *only* to derive `wsUrl`,
+    // which is an origin with no path; REST routing never needs it, because
+    // every route including the v1-less ones is relative to `#baseUrl`.
+    const basePath = basePathOf(this.#baseUrl);
     this.#origin =
-      this.#basePath && this.#baseUrl.endsWith(this.#basePath)
-        ? this.#baseUrl.slice(0, this.#baseUrl.length - this.#basePath.length)
+      basePath && this.#baseUrl.endsWith(basePath)
+        ? this.#baseUrl.slice(0, this.#baseUrl.length - basePath.length)
         : this.#baseUrl;
     this.#apiKey = options.apiKey;
     this.#apiSecret = options.apiSecret;
@@ -2631,10 +2683,10 @@ export class Client {
    * **swapped** them to match the prose. The descriptions have said the same
    * thing throughout, so this choice never depended on the ids.
    *
-   * `root: true` because the WebSocket endpoints (`/ws`, `/ws/token`) are served
-   * at the host root, not under the `/api/v1` base — so both the URL and the
-   * signed path drop the base prefix. Note that makes the signed path
-   * `/ws/token`, not `/api/v1/ws/token`.
+   * `root: true` because the WebSocket endpoints (`/ws`, `/ws/token`) have no
+   * `/api/v1` variant yet — so the URL and the signed path both drop that
+   * prefix. The request still hangs off `baseUrl`: the signed path is
+   * `/ws/token`, while the URL is the base plus that same path.
    */
   async mintWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
     const res = await this.#request<{ token?: string }>("POST", "/ws/token", {
@@ -2878,6 +2930,14 @@ export class Client {
         ? new Uint8Array(0)
         : new TextEncoder().encode(JSON.stringify(body));
 
+    // The path as the indexer sees it: `/api/v1` + the method-relative path for
+    // the migrated surface, or the bare path for the `root` routes that have no
+    // `/api/v1` variant yet. This is both the value signed below and the value
+    // appended to the base, so the two can never drift apart — and it is chosen
+    // off the route, not off the base, so retargeting `baseUrl` at another
+    // deployment needs no signing change.
+    const logicalPath = root ? path : `${API_BASE_PATH}${path}`;
+
     // Advisory identity headers on every request (both empty-string-omittable).
     // `X-Nexus-Api-Version` reports the pinned spec tag for edge attribution;
     // `User-Agent` identifies the client for usage metering (dropped by browser
@@ -2910,11 +2970,13 @@ export class Client {
           this.#apiKey,
           this.#apiSecret,
           method,
-          // Sign the FULL request path the server verifies (e.g.
-          // `/api/v1/orders`), i.e. the base URL's path prefix + the
-          // method-relative path — not the stripped `/orders`. Root routes
-          // (e.g. `/ws/token`) live outside the base and sign the bare path.
-          `${root ? "" : this.#basePath}${path}`,
+          // Sign the LOGICAL path the indexer verifies (e.g. `/api/v1/orders`),
+          // never the base's own path. The gateway strips its `/api/exchange`
+          // prefix before verification, so the signature must exclude it —
+          // signing the sent pathname would cover bytes the server never sees.
+          // Routes without a `/api/v1` variant (e.g. `/ws/token`) sign the bare
+          // path, which is what reaches the indexer for them.
+          logicalPath,
           query,
           bodyBytes,
           this.#now(),
@@ -2922,11 +2984,12 @@ export class Client {
       );
     }
 
-    // Assemble the URL by hand so the bytes signed above match the bytes sent
-    // (no client-side re-encoding of the already-encoded query). `#baseUrl`
-    // already ends with `#basePath`, so the wire pathname equals the signed one;
-    // root routes go to the bare origin so both again match.
-    const url = `${root ? this.#origin : this.#baseUrl}${withQuery(path, query)}`;
+    // Assemble the URL by hand so the query bytes signed above match the bytes
+    // sent (no client-side re-encoding of the already-encoded query). Every
+    // route — root or not — hangs off `#baseUrl`: the legacy routes are
+    // gateway-relative too (`…/api/exchange/ws/token` answers, while the bare
+    // origin 301s to the marketing site), so there is no host-root case left.
+    const url = `${this.#baseUrl}${withQuery(logicalPath, query)}`;
 
     const init: RequestInit = {
       method,

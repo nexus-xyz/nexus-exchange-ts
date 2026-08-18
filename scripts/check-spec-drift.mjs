@@ -426,9 +426,10 @@ const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
  *
  * Every entry here is an `/api/v1` path. The exchange serves the dual-stack
  * `/api/v1` surface as sibling mounts of the legacy root routes (ENG-4737), and
- * this SDK's base URL *is* `…/api/v1` — so a method that does not pass
- * `root: true` necessarily targets `/api/v1/<path>`. The spec has only caught up
- * on part of that surface, hence this list.
+ * this SDK prepends `API_BASE_PATH` to every method that does not pass
+ * `root: true` — so such a method necessarily targets `/api/v1/<path>`,
+ * whatever base URL it is pointed at. The spec has only caught up on part of
+ * that surface, hence this list.
  *
  * Two distinct situations live here; do not collapse them:
  */
