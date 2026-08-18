@@ -333,14 +333,22 @@ rather than sending `/api/v1/api/v1/orders`:
 new Client({ baseUrl: "https://your-host/api/exchange" });
 ```
 
-Every route hangs off this base, including the legacy ones (`/auth/login`,
-`/keys`, `/agents/*`, `/ws-tokens`, `/ws`) that have no `/api/v1` variant yet —
-those drop the version prefix but stay under the base. `client.wsUrl` is derived
-from the base's **origin**, so the stream can never end up on a different host
-than the REST calls.
+Every route hangs off this base, including the ones (`/auth/login`, `/keys`,
+`/agents/*`, `/ws/token`, `/ws`) that have no `/api/v1` variant yet — those drop
+the version prefix but stay under the base. `client.wsUrl` is derived from the
+base's **origin**, so the stream can never end up on a different host than the
+REST calls.
+
+The Python SDK carries a _second_ base for those v1-less routes
+(`direct_base_url`, at the host root). One field is enough here because on the
+public deployment both surfaces are co-mounted under the gateway —
+`POST /api/exchange/ws/token` answers `401` while host-root `POST /ws/token`
+`301`s to the marketing site. That is an assumption about this deployment
+rather than a property of the protocol: if one ever serves those routes beside
+the gateway instead of under it, this SDK would need the second field too.
 
 The signed path is composed independently: it is the logical path
-(`/api/v1/orders`, or `/ws-tokens`), never the base's own prefix. That
+(`/api/v1/orders`, or `/ws/token`), never the base's own prefix. That
 separation is what lets one base serve a gateway deployment correctly — the
 gateway strips `/api/exchange` before the indexer verifies, so folding it into
 the signature would break every authenticated call.

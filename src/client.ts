@@ -1268,6 +1268,38 @@ interface RequestOptions {
    * Target a route that has no {@link API_BASE_PATH} variant yet (e.g.
    * `POST /ws/token`). The path is sent and signed bare, but still relative to
    * `baseUrl` — these routes are gateway-relative, not host-root.
+   *
+   * ## Why one base covers them, and when it would stop
+   *
+   * This is a deliberate simplification over the Python SDK, which carries a
+   * *second* base for exactly these routes (`base_url` for the gateway,
+   * `direct_base_url` for the host root). One field is enough here because on
+   * the public deployment both surfaces are co-mounted under the gateway —
+   * measured, with negative controls, so a permissive catch-all is ruled out:
+   *
+   * ```text
+   * POST /api/exchange/ws/token         401  (exists, wants credentials)
+   * POST /api/exchange/auth/login       422  (exists, parsed and rejected `{}`)
+   * POST /api/exchange/ws/token-zzz     404
+   * POST /ws/token          (host root) 301  -> marketing site
+   * ```
+   *
+   * Two caveats, because this is an assumption about a deployment rather than a
+   * property of the protocol:
+   *
+   * 1. It is measured on `exchange.nexus.xyz` only. Python's split can express
+   *    a deployment where these routes are *not* co-mounted; this SDK cannot.
+   *    Simpler, not strictly more general.
+   * 2. There is no escape hatch today — the Rust SDK's `with_direct_base_url`
+   *    exists for that case. If a deployment ever separates the two surfaces,
+   *    {@link CustomNetworkOptions} needs a matching field; it is not that
+   *    Python's is vestigial.
+   *
+   * Beware one trap when re-measuring: a bodyless `POST` answers `411` on every
+   * path, which masks the 404 and makes any route look real. Send a body. And
+   * under `/api/exchange/account/*` auth runs *before* routing, so a 401 there
+   * proves nothing about whether a route exists — that behaviour is scoped to
+   * that prefix, which is what the 404s above establish.
    */
   root?: boolean;
 }
@@ -2955,7 +2987,7 @@ export class Client {
     // Assemble the URL by hand so the query bytes signed above match the bytes
     // sent (no client-side re-encoding of the already-encoded query). Every
     // route — root or not — hangs off `#baseUrl`: the legacy routes are
-    // gateway-relative too (`…/api/exchange/ws-tokens` answers, while the bare
+    // gateway-relative too (`…/api/exchange/ws/token` answers, while the bare
     // origin 301s to the marketing site), so there is no host-root case left.
     const url = `${this.#baseUrl}${withQuery(logicalPath, query)}`;
 
