@@ -2,7 +2,7 @@
 //
 // Reads NEXUS_API_KEY / NEXUS_API_SECRET from the environment.
 // Run with:
-//   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/account_balances.ts [--network beta]
+//   NEXUS_API_KEY=… NEXUS_API_SECRET=… npx tsx examples/account_balances.ts [--network local]
 
 import { Client } from "../src/index.js";
 import { networkOptions } from "./_network.js";

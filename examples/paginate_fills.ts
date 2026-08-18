@@ -2,7 +2,7 @@
 //
 // Requires credentials (a signed endpoint). Run with:
 //   NEXUS_EXCHANGE_API_KEY=... NEXUS_EXCHANGE_API_SECRET=... \
-//     npx tsx examples/paginate_fills.ts [--network beta]
+//     npx tsx examples/paginate_fills.ts [--network local]
 
 import { Client } from "../src/index.js";
 import { networkOptions } from "./_network.js";

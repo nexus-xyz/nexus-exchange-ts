@@ -20,21 +20,22 @@ function mockFetch(body: unknown, init: { status?: number } = {}) {
 const creds = { apiKey: "key", apiSecret: "abcd" };
 const BASE = "https://example.test";
 
-test("mintWsToken POSTs /ws/token at the host ROOT (not under /api/v1)", async () => {
+test("mintWsToken POSTs /ws/token relative to the base, without /api/v1", async () => {
   const { impl, calls } = mockFetch({ token: "wst_abc123" });
-  // A base URL WITH an /api/v1 path prefix: the WS-token route is a root route,
-  // so it must drop the prefix and hit the origin, else it 404s at
-  // /api/v1/ws/token.
+  // A gateway base: the WS-token route has no /api/v1 variant, so it drops that
+  // prefix — but it stays *under the base*, because the routes without a v1
+  // variant are gateway-relative too. Anchoring it to the bare origin instead
+  // is what used to send it to the host root, which 301s to the marketing site.
   const client = new Client({
     fetchImpl: impl,
-    baseUrl: "https://example.test/api/v1",
+    baseUrl: "https://example.test/api/exchange",
     ...creds,
   });
 
   const token = await client.mintWsToken();
   assert.equal(token, "wst_abc123");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.url, "https://example.test/ws/token");
+  assert.equal(calls[0]!.url, "https://example.test/api/exchange/ws/token");
   assert.equal(calls[0]!.init.method, "POST");
   // Signed over the ROOT path (no /api/v1 prefix) + HMAC headers present.
   const headers = calls[0]!.init.headers as Record<string, string>;
@@ -51,13 +52,13 @@ test("mintWsToken signs with a registered agent key against the canonical route"
   const { impl, calls } = mockFetch({ token: "wst_agent" });
   const client = new Client({
     fetchImpl: impl,
-    baseUrl: "https://example.test/api/v1",
+    baseUrl: "https://example.test/api/exchange",
     apiKey: "nx_agent_key",
     apiSecret: "00112233445566778899aabbccddeeff",
   });
 
   assert.equal(await client.mintWsToken(), "wst_agent");
-  assert.equal(calls[0]!.url, "https://example.test/ws/token");
+  assert.equal(calls[0]!.url, "https://example.test/api/exchange/ws/token");
   const headers = calls[0]!.init.headers as Record<string, string>;
   assert.equal(headers["x-api-key"], "nx_agent_key");
   assert.ok(headers["x-signature"], "expected a signature header");

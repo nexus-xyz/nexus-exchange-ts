@@ -17,7 +17,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  API_BASE_PATH,
   Client,
   NETWORKS,
   Network,
@@ -32,13 +31,20 @@ const NEVER_CALLED: typeof fetch = async () => {
   throw new Error("fetch must not be reached");
 };
 
+/**
+ * The prefix a deployment mounts the API under. Deliberately NOT
+ * {@link API_BASE_PATH}: that one lives in the route and is appended by the
+ * client, so a base carrying it is refused.
+ */
+const GATEWAY_PATH = "/api/exchange";
+
 /** A minimal valid descriptor, for tests that vary exactly one field. */
 function options(
   overrides: Partial<CustomNetworkOptions> = {},
 ): CustomNetworkOptions {
   return {
     label: "dev",
-    baseUrl: `https://exchange.example.com${API_BASE_PATH}`,
+    baseUrl: `https://exchange.example.com${GATEWAY_PATH}`,
     funds: "play",
     ...overrides,
   };
@@ -58,7 +64,7 @@ test("a custom descriptor is accepted in place of the enum and drives the target
   assert.equal(client.funds, "play");
   assert.equal(client.hasFaucet, true);
   assert.equal(client.isRealFunds, false);
-  assert.equal(client.baseUrl, "https://exchange.example.com/api/v1");
+  assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
   // No wsUrl declared, so it is derived from the REST origin — the stream stays
   // on the host the ws token was minted on.
   assert.equal(client.wsUrl, "wss://exchange.example.com");
@@ -79,7 +85,7 @@ test("the descriptor is frozen, so a target cannot be retargeted after the fact"
     (target as unknown as Record<string, unknown>).funds = "play";
   }, TypeError);
   const client = new Client({ network: target, fetchImpl: NEVER_CALLED });
-  assert.equal(client.baseUrl, "https://exchange.example.com/api/v1");
+  assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
 });
 
 test("a request is sent to the custom base, and host-root routes to its origin", async () => {
@@ -93,7 +99,7 @@ test("a request is sent to the custom base, and host-root routes to its origin",
   };
   const client = new Client({
     network: customNetwork(
-      options({ baseUrl: "https://exchange.example.com/gateway/api/v1" }),
+      options({ baseUrl: "https://exchange.example.com/gateway/api/exchange" }),
     ),
     apiKey: "nx_test",
     apiSecret: "00112233445566778899aabbccddeeff",
@@ -105,10 +111,15 @@ test("a request is sent to the custom base, and host-root routes to its origin",
 
   assert.equal(
     urls[0],
-    "https://exchange.example.com/gateway/api/v1/markets/summary",
+    "https://exchange.example.com/gateway/api/exchange/api/v1/markets/summary",
   );
-  // Host-root routes drop the whole base path, not just the /api/v1 suffix.
-  assert.equal(urls[1], "https://exchange.example.com/ws/token");
+  // Legacy routes drop the /api/v1 prefix but stay under the base. Anchoring
+  // them to the bare origin instead is what sent them off the deployment
+  // entirely — on the public host, straight into a marketing-site redirect.
+  assert.equal(
+    urls[1],
+    "https://exchange.example.com/gateway/api/exchange/ws/token",
+  );
 });
 
 test("a declared wsUrl is honoured, and origin-only", () => {
@@ -119,7 +130,7 @@ test("a declared wsUrl is honoured, and origin-only", () => {
     fetchImpl: NEVER_CALLED,
   });
   assert.equal(client.wsUrl, "wss://stream.example.com");
-  assert.equal(client.baseUrl, "https://exchange.example.com/api/v1");
+  assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
   // Trailing slashes are trimmed rather than doubling the path the ws client
   // appends.
   assert.equal(
@@ -152,7 +163,7 @@ test("a wsUrl with a path, or a plaintext one under https, is refused", () => {
   assert.equal(
     customNetwork(
       options({
-        baseUrl: "http://localhost:9099/api/v1",
+        baseUrl: "http://localhost:9099/api/exchange",
         wsUrl: "ws://localhost:9099",
       }),
     ).wsUrl,
@@ -165,8 +176,8 @@ test("a wsUrl with a path, or a plaintext one under https, is refused", () => {
 // otherwise "HTTPS://" reads as not-TLS and the plaintext socket is accepted.
 test("the ws downgrade check is case-insensitive about the base's scheme", () => {
   for (const baseUrl of [
-    "HTTPS://exchange.example.com/api/v1",
-    "Https://exchange.example.com/api/v1",
+    "HTTPS://exchange.example.com/api/exchange",
+    "Https://exchange.example.com/api/exchange",
   ]) {
     assert.throws(
       () =>
@@ -178,9 +189,10 @@ test("the ws downgrade check is case-insensitive about the base's scheme", () =>
   // The mixed-case base is still accepted on its own — only the pairing is
   // refused — and it is kept byte-exact.
   assert.equal(
-    customNetwork(options({ baseUrl: "HTTPS://exchange.example.com/api/v1" }))
-      .baseUrl,
-    "HTTPS://exchange.example.com/api/v1",
+    customNetwork(
+      options({ baseUrl: "HTTPS://exchange.example.com/api/exchange" }),
+    ).baseUrl,
+    "HTTPS://exchange.example.com/api/exchange",
   );
 });
 
@@ -422,27 +434,33 @@ test("a base URL that would build a wrong request is refused at construction", (
     [42, /must be a non-empty absolute/],
     // Relative: in a browser these resolve against the hosting page's origin,
     // which would send the signed headers there.
-    ["/api/v1", /absolute http or https URL/],
-    ["//exchange.example.com/api/v1", /absolute http or https URL/],
+    ["/api/exchange", /absolute http or https URL/],
+    ["//exchange.example.com/api/exchange", /absolute http or https URL/],
     ["not-a-url", /absolute http or https URL/],
     ["ftp://exchange.example.com", /must use http: or https:/],
     ["ws://exchange.example.com", /must use http: or https:/],
     ["file:///etc/passwd", /must use http: or https:/],
     // Userinfo is refused, not stripped: the base is printed in errors and logs.
-    ["https://user:pw@exchange.example.com/api/v1", /user:password@/],
-    ["https://user@exchange.example.com/api/v1", /user:password@/],
+    ["https://user:pw@exchange.example.com/api/exchange", /user:password@/],
+    ["https://user@exchange.example.com/api/exchange", /user:password@/],
     // Unparseable *and* carrying userinfo: the earlier rejection echoes the URL,
     // so the password must be redacted out of it.
     ["https://user:pw@", /<redacted>@/],
     // A query swallows the appended path, so the request lands somewhere other
     // than where its signature says.
-    ["https://exchange.example.com/api/v1?token=x", /must not.+carry a query/s],
-    ["https://exchange.example.com/api/v1#frag", /must not.+carry a fragment/s],
+    [
+      "https://exchange.example.com/api/exchange?token=x",
+      /must not.+carry a query/s,
+    ],
+    [
+      "https://exchange.example.com/api/exchange#frag",
+      /must not.+carry a fragment/s,
+    ],
     // Silently stripped by the URL parser, so the base used would not be the one
     // written here.
-    ["https://exchange.example.com/api/v1\n", /whitespace or control/],
-    ["https://exchange.example.com\t/api/v1", /whitespace or control/],
-    [" https://exchange.example.com/api/v1", /whitespace or control/],
+    ["https://exchange.example.com/api/exchange\n", /whitespace or control/],
+    ["https://exchange.example.com\t/api/exchange", /whitespace or control/],
+    [" https://exchange.example.com/api/exchange", /whitespace or control/],
     ["https://exchange.example.com/api /v1", /whitespace or control/],
   ];
   for (const [baseUrl, expected] of rejected) {
@@ -459,9 +477,10 @@ test("a base URL that would build a wrong request is refused at construction", (
 
   // Trailing slashes are trimmed rather than doubling the appended path.
   assert.equal(
-    customNetwork(options({ baseUrl: "https://exchange.example.com/api/v1//" }))
-      .baseUrl,
-    "https://exchange.example.com/api/v1",
+    customNetwork(
+      options({ baseUrl: "https://exchange.example.com/api/exchange//" }),
+    ).baseUrl,
+    "https://exchange.example.com/api/exchange",
   );
   // A port, and a base with no path at all, are both fine.
   assert.equal(
@@ -470,15 +489,15 @@ test("a base URL that would build a wrong request is refused at construction", (
   );
 });
 
-// Unlike the `baseUrl` shortcut — the field people paste a py/mcp gateway base
-// into — a declared descriptor owns its own URL layout. Refusing the gateway
-// prefix here would make the variant unusable for the deployments it exists for,
-// which are reachable only through it.
-test("a gateway-prefixed base is refused as a shortcut but allowed when declared", () => {
+// A gateway prefix is the *expected* base shape on both construction paths —
+// it is what the public deployment serves and what the sibling SDKs pass. The
+// two paths must agree, because a base accepted one way and refused the other
+// is exactly the inconsistency that sent callers hunting for a workaround.
+test("a gateway-prefixed base is accepted as a shortcut and when declared", () => {
   const gateway = "https://exchange.example.com/api/exchange";
-  assert.throws(
-    () => new Client({ baseUrl: gateway, fetchImpl: NEVER_CALLED }),
-    /must not point at the legacy/,
+  assert.equal(
+    new Client({ baseUrl: gateway, fetchImpl: NEVER_CALLED }).baseUrl,
+    gateway,
   );
   const client = new Client({
     network: customNetwork(options({ baseUrl: gateway })),
@@ -492,7 +511,7 @@ test("a gateway-prefixed base is refused as a shortcut but allowed when declared
 test("a bare baseUrl builds an undeclared custom target, replacing the network", () => {
   const client = new Client({
     network: Network.Testnet,
-    baseUrl: "https://exchange.example.com/api/v1",
+    baseUrl: "https://exchange.example.com/api/exchange",
     fetchImpl: NEVER_CALLED,
   });
 
@@ -504,7 +523,7 @@ test("a bare baseUrl builds an undeclared custom target, replacing the network",
   assert.equal(client.hasFaucet, false);
   assert.equal(client.isRealFunds, true);
   assert.equal(client.signingDomain.chainId, null);
-  assert.equal(client.baseUrl, "https://exchange.example.com/api/v1");
+  assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
   assert.equal(client.wsUrl, "wss://exchange.example.com");
 });
 
@@ -514,10 +533,13 @@ test("a bare baseUrl builds an undeclared custom target, replacing the network",
 // somewhere other than where its HMAC signature says it does.
 test("the baseUrl shortcut refuses a URL that would misbuild requests", () => {
   const rejected: [string, RegExp][] = [
-    ["https://u:pw@exchange.example.com/api/v1", /user:password@/],
-    ["https://exchange.example.com/api/v1?token=x", /carry a query string/],
-    ["https://exchange.example.com/api/v1#frag", /carry a fragment/],
-    ["https://exchange.example.com/api/v1\n", /whitespace or control/],
+    ["https://u:pw@exchange.example.com/api/exchange", /user:password@/],
+    [
+      "https://exchange.example.com/api/exchange?token=x",
+      /carry a query string/,
+    ],
+    ["https://exchange.example.com/api/exchange#frag", /carry a fragment/],
+    ["https://exchange.example.com/api/exchange\n", /whitespace or control/],
   ];
   for (const [baseUrl, expected] of rejected) {
     assert.throws(
@@ -541,7 +563,7 @@ test("a descriptor and a baseUrl cannot be combined", () => {
     () =>
       new Client({
         network: customNetwork(options()),
-        baseUrl: "https://other.example.invalid/api/v1",
+        baseUrl: "https://other.example.invalid/api/exchange",
         fetchImpl: NEVER_CALLED,
       }),
     (err: unknown) => {
@@ -583,7 +605,7 @@ test("a hand-written descriptor is re-validated, not trusted", () => {
   const client = new Client({
     network: {
       label: " dev ",
-      baseUrl: "https://exchange.example.com/api/v1/",
+      baseUrl: "https://exchange.example.com/api/exchange/",
       funds: "play",
       faucet: true,
       wsUrl: null,
@@ -592,7 +614,7 @@ test("a hand-written descriptor is re-validated, not trusted", () => {
     fetchImpl: NEVER_CALLED,
   });
   assert.equal(client.label, "dev");
-  assert.equal(client.baseUrl, "https://exchange.example.com/api/v1");
+  assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
   assert.equal(client.hasFaucet, true);
   // name/version are not caller-supplied, so the literal's are ignored rather
   // than signed under.
@@ -643,7 +665,7 @@ test("networkConfig and baseUrlForNetwork accept a descriptor too", () => {
   assert.equal(networkConfig(target), target);
   assert.equal(
     baseUrlForNetwork(target),
-    "https://exchange.example.com/api/v1",
+    "https://exchange.example.com/api/exchange",
   );
   // Still refuses an unrecognized identifier, and now points at the way out.
   assert.throws(

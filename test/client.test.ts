@@ -42,28 +42,26 @@ function mockFetch(
 
 // ── Network axis (ENG-6453) ──────────────────────────────────────────────────
 
-test("live network base URLs are the direct-indexer hosts", () => {
+test("live network base URLs are deployment bases, without API_BASE_PATH", () => {
   assert.equal(
     baseUrlForNetwork(Network.Testnet),
-    "https://exchange.nexus.xyz/api/v1",
+    "https://exchange.nexus.xyz/api/exchange",
   );
-  assert.equal(
-    baseUrlForNetwork(Network.Local),
-    "http://localhost:9090/api/v1",
-  );
+  assert.equal(baseUrlForNetwork(Network.Local), "http://localhost:9090");
 });
 
 // scripts/check-spec-drift.mjs reads API_BASE_PATH as the prefix every non-root
 // request composes, and derives the operations it compares against the spec from
-// it (invariant H). If a network base stopped ending with it, the checker would
-// keep reporting green while the client signed different paths.
-test("every live network base URL is built from API_BASE_PATH", () => {
+// it (invariant H). The prefix now lives in the path rather than the base, so
+// the invariant inverts: a base that *carries* it would make the client send
+// `/api/v1/api/v1/…` while the checker kept reporting green.
+test("no live network base URL carries API_BASE_PATH", () => {
   assert.equal(API_BASE_PATH, "/api/v1");
   for (const [network, config] of Object.entries(NETWORKS)) {
     if (config.baseUrl === null) continue;
     assert.ok(
-      config.baseUrl.endsWith(API_BASE_PATH),
-      `${network} base URL ${config.baseUrl} must end with ${API_BASE_PATH}`,
+      !config.baseUrl.endsWith(API_BASE_PATH),
+      `${network} base URL ${config.baseUrl} must not end with ${API_BASE_PATH}`,
     );
   }
 });
@@ -96,7 +94,7 @@ test("the default network is testnet play funds, never mainnet", () => {
   assert.equal(client.network, Network.Testnet);
   assert.equal(client.isRealFunds, false);
   assert.equal(client.networkConfig.funds, "play");
-  assert.equal(client.baseUrl, "https://exchange.nexus.xyz/api/v1");
+  assert.equal(client.baseUrl, "https://exchange.nexus.xyz/api/exchange");
 });
 
 // Mainnet is real funds with no resolvable host and a different path
@@ -126,7 +124,7 @@ test("selecting mainnet without an explicit baseUrl refuses", () => {
 test("mainnet is reachable only by opting in with an explicit baseUrl", () => {
   const client = new Client({
     network: Network.Mainnet,
-    baseUrl: "https://api.example.invalid/api/v1",
+    baseUrl: "https://api.example.invalid/api/exchange",
     fetchImpl: async () => new Response("{}"),
   });
   assert.notEqual(client.network, Network.Mainnet);
@@ -160,29 +158,6 @@ test("an unrecognized network is refused rather than assumed play funds", () => 
   );
 });
 
-// Beta is a testnet base, not a network of its own — so it is a custom target
-// that *declares* testnet's play funds, rather than a bare override that would
-// inherit nothing.
-test("beta is reachable as a custom testnet base", () => {
-  const beta = customNetwork({
-    label: "beta",
-    baseUrl: "https://beta.exchange.nexus.xyz/api/v1",
-    funds: "play",
-    faucet: true,
-  });
-  const client = new Client({
-    network: beta,
-    fetchImpl: async () => new Response("{}"),
-  });
-  assert.equal(client.network, beta);
-  assert.equal(client.funds, "play");
-  assert.equal(client.isRealFunds, false);
-  assert.equal(client.label, "beta");
-  assert.equal(client.baseUrl, "https://beta.exchange.nexus.xyz/api/v1");
-  // wsUrl follows the base — the stream cannot end up on the default host.
-  assert.equal(client.wsUrl, "wss://beta.exchange.nexus.xyz");
-});
-
 // The map is module-level shared state. Without freezing, one caller could
 // retarget every client constructed afterwards — including onto a real-funds
 // host — from anywhere in the process.
@@ -199,7 +174,7 @@ test("the NETWORKS map and its entries are frozen", () => {
   }, TypeError);
   assert.equal(
     baseUrlForNetwork(Network.Testnet),
-    "https://exchange.nexus.xyz/api/v1",
+    "https://exchange.nexus.xyz/api/exchange",
   );
 });
 
@@ -231,42 +206,53 @@ test("a relative or non-HTTP baseUrl is refused at construction", () => {
   // A legitimate absolute override still works.
   assert.equal(
     new Client({
-      baseUrl: "https://example.test/api/v1/",
+      baseUrl: "https://example.test/api/exchange/",
       fetchImpl: async () => new Response("{}"),
     }).baseUrl,
-    "https://example.test/api/v1",
+    "https://example.test/api/exchange",
   );
 });
 
-// No route this SDK implements is served under the legacy `/api/exchange`
-// gateway, so such a base can only be a misconfiguration — and a likely one:
-// the Python SDK's `base_url` *is* the gateway base, so pasting it here is the
-// natural cross-SDK mistake. Unguarded it would send, and HMAC-sign,
-// `/api/exchange/api/v1/orders`.
-test("a legacy /api/exchange gateway baseUrl is refused at construction", () => {
+// The version prefix lives in the path, and the client appends it to every
+// non-root route. A base that already carries `/api/v1` — this SDK's own
+// pre-0.3 default, still pasted from older docs — would therefore send
+// `/api/v1/api/v1/orders` while signing the correct `/api/v1/orders`: a 404
+// whose signature looks fine, which is a confusing pair to debug.
+test("a baseUrl carrying API_BASE_PATH is refused at construction", () => {
   for (const baseUrl of [
-    "https://exchange.nexus.xyz/api/exchange",
-    "https://exchange.nexus.xyz/api/exchange/",
-    // The shape the MCP server strips defensively (nexus-exchange-api#41).
+    "https://exchange.nexus.xyz/api/v1",
+    "https://exchange.nexus.xyz/api/v1/",
     "https://exchange.nexus.xyz/api/exchange/api/v1",
   ]) {
     assert.throws(
       () => new Client({ baseUrl }),
       (err: unknown) => {
         assert.ok(err instanceof NexusExchangeError);
-        assert.match(err.message, /must not point at the legacy/);
+        assert.match(err.message, /must not include "\/api\/v1"/);
         // The message must name the value to use instead.
-        assert.match(err.message, /"https:\/\/exchange\.nexus\.xyz\/api\/v1"/);
+        assert.match(err.message, /Pass the deployment base without it/);
         return true;
       },
       `expected ${JSON.stringify(baseUrl)} to be refused`,
     );
   }
-  // Not fooled by the host merely being named `exchange`, nor by an `exchange`
-  // path segment that is not the `/api/exchange` gateway prefix.
+  // A declared descriptor gets no exemption — the prefix is appended however
+  // the target was named.
+  assert.throws(
+    () =>
+      customNetwork({
+        label: "dev",
+        baseUrl: "https://h/api/v1",
+        funds: "play",
+      }),
+    /must not include "\/api\/v1"/,
+  );
+  // The gateway base is now the expected shape, not a refused one, and a `v1`
+  // segment that is not the trailing prefix is left alone.
   for (const baseUrl of [
-    "https://exchange.nexus.xyz/api/v1",
-    "https://h/exchange/api/v1",
+    "https://exchange.nexus.xyz/api/exchange",
+    "https://exchange.nexus.xyz/api/exchange/",
+    "https://h/api/v1/proxy",
   ]) {
     assert.doesNotThrow(
       () => new Client({ baseUrl, fetchImpl: async () => new Response("{}") }),
@@ -295,7 +281,7 @@ test("fetchMarketSummaries hits /markets/summary and decodes the body", async ()
 
   const out = await client.fetchMarketSummaries();
   assert.deepEqual(out, summaries);
-  assert.equal(calls[0]!.url, "https://example.test/markets/summary");
+  assert.equal(calls[0]!.url, "https://example.test/api/v1/markets/summary");
   assert.equal(calls[0]!.init.method, "GET");
 });
 
@@ -309,13 +295,13 @@ test("query params are appended in order and only when present", async () => {
   await client.fetchCandles("ETH-USDX-PERP", { timeframe: "1m", limit: 200 });
   assert.equal(
     calls[0]!.url,
-    "https://example.test/markets/ETH-USDX-PERP/candles?timeframe=1m&limit=200",
+    "https://example.test/api/v1/markets/ETH-USDX-PERP/candles?timeframe=1m&limit=200",
   );
 
   await client.fetchTrades("ETH-USDX-PERP"); // no limit → no query string
   assert.equal(
     calls[1]!.url,
-    "https://example.test/markets/ETH-USDX-PERP/trades",
+    "https://example.test/api/v1/markets/ETH-USDX-PERP/trades",
   );
 });
 
@@ -329,7 +315,7 @@ test("path segments are URL-encoded so they cannot escape the path", async () =>
   await client.fetchTicker("weird/../id");
   assert.equal(
     calls[0]!.url,
-    "https://example.test/markets/weird%2F..%2Fid/ticker",
+    "https://example.test/api/v1/markets/weird%2F..%2Fid/ticker",
   );
 });
 
@@ -340,7 +326,10 @@ test("trailing slashes on baseUrl are trimmed", async () => {
     baseUrl: "https://example.test/api/",
   });
   await client.fetchMarketSummaries();
-  assert.equal(calls[0]!.url, "https://example.test/api/markets/summary");
+  assert.equal(
+    calls[0]!.url,
+    "https://example.test/api/api/v1/markets/summary",
+  );
 });
 
 test("4xx is a terminal ApiError; 5xx is transient; code/message parsed", async () => {
@@ -572,9 +561,14 @@ test("path params are percent-encoded and the signed path matches the URL", asyn
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
-test("signed path uses the base URL's path prefix (custom baseUrl)", async () => {
-  // A custom base URL with its own path prefix must be folded into the signed
-  // path too — the HMAC always covers the exact pathname sent on the wire.
+test("the signed path excludes the base URL's own path prefix", async () => {
+  // The inverse of what this used to assert, and the reason authenticated calls
+  // could not reach the public deployment. The gateway strips its own prefix
+  // before the indexer verifies, so the HMAC must cover the LOGICAL path
+  // (`/api/v1/account`) and not the wire pathname
+  // (`/api/exchange/api/v1/account`). Folding the base in signed bytes the
+  // server never sees, which surfaces as an auth failure on a URL that is
+  // demonstrably correct.
   const calls: Captured[] = [];
   const fetchImpl = (async (url: unknown, init: RequestInit | undefined) => {
     calls.push({
@@ -587,7 +581,7 @@ test("signed path uses the base URL's path prefix (custom baseUrl)", async () =>
   }) as unknown as typeof fetch;
 
   const client = new Client({
-    baseUrl: "https://proxy.internal/api/v1",
+    baseUrl: "https://proxy.internal/api/exchange",
     apiKey: "nx_test",
     apiSecret: SECRET,
     fetchImpl,
@@ -595,7 +589,7 @@ test("signed path uses the base URL's path prefix (custom baseUrl)", async () =>
   await client.getAccount();
 
   const c = calls[0]!;
-  assert.equal(c.url, "https://proxy.internal/api/v1/account");
+  assert.equal(c.url, "https://proxy.internal/api/exchange/api/v1/account");
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,

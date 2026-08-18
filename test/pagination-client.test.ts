@@ -215,7 +215,7 @@ test("an absent X-Next-Cursor ends the walk after one request", async () => {
   assert.deepEqual(out, trades);
   assert.equal(
     calls[0]!.url,
-    "https://example.test/markets/BTC-USDX-PERP/trades?limit=50",
+    "https://example.test/api/v1/markets/BTC-USDX-PERP/trades?limit=50",
   );
   assert.equal(calls.length, 1);
 });
@@ -484,7 +484,7 @@ test("no limit and no cursor means no query string at all", async () => {
   // `cursor=` would be a different request.
   const { impl, calls } = mockPagedFetch([{ items: [] }]);
   await authed(impl).getFillsPaginated().all();
-  assert.equal(calls[0]!.url, "https://example.test/fills");
+  assert.equal(calls[0]!.url, "https://example.test/api/v1/fills");
 });
 
 test("the paginated methods still return a Paginator", async () => {
