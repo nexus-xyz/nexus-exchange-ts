@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.2.0...v0.3.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** `baseUrl` is now the deployment base *without* `/api/v1` (`https://exchange.nexus.xyz/api/exchange`), and a base carrying that prefix is refused at construction on both `ClientOptions.baseUrl` and `customNetwork()`. The client appends `/api/v1` to every route and signs the logical path, excluding whatever prefix the base carries. `Network.Testnet` changes to `https://exchange.nexus.xyz/api/exchange` and `Network.Local` to `http://localhost:9090`. Callers passing an explicit `baseUrl` must drop the `/api/v1` suffix; callers on the defaults need no change. The `beta` example network is removed.
+* **client:** the wire call moves from `POST /ws-tokens` to `POST /ws/token`. The public TypeScript surface is unchanged — same method, same signature, same return — but a consumer pointed at a deployment that serves only the legacy route regresses through no fault of their own code, and the gateway still vends that route (ENG-8716, ENG-8342). Declared rather than slipped in as a patch.
+* `fetchFundingSamples()` returns `FundingPremiumSample[]` instead of `FundingSample[]`. Readers of `funding_rate`, `mark_price` or `oracle_price` on those samples must move to `fetchFundingHistory()`, which serves the settled window those fields describe. oasdiff classifies the underlying spec change as non-breaking because the properties were optional on the wire; for a hand-written typed SDK it changes a public return type.
+* **client:** `baseUrl` is now sugar for a custom target with nothing declared, so it replaces `network` rather than retargeting it — an overridden client reports `funds: "unknown"`, `isRealFunds: true`, refuses faucet claims, and `client.network` is the descriptor rather than the named member. `client.network` is `Network | NetworkConfig`. `NetworkConfig.funds` widens to the tri-state. `isRealFunds` reports `true` for `"unknown"`. A `baseUrl` carrying userinfo, a query, a fragment or embedded whitespace is now refused.
+* the EIP-712 domain type on `NetworkConfig.signingDomain` is renamed `SigningDomain` → `NetworkSigningDomain`, because v0.7.3 introduces a spec schema named `SigningDomain` with a different shape (snake_case `chain_id`, all fields optional) which drift invariant D requires `src/models.ts` to export under that exact name. The structure of `networkConfig(n).signingDomain` is unchanged, so only an explicit `SigningDomain` annotation over it needs the new name; `SigningDomain` now refers to the server-reported `/metadata` shape.
+
+### Features
+
+* bump vendored spec v0.7.2 → v0.7.3 and model the new surface ([#52](https://github.com/nexus-xyz/nexus-exchange-ts/issues/52)) ([0abb3df](https://github.com/nexus-xyz/nexus-exchange-ts/commit/0abb3df1d23d6867413a6e411f988427932832a0))
+* bump vendored spec v0.7.3 → v0.8.1 and model the new surface (ENG-10482) ([#56](https://github.com/nexus-xyz/nexus-exchange-ts/issues/56)) ([a0da581](https://github.com/nexus-xyz/nexus-exchange-ts/commit/a0da5815e7751d81e00dee34b6c2a3685b322bcf))
+* **client:** add a custom network with a caller-supplied base URL (ENG-9825) ([#57](https://github.com/nexus-xyz/nexus-exchange-ts/issues/57)) ([e41ff32](https://github.com/nexus-xyz/nexus-exchange-ts/commit/e41ff32ff81a35f2ecfb6d9559afd838371c5d4c))
+* **client:** deprecate the `baseUrl` shortcut in favour of customNetwork() (ENG-10953) ([#63](https://github.com/nexus-xyz/nexus-exchange-ts/issues/63)) ([2b15946](https://github.com/nexus-xyz/nexus-exchange-ts/commit/2b1594672f797407e7b8cb01dae4e9b12768e607))
+* **client:** split the deployment base from the signed path (ENG-8463) ([#65](https://github.com/nexus-xyz/nexus-exchange-ts/issues/65)) ([c069bc6](https://github.com/nexus-xyz/nexus-exchange-ts/commit/c069bc6b13673b188eee6b7601e49312595811ce))
+
+
+### Bug Fixes
+
+* **client:** mint WS tokens via POST /ws/token — the legacy route silently emptied account channels (ENG-10492) ([#60](https://github.com/nexus-xyz/nexus-exchange-ts/issues/60)) ([a7da755](https://github.com/nexus-xyz/nexus-exchange-ts/commit/a7da755f3dd0b5de774b5d0bfdfcf949372bfddf))
+* **client:** never follow redirects — a 3xx forwarded the request signature to another origin (ENG-8463) ([#53](https://github.com/nexus-xyz/nexus-exchange-ts/issues/53)) ([0b2942f](https://github.com/nexus-xyz/nexus-exchange-ts/commit/0b2942f0328d91cb1d7c6869d494a857ed591be0))
+
 ## [0.2.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.1.0...v0.2.0) (2026-08-05)
 
 
