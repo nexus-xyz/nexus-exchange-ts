@@ -866,7 +866,9 @@ function operationsDrift({
   const canonical = (op) => canonicalOp(op, basePath);
   const canonicalSpecOps = new Set([...specOps].map(canonical));
   const canonicalTargeted = new Set(targetedOps.map(canonical));
-  const covered = [...canonicalSpecOps].filter((op) => canonicalTargeted.has(op));
+  const covered = [...canonicalSpecOps].filter((op) =>
+    canonicalTargeted.has(op),
+  );
   const spellings = specOps.size - canonicalSpecOps.size;
   // Lines in uncovered-ops.txt that exist only because the twin spelling of an
   // operation this SDK DOES target must still be accounted for by invariant G.

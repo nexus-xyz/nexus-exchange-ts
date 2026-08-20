@@ -33,7 +33,11 @@ function run(opts: Record<string, unknown> = {}) {
   return operationsDrift({
     specOps: SPEC,
     targeted: [line("GET /api/v1/orders")],
-    uncovered: [line("GET /orders"), line("GET /widgets"), line("GET /api/v1/widgets")],
+    uncovered: [
+      line("GET /orders"),
+      line("GET /widgets"),
+      line("GET /api/v1/widgets"),
+    ],
     implemented: new Set(["GET /api/v1/orders"]),
     basePath: BASE,
     codeOnly: new Set(),
@@ -52,7 +56,10 @@ test("coverage counts operations, not documented paths", () => {
 test("the twin count separates 'other spelling' from a real gap", () => {
   const { summary } = run();
   // 3 lines in uncovered-ops.txt, exactly 1 of which is the twin of a targeted op.
-  assert.match(summary, /3 lines in spec\/uncovered-ops\.txt, 1 of them the twin/);
+  assert.match(
+    summary,
+    /3 lines in spec\/uncovered-ops\.txt, 1 of them the twin/,
+  );
   // And 1 operation genuinely not targeted (GET /widgets), not 3.
   assert.match(summary, /1 operation\(s\) not targeted/);
 });
@@ -135,7 +142,10 @@ test("invariant G still catches an unaccounted-for path whose twin IS listed", (
   const g = findings.find((f: { label: string }) =>
     f.label.includes("neither targeted by endpoints.txt"),
   );
-  assert.ok(g, `invariant G reported nothing; findings: ${JSON.stringify(findings)}`);
+  assert.ok(
+    g,
+    `invariant G reported nothing; findings: ${JSON.stringify(findings)}`,
+  );
   assert.deepEqual(g.items, ["GET /api/v1/widgets"]);
 });
 
