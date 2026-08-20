@@ -84,9 +84,9 @@
  * green run from a checker nothing has ever proven can fail is worth very
  * little. Add one alongside any invariant you add.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_VERSION_RE = /^v[0-9]+(\.[0-9]+)*$/;
@@ -746,6 +746,27 @@ function implementedOps(src, basePath = clientBasePath(src)) {
 }
 
 /**
+ * One `"METHOD /path"` per operation, whichever spelling the spec used.
+ *
+ * Exported so the self-test can assert the resulting op IDENTITY, not just the
+ * counts derived from it. That distinction is not academic: stripping the prefix
+ * without requiring the trailing slash turns `/api/v1foo` into `foo` — an
+ * operation the spec never declared — and every count in the summary comes out
+ * the same, so a count-only test passes over it (ENG-11847).
+ *
+ * `basePath` is `API_BASE_PATH` from src/client.ts. An empty prefix
+ * canonicalizes nothing, which degrades to the old per-path counting rather than
+ * mangling anything.
+ */
+function canonicalOp(op, basePath) {
+  const prefix = (basePath || "").replace(/\/$/, "");
+  const [method, path] = op.split(" ");
+  const bare =
+    prefix && path.startsWith(prefix + "/") ? path.slice(prefix.length) : path;
+  return `${method} ${bare}`;
+}
+
+/**
  * Invariants F/G/H. Returns `{ findings, summary }`: `findings` is a list of
  * `{ label, items }` groups for main() to report and count, `summary` a line
  * for the run header. Pure — every input is passed in, so the self-test can
@@ -756,6 +777,7 @@ function operationsDrift({
   targeted,
   uncovered,
   implemented,
+  basePath,
   codeOnly = CODE_ONLY_OPS,
   nonRest = NON_REST_TARGETS,
 }) {
@@ -826,9 +848,41 @@ function operationsDrift({
     [...nonRest].filter((op) => !targetedSet.has(op)),
   );
 
+  // Coverage is reported per OPERATION, not per documented path. The spec
+  // declares many operations twice — once on the legacy gateway route
+  // (`/orders`) and once on the direct `/api/v1` route — pending ENG-8155, so
+  // `specOps.size` counts paths. Dividing by it understated coverage by 21.6
+  // points: "45 of 101" reads as 44.6% when the SDK covers 45 of 68 operations,
+  // i.e. 66.2% (ENG-11847).
+  //
+  // Deliberately NOT applied to invariant G above. G requires endpoints.txt +
+  // uncovered-ops.txt to account for every spec operation AS SPELLED, which is
+  // what makes a spec release that adds an operation fail CI. Canonicalising
+  // there would let a newly added path go unaccounted for whenever its twin was
+  // already listed — trading a wrong number for a blind spot.
+  //
+  // The prefix is `basePath` — `API_BASE_PATH` read out of src/client.ts — not a
+  // literal repeated here, for the same reason clientBasePath() exists.
+  const canonical = (op) => canonicalOp(op, basePath);
+  const canonicalSpecOps = new Set([...specOps].map(canonical));
+  const canonicalTargeted = new Set(targetedOps.map(canonical));
+  const covered = [...canonicalSpecOps].filter((op) => canonicalTargeted.has(op));
+  const spellings = specOps.size - canonicalSpecOps.size;
+  // Lines in uncovered-ops.txt that exist only because the twin spelling of an
+  // operation this SDK DOES target must still be accounted for by invariant G.
+  const twins = uncovered.filter((e) => canonicalTargeted.has(canonical(e.op)));
+  const pct = canonicalSpecOps.size
+    ? ((100 * covered.length) / canonicalSpecOps.size).toFixed(1)
+    : "0.0";
+
   return {
     findings,
-    summary: `SDK targets ${targeted.length} of ${specOps.size} spec operation(s); ${uncovered.length} recorded as not targeted, ${codeOnly.size} implemented ahead of the spec.`,
+    summary:
+      `SDK covers ${covered.length} of ${canonicalSpecOps.size} spec operation(s) (${pct}%) — ` +
+      `${specOps.size} documented paths, ${spellings} of them a second spelling of an ` +
+      `operation already counted. ${canonicalSpecOps.size - covered.length} operation(s) not ` +
+      `targeted (${uncovered.length} lines in spec/uncovered-ops.txt, ${twins.length} of them ` +
+      `the twin of a targeted operation), ${codeOnly.size} implemented ahead of the spec.`,
   };
 }
 
@@ -867,6 +921,7 @@ function main() {
       read(join(REPO, "spec", "uncovered-ops.txt")),
     ),
     implemented: implementedOps(clientSrc, basePath),
+    basePath,
   });
 
   console.log(`Pinned API version : ${pin}`);
@@ -945,4 +1000,23 @@ function main() {
   );
 }
 
-main();
+// Run only when invoked as a script, so the module can also be imported.
+//
+// There WAS already a self-test (test/models.test.ts) — it copies this script
+// into a temp dir and runs it end-to-end, which is why nothing here was ever
+// imported. What was missing is a unit-level test of `operationsDrift`, the
+// thing whose docstring promises purity "so the self-test can defeat each
+// invariant in isolation"; test/spec-drift.test.ts is that (ENG-11847).
+//
+// `realpathSync` matters: the existing self-test runs the copy out of
+// `os.tmpdir()`, which on macOS is a symlink (`/var/...` -> `/private/var/...`).
+// `import.meta.url` is resolved, `process.argv[1]` is not, so comparing them raw
+// made this guard false in exactly that test — main() silently did not run and
+// every "must FAIL" assertion saw exit 0. An entry-point guard that skips the
+// entry point is worse than no guard, so it resolves both sides.
+const invokedAs = process.argv[1]
+  ? pathToFileURL(realpathSync(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedAs) main();
+
+export { canonicalOp, operationsDrift };
