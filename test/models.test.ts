@@ -684,6 +684,12 @@ function runDriftSandbox(opts: {
   mutateClient?: (src: string) => string;
   mutateEndpoints?: (text: string) => string;
   mutateUncovered?: (text: string) => string;
+  /**
+   * Mutate the checker's own source before it runs. The allowlist-free policy
+   * (ENG-8620) is a property of the script, not of its inputs, so the only way
+   * to prove the gate goes red on a `CODE_ONLY_OPS` entry is to put one there.
+   */
+  mutateScript?: (src: string) => string;
   allowlist?: string;
 }): DriftResult {
   const dir = mkdtempSync(join(tmpdir(), "spec-drift-"));
@@ -696,10 +702,12 @@ function runDriftSandbox(opts: {
       join(REPO, "spec", "schemas.txt"),
       join(dir, "spec", "schemas.txt"),
     );
-    copyFileSync(
+    let script = readFileSync(
       join(REPO, "scripts", "check-spec-drift.mjs"),
-      join(dir, "scripts", "check-spec-drift.mjs"),
+      "utf8",
     );
+    if (opts.mutateScript) script = opts.mutateScript(script);
+    writeFileSync(join(dir, "scripts", "check-spec-drift.mjs"), script);
 
     const spec = JSON.parse(
       readFileSync(join(REPO, "spec", "openapi.json"), "utf8"),
@@ -920,26 +928,35 @@ test("ops drift: FAILS when endpoints.txt lists an operation no wrapper implemen
   assert.match(r.stderr, /GET \/markets/);
 });
 
-test("ops drift: FAILS on a CODE_ONLY_OPS entry the client no longer implements", () => {
+test("ops drift: FAILS on ANY CODE_ONLY_OPS entry, however well attributed", () => {
+  // The policy (ENG-8616 / ENG-8620): an operation the pinned spec does not
+  // define must not be implemented, so the allowlist has to be empty and the
+  // check has to fail on any entry — not just on a stale one. The two rot checks
+  // this replaced only ever fired on a CHANGE (the op stopped being implemented,
+  // or the spec caught up), so an op no spec version has ever contained satisfied
+  // both and sat green forever. That is the hole, and this is the test for it.
+  //
+  // The entry below is maximally "legitimate": the client really does implement
+  // it, and it carries a ticket reference. It must fail anyway.
   const r = runDriftSandbox({
     mutateClient: (src) =>
-      replaceOnce(src, '"POST", "/faucet"', '"POST", "/faucet-renamed"'),
+      replaceOnce(
+        src,
+        '"POST", "/faucet", {\n      signed: true,\n      root: true,',
+        '"POST", "/faucet", {\n      signed: true,',
+      ),
+    mutateScript: (src) =>
+      replaceOnce(
+        src,
+        "const CODE_ONLY_OPS = new Set([]);",
+        'const CODE_ONLY_OPS = new Set(["POST /api/v1/faucet"]); // ENG-0000',
+      ),
   });
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /CODE_ONLY_OPS entr\(ies\) no longer implemented/);
-  assert.match(r.stderr, /POST \/api\/v1\/faucet/);
-});
-
-test("ops drift: FAILS on a CODE_ONLY_OPS entry the spec has caught up on", () => {
-  // The grant is real — the client does implement it — but it is no longer
-  // *code-only*, so it belongs in endpoints.txt where invariant F covers it.
-  const r = runDriftSandbox({
-    mutateSpec: (spec) => {
-      (spec.paths as Record<string, unknown>)["/api/v1/faucet"] = { post: {} };
-    },
-  });
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /CODE_ONLY_OPS entr\(ies\) the spec now defines/);
+  assert.match(
+    r.stderr,
+    /CODE_ONLY_OPS entr\(ies\) — the allowlist must be EMPTY/,
+  );
   assert.match(r.stderr, /POST \/api\/v1\/faucet/);
 });
 

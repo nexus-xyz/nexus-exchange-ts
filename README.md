@@ -685,8 +685,16 @@ The invariants that matter most run _both ways_:
   recorded in [`spec/uncovered-ops.txt`](./spec/uncovered-ops.txt), so new
   upstream surface can't land unnoticed.
 
-Every allowlist entry is itself checked for staleness — it fails once the spec
-catches up or the code moves on, so no list can accumulate dead grants. The
+**An operation the pinned spec does not define is not implemented at all.** There
+is no allowlist for one — no attribution, no parking, no release-lag exception —
+and the check fails on any entry in the (empty) `CODE_ONLY_OPS` seam that says
+otherwise. A method for an endpoint the contract lacks waits for the released tag
+that defines it. The rule exists because the alternative rots silently: a "we're
+just ahead of the spec" grant is only ever re-examined when something changes, so
+an endpoint no spec version has ever carried sits green forever.
+
+Every remaining allowlist entry is itself checked for staleness — it fails once
+the spec catches up or the code moves on, so no list can accumulate dead grants. The
 checker is itself tested: `test/models.test.ts` defeats each invariant in a
 throwaway copy of the drift inputs and asserts the gate goes red, since a green
 run is only worth what proves it can fail.

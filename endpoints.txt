@@ -7,11 +7,15 @@
 #     renamed, or mis-prefixed operation fails CI rather than quietly overstating
 #     coverage;
 #   * the set must equal the REST operations src/client.ts actually implements
-#     (invariant H), modulo two named allowlists in check-spec-drift.mjs:
-#       - CODE_ONLY_OPS    — implemented but not in the pinned spec, so kept OUT
-#         of this file (listing them would fail invariant F);
+#     (invariant H), modulo ONE named allowlist in check-spec-drift.mjs:
 #       - NON_REST_TARGETS — targeted without a `this.#request(...)` call, so
 #         invisible to the code parser: `GET /ws`, opened by src/ws/client.ts.
+#
+# There is NO allowlist for an operation the spec does not define. An endpoint
+# absent from the pinned contract must not be implemented (ENG-8616), so there is
+# nowhere to park one: `CODE_ONLY_OPS` in check-spec-drift.mjs is empty and the
+# check fails on ANY entry. If the SDK wants an operation the spec lacks, it waits
+# for the released tag that defines it — it does not ship the method meanwhile.
 #
 # Every spec operation NOT listed here must be recorded in spec/uncovered-ops.txt
 # (invariant G), so new upstream surface cannot land unnoticed.
@@ -22,10 +26,14 @@
 #   METHOD /path      (placeholders match the spec, e.g. {market_id})
 #
 # Dual-stack routing (ENG-4947 / gateway elimination ENG-4740): the path here is
-# the FULL path the SDK signs and sends. This client's base URL is
-# `https://exchange.nexus.xyz/api/v1`, so a method that does not pass `root: true`
-# targets `/api/v1/<path>` and is listed with that prefix; the host-root routes
-# (auth, API keys, agents, WS) pass `root: true` and are listed bare.
+# the LOGICAL path — the one the SDK signs, which is the wire path minus whatever
+# prefix the deployment base carries (ENG-8463 split the two: the testnet base is
+# `https://exchange.nexus.xyz/api/exchange`, and the gateway strips that before
+# verifying the HMAC). A method that does not pass `root: true` composes
+# `API_BASE_PATH` + its path and is listed with the `/api/v1` prefix; a method
+# that does passes it bare and is listed bare. Which of the two a route uses is
+# not a style choice — it is whichever spelling the spec declares, since a line
+# here that the spec does not define fails invariant F.
 
 # --- Direct-service surface (/api/v1) — public market data ---
 GET /api/v1/markets/summary
@@ -77,7 +85,21 @@ PATCH /api/v1/orders/{order_id}
 DELETE /api/v1/orders/{order_id}
 DELETE /api/v1/orders
 
-# --- Host-root surface (`root: true`) — wallet auth, API keys, agent keys ---
+# --- Root-relative surface (`root: true`) — funds ---
+# Sent and signed bare, because the spec declares them bare and declares no
+# `/api/v1` twin of any of them. The server does mount `/api/v1` siblings for the
+# four ledger/faucet routes (`funds_extra_v1_routes`, ENG-4737) and the SDK used
+# to target those, parked in CODE_ONLY_OPS; the allowlist is gone and with it the
+# undocumented paths (ENG-8620). `/account/{deposit,margin}` never had a sibling
+# — the prefixed form was measured 404 (ENG-8463).
+POST /account/deposit
+POST /deposits
+GET /deposits
+GET /withdrawals
+POST /faucet
+POST /account/margin
+
+# --- Root-relative surface (`root: true`) — wallet auth, API keys, agent keys ---
 POST /auth/login
 POST /keys
 GET /keys
@@ -86,7 +108,7 @@ POST /agents/register
 GET /agents
 DELETE /agents/{address}
 
-# --- Host-root surface (`root: true`) — streaming ---
+# --- Root-relative surface (`root: true`) — streaming ---
 # The canonical token route. The legacy `POST /ws-tokens` is recorded in
 # spec/uncovered-ops.txt with why (ENG-10492).
 POST /ws/token
