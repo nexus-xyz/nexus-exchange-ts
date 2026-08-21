@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
-import { Client, Network } from "../src/client.js";
+import { Client, Network, customNetwork } from "../src/client.js";
+import type { NetworkSelector } from "../src/client.js";
 import { ApiError } from "../src/errors.js";
 
 // Mirrors the fixture in client.test.ts: a stubbed fetch that captures the
@@ -22,6 +23,7 @@ interface Captured {
 function signedClientWithCapture(
   responder: () => Response | Promise<Response> = () =>
     new Response("{}", { status: 200 }),
+  network: NetworkSelector = Network.Local,
 ): { client: Client; calls: Captured[] } {
   const calls: Captured[] = [];
   const fetchImpl = (async (url: unknown, init: RequestInit | undefined) => {
@@ -35,7 +37,7 @@ function signedClientWithCapture(
   }) as unknown as typeof fetch;
 
   const client = new Client({
-    network: Network.Local,
+    network,
     apiKey: "nx_test",
     apiSecret: SECRET,
     fetchImpl,
@@ -69,7 +71,7 @@ test("deposit signs POST /account/deposit and decodes the balance", async () => 
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/account/deposit");
+  assert.equal(c.url, "http://localhost:9090/account/deposit");
   assert.equal(c.headers.get("content-type"), "application/json");
   // The amount is sent as a decimal string, verbatim.
   assert.equal(c.body!.toString("utf8"), '{"amount":"10000"}');
@@ -78,11 +80,58 @@ test("deposit signs POST /account/deposit and decodes the balance", async () => 
   const expected = referenceSignature(
     ts,
     "POST",
-    "/api/v1/account/deposit",
+    "/account/deposit",
     "",
     c.body!,
   );
   assert.equal(c.headers.get("x-signature"), expected);
+});
+
+// The composition the two money-moving methods now depend on, pinned for a
+// funds route rather than inherited from `/ws/token`'s coverage. `root: true`
+// drops {@link API_BASE_PATH} only — a base that carries the deployment's own
+// prefix keeps it in the URL, while the signature stays over the bare path the
+// spec declares. Both halves have to be asserted together, because either one
+// alone fails silently: the prefix leaking into the signature is a 401 the
+// caller cannot tell from a bad key, and the prefix missing from the URL is the
+// marketing-site redirect ENG-8463 measured at the host root.
+test("deposit keeps a prefixed base in the URL and signs only the bare path", async () => {
+  const { client, calls } = signedClientWithCapture(
+    () =>
+      new Response(JSON.stringify({ balance: "110000.00" }), { status: 200 }),
+    customNetwork({
+      label: "dev",
+      baseUrl: "https://exchange.example.com/api/exchange",
+      funds: "real",
+    }),
+  );
+
+  await client.deposit("10000");
+
+  const c = calls[0]!;
+  assert.equal(c.method, "POST");
+  assert.equal(
+    c.url,
+    "https://exchange.example.com/api/exchange/account/deposit",
+  );
+
+  const ts = c.headers.get("x-timestamp")!;
+  assert.equal(
+    c.headers.get("x-signature"),
+    referenceSignature(ts, "POST", "/account/deposit", "", c.body!),
+  );
+  // Negative control: not the path as sent. Without this the assertion above
+  // would still pass on a base with no prefix, which is not the case under test.
+  assert.notEqual(
+    c.headers.get("x-signature"),
+    referenceSignature(
+      ts,
+      "POST",
+      "/api/exchange/account/deposit",
+      "",
+      c.body!,
+    ),
+  );
 });
 
 test("createDeposit hits POST /deposits and forwards asset when set", async () => {
@@ -94,7 +143,7 @@ test("createDeposit hits POST /deposits and forwards asset when set", async () =
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/deposits");
+  assert.equal(c.url, "http://localhost:9090/deposits");
   const body = c.body!.toString("utf8");
   assert.ok(body.includes('"amount":"250"'));
   assert.ok(body.includes('"asset":"USDX"'));
@@ -122,13 +171,14 @@ test("getDeposits hits GET /deposits and decodes the ledger", async () => {
 
   const c = calls[0]!;
   assert.equal(c.method, "GET");
-  assert.equal(c.url, "http://localhost:9090/api/v1/deposits");
-  // Signed with no body, over the full /api/v1 path.
+  assert.equal(c.url, "http://localhost:9090/deposits");
+  // Signed with no body, over the bare path — the funds routes pass
+  // `root: true`, so `API_BASE_PATH` is in neither the URL nor the signature.
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "GET",
-    "/api/v1/deposits",
+    "/deposits",
     "",
     Buffer.alloc(0),
   );
@@ -148,7 +198,7 @@ test("getWithdrawals hits GET /withdrawals and decodes records", async () => {
 
   const c = calls[0]!;
   assert.equal(c.method, "GET");
-  assert.equal(c.url, "http://localhost:9090/api/v1/withdrawals");
+  assert.equal(c.url, "http://localhost:9090/withdrawals");
 });
 
 test("claimFaucet POSTs /faucet and returns amount + available_at_ms", async () => {
@@ -165,14 +215,14 @@ test("claimFaucet POSTs /faucet and returns amount + available_at_ms", async () 
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/faucet");
+  assert.equal(c.url, "http://localhost:9090/faucet");
   // No request body; the signed body hash is over the empty byte string.
   assert.equal(c.body, undefined);
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "POST",
-    "/api/v1/faucet",
+    "/faucet",
     "",
     Buffer.alloc(0),
   );
@@ -218,7 +268,7 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/account/margin");
+  assert.equal(c.url, "http://localhost:9090/account/margin");
   const body = c.body!.toString("utf8");
   // direction is sent lowercase, verbatim, as the endpoint expects.
   assert.ok(body.includes('"direction":"add"'));
@@ -229,7 +279,7 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
   const expected = referenceSignature(
     ts,
     "POST",
-    "/api/v1/account/margin",
+    "/account/margin",
     "",
     c.body!,
   );

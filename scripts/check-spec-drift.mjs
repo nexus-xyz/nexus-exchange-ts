@@ -63,15 +63,17 @@
  *      The manifest must not claim coverage the code lacks, nor miss coverage
  *      the code has. The REST operations the client actually implements are
  *      derived from the `this.#request(METHOD, path, opts)` call sites in
- *      src/client.ts and must EQUAL the endpoints.txt set, modulo two named
- *      allowlists:
- *        - CODE_ONLY_OPS    — implemented but absent from the pinned spec, so
- *          deliberately kept OUT of endpoints.txt (listing them would fail F).
+ *      src/client.ts and must EQUAL the endpoints.txt set, modulo ONE named
+ *      allowlist:
  *        - NON_REST_TARGETS — targeted without a REST helper call, so invisible
- *          to the code parser (`GET /ws`, opened by src/ws/client.ts).
- *      Both allowlists carry the staleness checks the enum allowlist has: an
- *      entry the code no longer implements, or one the spec has since caught up
- *      on, fails until it is removed.
+ *          to the code parser (`GET /ws`, opened by src/ws/client.ts). Carries
+ *          the staleness checks the enum allowlist has: an entry the code turns
+ *          out to implement, or one endpoints.txt does not list, fails until it
+ *          is removed.
+ *      There is deliberately NO allowlist for the other direction. An operation
+ *      the pinned spec does not define must not be implemented at all, so
+ *      "implemented but not in endpoints.txt" is always a finding — see
+ *      CODE_ONLY_OPS below, which exists only to fail on any entry.
  *
  * Usage: check-spec-drift.mjs [path-to-openapi.json]
  *   Defaults to the vendored spec/openapi.json. CI also runs it against the
@@ -417,57 +419,40 @@ function enumDrift(spec, modelsSrc, allowlist) {
 const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
 /**
- * Operations `src/client.ts` implements that the pinned spec does not define, so
- * they are deliberately kept OUT of endpoints.txt — listing them there would
- * (correctly) fail invariant F. This is the operations analogue of
- * spec/enum-allowlist.txt, and it is checked for staleness the same way: an
- * entry the client no longer implements, or one the spec has since caught up on,
- * fails until it is removed (invariant H).
+ * Operations `src/client.ts` implements that the pinned spec does not define.
  *
- * Every entry here is an `/api/v1` path. The exchange serves the dual-stack
- * `/api/v1` surface as sibling mounts of the legacy root routes (ENG-4737), and
- * this SDK prepends `API_BASE_PATH` to every method that does not pass
- * `root: true` — so such a method necessarily targets `/api/v1/<path>`,
- * whatever base URL it is pointed at. The spec has only caught up on part of
- * that surface, hence this list.
+ * **Empty by policy, and enforced empty** (ENG-8616 / ENG-8620): an endpoint
+ * that is not in the spec must not be implemented. Any entry here is a finding
+ * — there is no attribution, no parking, and no release-lag exception. An SDK
+ * that wants an operation waits for the published tag that defines it, then
+ * implements it against that tag and lists it in endpoints.txt like any other.
  *
- * Two distinct situations live here; do not collapse them:
+ * ## Why an empty Set rather than no Set
+ *
+ * This constant is the seam a future copy of this checker would reach for. It
+ * is kept, empty, so that reaching for it fails loudly with the reason attached
+ * (invariant H) instead of silently reintroducing the opt-out. Deleting it
+ * would leave "implemented but not in endpoints.txt" as the only guard — the
+ * same guard whose escape hatch this used to be.
+ *
+ * ## What it used to hold, and how those entries were resolved
+ *
+ * Six ops, all sent under `/api/v1` while the spec declared only the bare form:
+ * `{GET,POST} /deposits`, `GET /withdrawals`, `POST /faucet`,
+ * `POST /account/deposit` and `POST /account/margin`. Four were parked as
+ * "ahead of the spec" (the server does mount `/api/v1` siblings for them,
+ * `funds_extra_v1_routes` / ENG-4737) and two as a measured 404 (ENG-8463).
+ * Neither reading survives the policy: a route the contract does not document
+ * is not a route this SDK may target, and "the spec will catch up" had not
+ * happened in any release since the entries were written. All six now send the
+ * path the spec declares, `root: true`, and are listed in endpoints.txt.
+ *
+ * The rot checks this list used to carry only ever fired on a CHANGE — the op
+ * stopped being implemented, or the spec caught up. An op that has never been
+ * in any spec version, and never will be, satisfies neither and sits green
+ * forever. That hole is what "fail on any entry" closes.
  */
-const CODE_ONLY_OPS = new Set([
-  // (1) Ahead of the spec. The indexer mounts these under `/api/v1` explicitly
-  // (`funds_extra_v1_routes` — nexus `eng/apps/exchange/backend/services/
-  // indexer/src/api.rs`), so the SDK reaches a route that exists; the spec just
-  // documents only its legacy-root twin. Move each into endpoints.txt once the
-  // spec ships the `/api/v1` variant.
-  "GET /api/v1/deposits", // getDeposits
-  "POST /api/v1/deposits", // createDeposit
-  "GET /api/v1/withdrawals", // getWithdrawals
-  "POST /api/v1/faucet", // claimFaucet
-
-  // (2) NOT ahead-of-spec — a routing gap that outlived its first diagnosis.
-  // ENG-8463 predicted these two 404 (no `/api/v1` sibling mount: they are
-  // engine routes reached through the indexer catch-all, which forwards the path
-  // *unstripped*) and proposed `root: true` as the fix. Probing
-  // `exchange.nexus.xyz` settled both halves, and only the first held:
-  //
-  //   POST /api/v1/account/{deposit,margin}  -> 404  (frontend HTML)
-  //   POST /account/{deposit,margin}         -> 301  https://nexus.xyz/exchange/…
-  //   POST /api/exchange/account/{…}         -> 401  (the live API)
-  //
-  // So the 404 is real, but `root: true` does not fix it — the host root
-  // redirects to the marketing site, and every other `/api/v1` path on that host
-  // 404s too (`/api/v1/orders`, `/api/v1/account`, and the four group-(1) entries
-  // above), while the whole surface answers under `/api/exchange`. That makes it
-  // a deployment-level routing question about the SDK's base URL, not a per-method
-  // one, and route existence under `/account/*` cannot be confirmed from outside
-  // anyway: auth runs before routing there, so `/account/depositt` also answers
-  // 401. Re-pointing two money-moving endpoints on that evidence would trade a
-  // loud 404 for a cross-origin redirect, so the paths stay put and the client
-  // now refuses to follow redirects at all (`isRedirectResponse` in
-  // src/client.ts). Kept here, staleness-checked, until the base URL is settled.
-  "POST /api/v1/account/deposit", // deposit
-  "POST /api/v1/account/margin", // adjustMargin
-]);
+const CODE_ONLY_OPS = new Set([]);
 
 /**
  * Operations listed in endpoints.txt that are reached WITHOUT a
@@ -820,10 +805,15 @@ function operationsDrift({
       .map((e) => `${e.op} (line ${e.line})`),
   );
 
-  // H. src/client.ts <-> endpoints.txt, modulo the two allowlists.
+  // H. src/client.ts <-> endpoints.txt, modulo NON_REST_TARGETS.
+  //
+  // The allowlist-free half of the policy. `codeOnly` is threaded through so
+  // the self-test can hand this a non-empty one, but every entry it contains is
+  // reported below rather than suppressing anything: an op the spec does not
+  // define has no business being implemented, so it must surface here too.
   add(
-    "operation(s) implemented in src/client.ts but NOT in endpoints.txt (add them, or add to CODE_ONLY_OPS if the spec does not define them yet):",
-    [...implemented].filter((op) => !targetedNorm.has(op) && !codeOnly.has(op)),
+    "operation(s) implemented in src/client.ts but NOT in endpoints.txt (add the line; if the pinned spec does not define the operation, delete the method — see CODE_ONLY_OPS):",
+    [...implemented].filter((op) => !targetedNorm.has(op)),
   );
   add(
     "endpoints.txt entr(ies) with no implementing method in src/client.ts (remove them, or add to NON_REST_TARGETS if reached without a REST call):",
@@ -831,13 +821,12 @@ function operationsDrift({
       .filter((e) => !implemented.has(norm(e.op)) && !nonRest.has(e.op))
       .map((e) => `${e.op} (line ${e.line})`),
   );
+  // CODE_ONLY_OPS must be empty. Unconditional, and deliberately not two
+  // staleness checks: those only fire when something changes, so an operation no
+  // spec has ever defined satisfies both and sits green forever (ENG-8616).
   add(
-    "CODE_ONLY_OPS entr(ies) no longer implemented in src/client.ts (remove them from the allowlist):",
-    [...codeOnly].filter((op) => !implemented.has(op)),
-  );
-  add(
-    "CODE_ONLY_OPS entr(ies) the spec now defines (move them into endpoints.txt — they are no longer code-only):",
-    [...codeOnly].filter((op) => specOps.has(op)),
+    "CODE_ONLY_OPS entr(ies) — the allowlist must be EMPTY (ENG-8616): an operation the pinned spec does not define must not be implemented. Delete the method, or wait for the released spec version that defines it and list it in endpoints.txt:",
+    [...codeOnly],
   );
   add(
     "NON_REST_TARGETS entr(ies) that ARE implemented as a REST call in src/client.ts (remove them from the allowlist):",
@@ -884,7 +873,8 @@ function operationsDrift({
       `${specOps.size} documented paths, ${spellings} of them a second spelling of an ` +
       `operation already counted. ${canonicalSpecOps.size - covered.length} operation(s) not ` +
       `targeted (${uncovered.length} lines in spec/uncovered-ops.txt, ${twins.length} of them ` +
-      `the twin of a targeted operation), ${codeOnly.size} implemented ahead of the spec.`,
+      `the twin of a targeted operation). Off-contract allowlist: ${codeOnly.size} ` +
+      `entr(ies) — policy is 0 (ENG-8616).`,
   };
 }
 

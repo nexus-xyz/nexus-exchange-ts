@@ -54,26 +54,12 @@ PATCH /orders/{order_id}
 DELETE /orders/{order_id}
 DELETE /orders
 
-# ── Legacy-root forms of the funds surface the client sends to /api/v1 ─────────
-#
-# The client implements each of these, but against its `/api/v1` sibling, which
-# the spec does not yet document — so the implemented path sits in CODE_ONLY_OPS
-# (see check-spec-drift.mjs) and the documented path sits here. When the spec
-# ships the `/api/v1` variants, the CODE_ONLY_OPS entries move into endpoints.txt
-# and these lines stay put.
-#
-# The first two are different: ENG-8463 — `POST /api/v1/account/deposit` and
-# `POST /api/v1/account/margin` were measured to 404, but so is every other
-# `/api/v1` path on the public host, and the bare forms below 301 to the marketing
-# site rather than reaching the engine. The client therefore keeps its `/api/v1`
-# paths (see the CODE_ONLY_OPS group-(2) note in check-spec-drift.mjs for the probe
-# results) and these two lines stay put with the rest.
-POST /account/deposit
-POST /account/margin
-GET /deposits
-POST /deposits
-GET /withdrawals
-POST /faucet
+# The funds surface used to sit here — `POST /account/{deposit,margin}`,
+# `{GET,POST} /deposits`, `GET /withdrawals`, `POST /faucet` — because the client
+# targeted the undocumented `/api/v1` spelling of each and parked it in
+# CODE_ONLY_OPS. That allowlist is gone (ENG-8620): those six now send the path
+# the spec declares and are listed in endpoints.txt, so they are covered rather
+# than uncovered.
 
 # ── Surface with no client method yet ─────────────────────────────────────────
 #

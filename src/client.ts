@@ -1265,9 +1265,11 @@ interface RequestOptions {
   session?: boolean;
   signal?: AbortSignal;
   /**
-   * Target a route that has no {@link API_BASE_PATH} variant yet (e.g.
-   * `POST /ws/token`). The path is sent and signed bare, but still relative to
-   * `baseUrl` — these routes are gateway-relative, not host-root.
+   * Target a route the pinned spec declares at the deployment root, with no
+   * {@link API_BASE_PATH} variant — `POST /ws/token`, `POST /auth/login`, the
+   * key and agent routes, and the funds surface. The path is sent and signed
+   * bare, but still relative to `baseUrl` — these routes are gateway-relative,
+   * not host-root.
    *
    * ## Why one base covers them, and when it would stop
    *
@@ -2205,6 +2207,42 @@ export class Client {
   }
 
   // -- authenticated: funds -------------------------------------------------
+  //
+  // Every route in this section — and {@link adjustMargin}, which sits with
+  // the bridge routes below — passes `root: true`, so the path is sent and
+  // signed bare rather than under {@link API_BASE_PATH}. That is what the spec
+  // documents: it declares `/account/deposit`, `/deposits`, `/withdrawals`,
+  // `/faucet` and `/account/margin` at the deployment root, and no `/api/v1`
+  // twin of any of them. The server does mount `/api/v1` siblings for four of the five
+  // (`funds_extra_v1_routes`, ENG-4737), but an undocumented route is not a
+  // contract this SDK may target: an operation absent from the pinned spec must
+  // not be implemented (ENG-8616), and the drift check now fails on any grant
+  // that says otherwise.
+  //
+  // For `/account/{deposit,margin}` this is also the difference between reaching
+  // the engine and not: they never had an `/api/v1` sibling. Measured against
+  // `exchange.nexus.xyz` while verifying ENG-8463 —
+  //
+  //   POST /api/v1/account/{deposit,margin}   404  (frontend HTML)
+  //   POST /api/exchange/account/{deposit,…}  401  (the live API)
+  //   POST /account/{deposit,margin}          301  https://nexus.xyz/exchange/…
+  //
+  // — where the third line is the HOST ROOT, not this composition. `root: true`
+  // drops `API_BASE_PATH`, not the base's own prefix, so with the testnet base
+  // (`…/api/exchange`) these send the second line, which is the live API. A
+  // caller who points `baseUrl` at the bare host gets the third: refused as a
+  // terminal error rather than followed, see {@link isRedirectResponse}.
+  //
+  // Read that second line as "not measurably broken", NOT as proof the route is
+  // there: under `/api/exchange/account/*` auth runs *before* routing, so a path
+  // that does not exist answers 401 just the same — `/account/depositt` does.
+  // Only the 404 on the first line is decisive, and it is decisive against the
+  // `/api/v1` form. What settles the choice is the contract, not the probe: the
+  // spec declares `/account/deposit` and `/account/margin` with no `/api/v1`
+  // twin, and ENG-8616 says the documented path is the only one this SDK may
+  // target. So re-probe before relying on the 401 — the `root` request option
+  // carries the same caveat, next to the bodyless-`POST` 411 trap that makes
+  // every path look real.
 
   /**
    * `POST /account/deposit` — deposit **real** USDX collateral. Moves real
@@ -2219,6 +2257,7 @@ export class Client {
     return this.#request<DepositResponse>("POST", "/account/deposit", {
       body: { amount },
       signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
@@ -2235,6 +2274,7 @@ export class Client {
     return this.#request<DepositResponse>("POST", "/deposits", {
       body: request,
       signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
@@ -2243,6 +2283,7 @@ export class Client {
   getDeposits(opts?: { signal?: AbortSignal }): Promise<FundsEntry[]> {
     return this.#request<FundsEntry[]>("GET", "/deposits", {
       signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
@@ -2251,6 +2292,7 @@ export class Client {
   getWithdrawals(opts?: { signal?: AbortSignal }): Promise<Withdrawal[]> {
     return this.#request<Withdrawal[]>("GET", "/withdrawals", {
       signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
@@ -2281,6 +2323,7 @@ export class Client {
     this.#requireClaimableFaucet("claimFaucet");
     return this.#request<FaucetResponse>("POST", "/faucet", {
       signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
@@ -2360,6 +2403,9 @@ export class Client {
    * position (`NoOpenPosition`), and a removal that breaches the withdrawal
    * floor or exceeds collateral (`InsufficientMargin` / `InsufficientBalance`).
    * `amount` is a positive decimal string.
+   *
+   * Sent and signed bare (`root: true`) like the rest of the funds surface — see
+   * the note above {@link deposit} for why the `/api/v1` form is not targeted.
    */
   adjustMargin(
     request: MarginAdjustRequest,
@@ -2368,6 +2414,7 @@ export class Client {
     return this.#request<MarginAdjustResponse>("POST", "/account/margin", {
       body: request,
       signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
@@ -2931,11 +2978,11 @@ export class Client {
         : new TextEncoder().encode(JSON.stringify(body));
 
     // The path as the indexer sees it: `/api/v1` + the method-relative path for
-    // the migrated surface, or the bare path for the `root` routes that have no
-    // `/api/v1` variant yet. This is both the value signed below and the value
-    // appended to the base, so the two can never drift apart — and it is chosen
-    // off the route, not off the base, so retargeting `baseUrl` at another
-    // deployment needs no signing change.
+    // the migrated surface, or the bare path for the `root` routes the spec
+    // declares without that prefix. This is both the value signed below and
+    // the value appended to the base, so the two can never drift apart — and
+    // it is chosen off the route, not off the base, so retargeting `baseUrl` at
+    // another deployment needs no signing change.
     const logicalPath = root ? path : `${API_BASE_PATH}${path}`;
 
     // Advisory identity headers on every request (both empty-string-omittable).
@@ -2974,8 +3021,9 @@ export class Client {
           // never the base's own path. The gateway strips its `/api/exchange`
           // prefix before verification, so the signature must exclude it —
           // signing the sent pathname would cover bytes the server never sees.
-          // Routes without a `/api/v1` variant (e.g. `/ws/token`) sign the bare
-          // path, which is what reaches the indexer for them.
+          // Routes the spec declares without an `/api/v1` variant (`/ws/token`,
+          // `/auth/login`, the funds surface) sign the bare path, which is what
+          // reaches the indexer for them.
           logicalPath,
           query,
           bodyBytes,
