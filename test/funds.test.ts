@@ -69,7 +69,7 @@ test("deposit signs POST /account/deposit and decodes the balance", async () => 
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/account/deposit");
+  assert.equal(c.url, "http://localhost:9090/account/deposit");
   assert.equal(c.headers.get("content-type"), "application/json");
   // The amount is sent as a decimal string, verbatim.
   assert.equal(c.body!.toString("utf8"), '{"amount":"10000"}');
@@ -78,7 +78,7 @@ test("deposit signs POST /account/deposit and decodes the balance", async () => 
   const expected = referenceSignature(
     ts,
     "POST",
-    "/api/v1/account/deposit",
+    "/account/deposit",
     "",
     c.body!,
   );
@@ -94,7 +94,7 @@ test("createDeposit hits POST /deposits and forwards asset when set", async () =
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/deposits");
+  assert.equal(c.url, "http://localhost:9090/deposits");
   const body = c.body!.toString("utf8");
   assert.ok(body.includes('"amount":"250"'));
   assert.ok(body.includes('"asset":"USDX"'));
@@ -122,13 +122,14 @@ test("getDeposits hits GET /deposits and decodes the ledger", async () => {
 
   const c = calls[0]!;
   assert.equal(c.method, "GET");
-  assert.equal(c.url, "http://localhost:9090/api/v1/deposits");
-  // Signed with no body, over the full /api/v1 path.
+  assert.equal(c.url, "http://localhost:9090/deposits");
+  // Signed with no body, over the bare path — the funds routes pass
+  // `root: true`, so `API_BASE_PATH` is in neither the URL nor the signature.
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "GET",
-    "/api/v1/deposits",
+    "/deposits",
     "",
     Buffer.alloc(0),
   );
@@ -148,7 +149,7 @@ test("getWithdrawals hits GET /withdrawals and decodes records", async () => {
 
   const c = calls[0]!;
   assert.equal(c.method, "GET");
-  assert.equal(c.url, "http://localhost:9090/api/v1/withdrawals");
+  assert.equal(c.url, "http://localhost:9090/withdrawals");
 });
 
 test("claimFaucet POSTs /faucet and returns amount + available_at_ms", async () => {
@@ -165,14 +166,14 @@ test("claimFaucet POSTs /faucet and returns amount + available_at_ms", async () 
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/faucet");
+  assert.equal(c.url, "http://localhost:9090/faucet");
   // No request body; the signed body hash is over the empty byte string.
   assert.equal(c.body, undefined);
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "POST",
-    "/api/v1/faucet",
+    "/faucet",
     "",
     Buffer.alloc(0),
   );
@@ -218,7 +219,7 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
 
   const c = calls[0]!;
   assert.equal(c.method, "POST");
-  assert.equal(c.url, "http://localhost:9090/api/v1/account/margin");
+  assert.equal(c.url, "http://localhost:9090/account/margin");
   const body = c.body!.toString("utf8");
   // direction is sent lowercase, verbatim, as the endpoint expects.
   assert.ok(body.includes('"direction":"add"'));
@@ -229,7 +230,7 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
   const expected = referenceSignature(
     ts,
     "POST",
-    "/api/v1/account/margin",
+    "/account/margin",
     "",
     c.body!,
   );

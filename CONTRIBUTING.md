@@ -84,6 +84,13 @@ worth knowing before you write code:
   derives the implemented set from the `this.#request(...)` call sites, so a
   wrapper you don't list fails CI — and so does a listed operation with no
   wrapper.
+- **If the pinned spec doesn't define the operation, don't implement it.** There
+  is no allowlist to park it in: `CODE_ONLY_OPS` in `scripts/check-spec-drift.mjs`
+  is empty by policy and the check fails on **any** entry, ticket reference or
+  not. Wait for the released tag that defines the operation, bump the pin, then
+  add the method against the path the spec spells. The corollary is that
+  `root: true` is not a routing preference — use it exactly when the spec
+  declares the route without the `/api/v1` prefix.
 - **The parser needs literals at those call sites.** Pass the method and path
   inline (`"GET"`, `"/orders"` or `` `/orders/${seg(id)}` ``) and set `root: true`
   in an inline object literal. A path built into a local variable first would be
