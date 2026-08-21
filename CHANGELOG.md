@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.3.0...v0.3.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **ci:** report spec coverage per operation, not per documented path (ENG-11847) ([#68](https://github.com/nexus-xyz/nexus-exchange-ts/issues/68)) ([5ee6e54](https://github.com/nexus-xyz/nexus-exchange-ts/commit/5ee6e54486d11e673ce83608d7949d7fb464dea9))
+
 ## [0.3.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.2.0...v0.3.0) (2026-08-18)
 
 
