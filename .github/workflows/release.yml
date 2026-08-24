@@ -48,6 +48,14 @@ concurrency:
 
 jobs:
   release-please:
+    # Push-only (ENG-11498). Without this a workflow_dispatch re-publish also runs
+    # release-please against main, where it can open or update a release PR as a
+    # byproduct of what is supposed to be a re-publish of an existing tag. That is the
+    # damaging half: release state mutated by a job nobody was watching, noticed several
+    # releases later. It also cost this repo nothing to leave broken, which is why it
+    # survived — the hatch appeared to work, because release-please RUNNING satisfied the
+    # implied success() on publish.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release tag + GitHub release
@@ -65,16 +73,52 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
+    # `!cancelled()` supplies the status-check function that stops GitHub implying
+    # success() over `needs` — without it, adding the `if:` above converts the manual
+    # re-publish into a hard skip, because a skipped dependency fails an implied success().
+    # The two changes have to move together. `!cancelled()` rather than `always()`, so a
+    # cancelled run does not go on to publish.
+    if: >-
+      !cancelled() &&
+      (needs.release-please.outputs.release_created == 'true' ||
+       github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # mint the OIDC token npm uses to attest provenance
     environment: npm-publish # optional manual-approval / secret-scoping gate
     steps:
+      # `ref:` below accepts any ref, so dispatching with `tag: main` publishes from
+      # HEAD rather than from a released tag — the registry only objects if that version
+      # already exists. Constrain the input to what it claims to be.
+      #
+      # Anchored regex, not a `case` glob: `v[0-9]*.[0-9]*.[0-9]*` accepts
+      # `v0.2.0; rm -rf /`. Passed via `env:` and never interpolated into the script
+      # body, so the value cannot become script. Shape only — `refs/tags/` below is what
+      # constrains the KIND.
+      - name: Validate dispatch tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::tag must be a released v<major>.<minor>.<patch> tag, got '$TAG'"
+            exit 1
+          fi
+          echo "publishing tag $TAG"
+
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+          # Fully qualified: checkout fetches heads as well as tags for a bare name
+          # (observed as `+refs/heads/v0.2.0*` alongside `+refs/tags/v0.2.0*`), so a
+          # BRANCH named like a version is a candidate ref. release-please emits a bare
+          # `v0.2.0`, and the guard above rejects a pre-qualified input, so this cannot
+          # double up into `refs/tags/refs/tags/…`.
+          ref: refs/tags/${{ needs.release-please.outputs.tag_name || inputs.tag }}
+          # This job holds a publish credential and never pushes — there is no `git`
+          # invocation anywhere in it — so do not leave the Actions token sitting in
+          # .git/config for the build, test and publish steps below.
+          persist-credentials: false
 
       # Install the pnpm version pinned by package.json's "packageManager" field.
       - uses: pnpm/action-setup@v6
@@ -105,5 +149,10 @@ jobs:
       # (first-class trusted-publishing support); pnpm drives install/build/test.
       #   --provenance:    signed build-provenance attestation.
       #   --access public: a scoped @nexus-xyz/ package is private by default.
-      - run: npm install -g npm@latest
+      # A FLOOR, NOT "NEWEST" (ENG-11498). Trusted publishing needs npm >= 11.5.1, and
+      # this is the most sensitive step in the repo — it runs immediately before the
+      # publish and shares the process with a short-lived credential. `@latest` lets a
+      # bad or hostile npm release land in it unannounced. Placement is already right:
+      # after install/build/test, so it cannot affect the artifact, only the upload.
+      - run: npm install -g "npm@^11.5.1"
       - run: npm publish --provenance --access public
