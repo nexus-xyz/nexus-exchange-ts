@@ -26,9 +26,11 @@ const SPEC = new Set([
   "GET /api/v1/widgets",
 ]);
 
-// The two allowlists are emptied for every synthetic scenario. Left at their
-// real defaults they are checked against these fixtures and report their own
-// entries as stale — a finding about the real client, not about the fixture.
+// Both allowlist parameters are emptied for every synthetic scenario. Left at
+// their real defaults they are checked against these fixtures and report their
+// own entries — a finding about the real client, not about the fixture.
+// `codeOnly` is empty by policy in the real script too (ENG-8620); the scenarios
+// that pass a non-empty one are asserting that it FAILS, not that it suppresses.
 function run(opts: Record<string, unknown> = {}) {
   return operationsDrift({
     specOps: SPEC,
@@ -152,4 +154,61 @@ test("invariant G still catches an unaccounted-for path whose twin IS listed", (
 test("a clean manifest produces no findings", () => {
   const { findings } = run();
   assert.deepEqual(findings, []);
+});
+
+// ─── Allowlist-free: CODE_ONLY_OPS must be empty (ENG-8620) ──────────────────
+//
+// The end-to-end proof (the real checker, in a sandbox, with an entry injected)
+// lives in test/models.test.ts. These pin the pure function's behaviour, which
+// is where the policy is actually expressed.
+
+test("any CODE_ONLY_OPS entry is a finding, even a correct one", () => {
+  // "Correct" in the old sense: the client implements it and the spec does not
+  // define it, so neither retired staleness check would have fired. That is
+  // exactly the entry that used to sit green forever.
+  const { findings } = run({
+    codeOnly: new Set(["POST /api/v1/parked"]),
+    implemented: new Set(["GET /api/v1/orders", "POST /api/v1/parked"]),
+  });
+  const f = findings.find((x: { label: string }) =>
+    x.label.includes("the allowlist must be EMPTY"),
+  );
+  assert.ok(f, `no allowlist finding; got ${JSON.stringify(findings)}`);
+  assert.deepEqual(f.items, ["POST /api/v1/parked"]);
+});
+
+test("an entry fails even when nothing implements it", () => {
+  // No staleness precondition of any kind: the entry alone is the finding.
+  const { findings } = run({ codeOnly: new Set(["POST /api/v1/ghost"]) });
+  const f = findings.find((x: { label: string }) =>
+    x.label.includes("the allowlist must be EMPTY"),
+  );
+  assert.ok(f);
+  assert.deepEqual(f.items, ["POST /api/v1/ghost"]);
+});
+
+test("an allowlist entry no longer suppresses invariant H", () => {
+  // The suppression this list used to provide is gone: an implemented op that
+  // endpoints.txt does not carry is reported whether or not it is allowlisted.
+  const implemented = new Set(["GET /api/v1/orders", "POST /api/v1/parked"]);
+  const labelOf = (findings: { label: string; items: string[] }[]) =>
+    findings.find((x) => x.label.includes("but NOT in endpoints.txt"));
+
+  const allowlisted = run({
+    codeOnly: new Set(["POST /api/v1/parked"]),
+    implemented,
+  });
+  const bare = run({ implemented });
+  const a = labelOf(allowlisted.findings);
+  assert.ok(a, "allowlisting suppressed invariant H");
+  assert.deepEqual(a.items, ["POST /api/v1/parked"]);
+  assert.deepEqual(labelOf(bare.findings)?.items, ["POST /api/v1/parked"]);
+});
+
+test("the summary reports the allowlist size so a green run asserts it is 0", () => {
+  assert.match(run().summary, /Off-contract allowlist: 0 entr\(ies\)/);
+  assert.match(
+    run({ codeOnly: new Set(["POST /api/v1/parked"]) }).summary,
+    /Off-contract allowlist: 1 entr\(ies\)/,
+  );
 });

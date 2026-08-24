@@ -80,7 +80,7 @@ test("a redirect on a signed money-moving POST is a terminal ApiError, not a fol
   assert.match(err.message, /signature headers/);
   // Exactly one hop: the marketing host was never contacted.
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/deposit");
+  assert.equal(calls[0]!.url, "http://localhost:9090/account/deposit");
 });
 
 test("a redirect on an idempotent GET is not retried", async () => {
