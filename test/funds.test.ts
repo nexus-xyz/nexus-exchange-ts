@@ -285,3 +285,98 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
   );
   assert.equal(c.headers.get("x-signature"), expected);
 });
+
+test("getAccountFunding signs GET /funding and decodes the records", async () => {
+  const records = [
+    {
+      market_id: "BTC-USDX-PERP",
+      amount: "-1.2500",
+      direction: "paid",
+      funding_rate: "0.0000125",
+      position_size: "0.5",
+      timestamp: 1_700_000_000_000,
+    },
+    {
+      market_id: "ETH-USDX-PERP",
+      amount: "0.3300",
+      direction: "received",
+      funding_rate: "-0.0000033",
+      position_size: "-2.0",
+      timestamp: 1_700_003_600_000,
+    },
+  ];
+  const { client, calls } = signedClientWithCapture(
+    () => new Response(JSON.stringify(records), { status: 200 }),
+  );
+
+  const out = await client.getAccountFunding();
+  assert.equal(out.length, 2);
+  // The signed amount is carried verbatim as a decimal string, sign included —
+  // `paid` is the negative side and must not be normalized to a magnitude.
+  assert.equal(out[0]!.amount, "-1.2500");
+  assert.equal(out[0]!.direction, "paid");
+  assert.equal(out[1]!.direction, "received");
+
+  const c = calls[0]!;
+  assert.equal(c.method, "GET");
+  // Root-relative, and signed over the bare path: that is the spelling the
+  // contract carries. The `/api/v1` sibling the indexer also mounts (ENG-4737)
+  // has never been in a released spec, so targeting it would be a phantom op
+  // (ENG-8616).
+  assert.equal(c.url, "http://localhost:9090/funding");
+  // No `limit=` — the server applies its documented default of 100 rather than
+  // the SDK pinning a default that could drift from the spec.
+  assert.equal(c.body, undefined);
+
+  const ts = c.headers.get("x-timestamp")!;
+  const expected = referenceSignature(
+    ts,
+    "GET",
+    "/funding",
+    "",
+    Buffer.alloc(0),
+  );
+  assert.equal(c.headers.get("x-signature"), expected);
+});
+
+test("getAccountFunding signs the exact limit query it sends", async () => {
+  const { client, calls } = signedClientWithCapture(
+    () => new Response("[]", { status: 200 }),
+  );
+
+  await client.getAccountFunding({ limit: 250 });
+
+  const c = calls[0]!;
+  assert.equal(c.url, "http://localhost:9090/funding?limit=250");
+  const ts = c.headers.get("x-timestamp")!;
+  const expected = referenceSignature(
+    ts,
+    "GET",
+    "/funding",
+    "limit=250",
+    Buffer.alloc(0),
+  );
+  assert.equal(c.headers.get("x-signature"), expected);
+});
+
+test("getAccountFunding rejects an out-of-range limit without signing anything", async () => {
+  const { client, calls } = signedClientWithCapture();
+
+  // The spec's parameter schema is `maximum: 1000`; 1001 is a guaranteed 400, so
+  // it is refused locally instead of spending a signed round trip on it.
+  await assert.rejects(client.getAccountFunding({ limit: 1001 }), RangeError);
+  await assert.rejects(client.getAccountFunding({ limit: 0 }), RangeError);
+  await assert.rejects(client.getAccountFunding({ limit: 1.5 }), RangeError);
+  assert.equal(calls.length, 0);
+
+  // The boundaries are valid and do reach the wire.
+  await client.getAccountFunding({ limit: 1 });
+  await client.getAccountFunding({ limit: 1000 });
+  assert.deepEqual(
+    calls.map((c) => c.url),
+    [
+      "http://localhost:9090/funding?limit=1",
+      "http://localhost:9090/funding?limit=1000",
+    ],
+  );
+});

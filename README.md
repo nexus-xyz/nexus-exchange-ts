@@ -109,7 +109,8 @@ any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account (`getAccount`, `getAccountSummary`,
 `getAccountState`, `getAccountFees`, `getEquityHistory`,
 `getPortfolioHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
-`createDeposit`, `getDeposits`, `getWithdrawals`, `claimFaucet`, `adjustMargin`);
+`createDeposit`, `getDeposits`, `getWithdrawals`, `getAccountFunding`,
+`claimFaucet`, `adjustMargin`);
 positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
 `placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,

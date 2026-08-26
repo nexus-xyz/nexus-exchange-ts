@@ -27,6 +27,7 @@ import type { FetchPage } from "./pagination.js";
 import type { EthSigner } from "./wallet.js";
 import type {
   AccountFees,
+  AccountFunding,
   AccountPortfolioSummary,
   AccountState,
   AccountSummary,
@@ -2119,6 +2120,54 @@ export class Client {
         signal: opts.signal,
       },
     );
+  }
+
+  /**
+   * `GET /funding` — funding payments charged to or credited to the
+   * authenticated account, as {@link AccountFunding} records carrying the signed
+   * `amount`, the `direction` (`paid`/`received`), and the `funding_rate` and
+   * `position_size` the payment was computed from. The spec declares the array
+   * newest first (both the operation and 200-response descriptions say so); this
+   * client does not re-sort, it passes the server's order through as-is.
+   *
+   * Distinct from {@link fetchFundingHistory} (`GET /markets/{market_id}/funding`),
+   * which is a market's funding *rate* history and needs no credentials. This is
+   * the account's realized funding cash flow.
+   *
+   * `root: true`, so this is sent root-relative to `/funding` and signed over
+   * that bare path — the spelling the contract carries. The indexer does mount
+   * an `/api/v1` sibling (`funds_extra_v1_routes`, ENG-4737), but no released
+   * spec has ever declared it, and per the fleet policy in ENG-8616 an operation
+   * is targeted at the path the spec documents: an undocumented `/api/v1` twin
+   * is a phantom target, and the allowlist that used to park one is being
+   * emptied and enforced empty (ENG-8620). Its router siblings
+   * ({@link getDeposits}, {@link getWithdrawals}, {@link claimFaucet}) move to
+   * their bare paths for the same reason.
+   *
+   * `limit` is bounded to an integer in `[1, 1000]`; omit it for the server's
+   * default of 100. Only the maximum is spec-derived (`maximum: 1000` on this
+   * parameter) — the spec declares no `minimum` here, so the lower bound of 1
+   * is the SDK's own, for the same reason {@link checkPageSize} gives one: a
+   * `limit` of 0 is not a useful request. The operation takes no
+   * `cursor`, so this is a single capped read and not a paginated one — hence no
+   * `…_LIMIT_MAX` constant for it (those are the cursor-paginated endpoints'
+   * ceilings) and no `getAccountFundingPaginated`.
+   *
+   * An out-of-range `limit` **rejects** the returned promise with `RangeError`
+   * rather than throwing synchronously; `async` is load-bearing for that, for
+   * the reason spelled out on {@link getPortfolioHistory}.
+   */
+  async getAccountFunding(
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<AccountFunding[]> {
+    assertLimitInRange(opts.limit, 1, 1000);
+    const query = buildQuery({ limit: opts.limit });
+    return this.#request<AccountFunding[]>("GET", "/funding", {
+      query,
+      signed: true,
+      root: true,
+      signal: opts.signal,
+    });
   }
 
   /** `GET /positions` — open positions for the authenticated account. */

@@ -99,6 +99,13 @@ GET /withdrawals
 POST /faucet
 POST /account/margin
 
+# --- Root-relative surface (`root: true`) — authenticated account reads ---
+# Account funding payments. Sent and signed bare because that is the spelling
+# the contract carries: the indexer also mounts an `/api/v1` sibling (ENG-4737)
+# but the spec has never declared it, and per ENG-8616 an operation is targeted
+# at the path the spec documents rather than parked in an allowlist.
+GET /funding
+
 # --- Root-relative surface (`root: true`) — wallet auth, API keys, agent keys ---
 POST /auth/login
 POST /keys
