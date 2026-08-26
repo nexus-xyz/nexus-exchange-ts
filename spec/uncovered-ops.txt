@@ -69,7 +69,6 @@ DELETE /orders
 # endpoints.txt. Listed here so the backlog is visible rather than invisible.
 GET /markets
 GET /orders/{order_id}
-GET /funding
 GET /status
 GET /markets/{market_id}/risk-params
 GET /markets/{market_id}/adl-events
