@@ -65,7 +65,9 @@ CreateBridgeDepositAddressRequest
 BridgeDepositAddress
 BridgeDeposit
 
-# Withdrawal wallets (v0.7.3). Two-step ownership proof; no client method yet.
+# Withdrawal wallets (v0.7.3). Two-step ownership proof, wrapped by
+# Client.{createBridgeWalletChallenge,registerBridgeWallet,listBridgeWallets}
+# and EthSigner.registerWallet (ENG-9199).
 CreateBridgeWalletChallengeRequest
 BridgeWalletChallenge
 RegisterBridgeWalletRequest
