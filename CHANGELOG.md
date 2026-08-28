@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.3.0...v0.4.0) (2026-08-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** deposit(), createDeposit(), getDeposits(), getWithdrawals(), claimFaucet() and adjustMargin() send and sign the bare path (`/deposits`, `/faucet`, `/account/deposit`, …) instead of the `/api/v1` form. Method signatures and return types are unchanged — only the wire path and the signed path move — but a deployment that serves only the `/api/v1` spelling of these six is no longer reachable.
+
+### Features
+
+* **client:** implement the last 11 uncovered spec operations (ENG-9199) ([#73](https://github.com/nexus-xyz/nexus-exchange-ts/issues/73)) ([ebccfb1](https://github.com/nexus-xyz/nexus-exchange-ts/commit/ebccfb1db38bcdc64ece20bea58e8b450ed80533))
+* **client:** read the account's funding payments (ENG-5132) ([#71](https://github.com/nexus-xyz/nexus-exchange-ts/issues/71)) ([7703a41](https://github.com/nexus-xyz/nexus-exchange-ts/commit/7703a415a58472fb39df7e47a79955ccca95a7a7))
+
+
+### Bug Fixes
+
+* **ci:** report spec coverage per operation, not per documented path (ENG-11847) ([#68](https://github.com/nexus-xyz/nexus-exchange-ts/issues/68)) ([5ee6e54](https://github.com/nexus-xyz/nexus-exchange-ts/commit/5ee6e54486d11e673ce83608d7949d7fb464dea9))
+* **client:** keep the drift check allowlist-free — fail on any entry, and send the funds surface at the spec's paths (ENG-8620) ([#70](https://github.com/nexus-xyz/nexus-exchange-ts/issues/70)) ([023030c](https://github.com/nexus-xyz/nexus-exchange-ts/commit/023030c22cf2bbdf6237b38a8bda6e8e5223d17b))
+
 ## [0.3.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.2.0...v0.3.0) (2026-08-18)
 
 
