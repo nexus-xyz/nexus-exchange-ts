@@ -893,15 +893,20 @@ test("ops drift: FAILS on an uncovered-ops entry the spec no longer defines", ()
 });
 
 test("ops drift: FAILS on an uncovered-ops entry that is now targeted", () => {
+  // `GET /stream` is the exemplar here (and below) because it is a real spec
+  // operation this SDK deliberately never targets — the legacy public-only
+  // WebSocket endpoint superseded by `GET /ws`. It was `GET /markets` until
+  // ENG-9199 implemented that one; a fixture op must be one no wrapper will
+  // grow, or these tests quietly stop testing anything.
   const r = runDriftSandbox({
-    mutateEndpoints: (t) => `${t}GET /markets\n`,
+    mutateEndpoints: (t) => `${t}GET /stream\n`,
   });
   assert.equal(r.status, 1);
   assert.match(
     r.stderr,
     /uncovered-ops\.txt entr\(ies\) that ARE now targeted/,
   );
-  assert.match(r.stderr, /GET \/markets/);
+  assert.match(r.stderr, /GET \/stream/);
 });
 
 test("ops drift: FAILS when a wrapper exists but endpoints.txt doesn't list it", () => {
@@ -917,15 +922,15 @@ test("ops drift: FAILS when a wrapper exists but endpoints.txt doesn't list it",
 });
 
 test("ops drift: FAILS when endpoints.txt lists an operation no wrapper implements", () => {
-  // `GET /markets` is a real spec operation the client has no method for, so the
+  // `GET /stream` is a real spec operation the client has no method for, so the
   // manifest cannot be allowed to claim it.
   const r = runDriftSandbox({
-    mutateEndpoints: (t) => `${t}GET /markets\n`,
-    mutateUncovered: (t) => withoutOp(t, "GET /markets"),
+    mutateEndpoints: (t) => `${t}GET /stream\n`,
+    mutateUncovered: (t) => withoutOp(t, "GET /stream"),
   });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /no implementing method in src\/client\.ts/);
-  assert.match(r.stderr, /GET \/markets/);
+  assert.match(r.stderr, /GET \/stream/);
 });
 
 test("ops drift: FAILS on ANY CODE_ONLY_OPS entry, however well attributed", () => {

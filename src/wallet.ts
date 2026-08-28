@@ -1,5 +1,6 @@
-// EVM wallet signing for the two wallet-authorized auth flows: EIP-191 session
-// login (`signIn`) and EIP-712 agent-key registration (`registerAgent`).
+// EVM wallet signing for the wallet-authorized flows: EIP-191 session login
+// (`signIn`), EIP-712 agent-key registration (`registerAgent`), and the EIP-191
+// withdrawal-wallet ownership proof (`registerWallet`).
 //
 // {@link EthSigner} holds a secp256k1 private key and produces the *signed
 // request bodies* for those endpoints. It is a pure signer: deterministic,
@@ -20,7 +21,12 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 
 import { MissingCredentialsError, NexusExchangeError } from "./errors.js";
 import { bytesToHex, hexToBytes } from "./sign.js";
-import type { AgentRegistrationRequest, LoginRequest } from "./models.js";
+import type {
+  AgentRegistrationRequest,
+  BridgeWalletChallenge,
+  LoginRequest,
+  RegisterBridgeWalletRequest,
+} from "./models.js";
 
 /** The exact, fixed message the API requires for EIP-191 session login. */
 export const SIGN_IN_MESSAGE = "Sign in to Nexus Exchange";
@@ -266,9 +272,10 @@ export interface RegisterAgentOptions {
  * key is validated and the Ethereum address derived once at construction; the
  * secret is held as raw bytes and only used transiently while signing.
  *
- * Produces the *signed request bodies* for the two wallet-authorized endpoints:
+ * Produces the *signed request bodies* for the wallet-authorized endpoints:
  * - {@link signIn} → `POST /auth/login` (EIP-191 `personal_sign`).
  * - {@link registerAgent} → `POST /agents/register` (EIP-712).
+ * - {@link registerWallet} → `POST /bridge/wallets` (EIP-191 `personal_sign`).
  *
  * @example
  * ```ts
@@ -353,6 +360,64 @@ export class EthSigner {
     };
     if (options.label !== undefined) body.label = options.label;
     return body;
+  }
+
+  /**
+   * Sign a withdrawal-wallet registration challenge with EIP-191
+   * `personal_sign`, yielding the `POST /bridge/wallets` request body.
+   *
+   * Pass the {@link BridgeWalletChallenge} exactly as
+   * `Client.createBridgeWalletChallenge` returned it: `message` is signed and
+   * echoed back byte-for-byte, because the server holds no state between the two
+   * calls and re-derives the signed bytes, the integrity tag, the account
+   * binding and the expiry from that field alone. Reformatting, re-encoding or
+   * trimming it invalidates the proof.
+   *
+   * Refuses a challenge issued for a **different** address than this signer's,
+   * comparing case-insensitively (EIP-55 checksummed hex and lowercase hex are
+   * the same address). The server would reject such a signature with
+   * `signature_mismatch` anyway; failing here says why, before a key is used.
+   *
+   * Expiry is **not** checked: like the rest of this class, the signer carries
+   * no clock, so a stale challenge signs fine and the server answers
+   * `challenge_expired` — re-issue and sign again.
+   *
+   * @remarks
+   * `message` is server-defined and opaque, so this signs bytes chosen by
+   * whatever host the challenge came from. EIP-191's `personal_sign` prefix
+   * keeps the result from ever being a valid transaction, but it is still the
+   * wallet's signature over text you did not compose: only sign challenges from
+   * a deployment you trust — i.e. one whose `baseUrl` you control.
+   */
+  registerWallet(
+    challenge: BridgeWalletChallenge,
+  ): RegisterBridgeWalletRequest {
+    // `parseAddress` before the comparison so a malformed challenge address is a
+    // clear error rather than a mismatch against a well-formed one.
+    const address = parseAddress(challenge.address, "challenge address");
+    if (bytesToHex(address) !== strip0x(this.#address).toLowerCase()) {
+      throw new NexusExchangeError(
+        `challenge was issued for ${challenge.address}, but this signer is ` +
+          `${this.#address}; the address recovered from the signature must ` +
+          `equal the address being registered`,
+      );
+    }
+    // A missing/blank `message` would otherwise be encoded as the literal
+    // `"undefined"` (or empty) and signed — a real signature over bytes the
+    // server never issued. Refuse instead of producing one.
+    if (typeof challenge.message !== "string" || challenge.message === "") {
+      throw new NexusExchangeError(
+        "challenge is missing its `message`; there is nothing to sign",
+      );
+    }
+    const digest = eip191Digest(new TextEncoder().encode(challenge.message));
+    return {
+      // The signer's own spelling of the address, so the body cannot carry an
+      // address the signature does not recover to.
+      address: this.#address,
+      message: challenge.message,
+      signature: this.#signDigest(digest),
+    };
   }
 
   /**

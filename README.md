@@ -7,12 +7,16 @@ Official TypeScript SDK for the [Nexus Exchange](https://exchange.nexus.xyz) API
 and Node.
 
 > **⚠️ Experimental / in development.** It is being extracted and sanitized out
-> of the Nexus web app's existing bindings; the public surface lands
-> incrementally. The typed request/response models, the **public market-data
-> REST client**, the **authenticated account/order endpoints**, and the
-> **WebSocket streaming client** have landed. For the ahead-of-this surface use the
-> [Rust SDK](https://github.com/nexus-xyz/nexus-exchange-rs) or the
-> [Python SDK](https://github.com/nexus-xyz/nexus-exchange-py).
+> of the Nexus web app's existing bindings, so the surface is young even where it
+> is complete. It now wraps **every operation of the pinned spec** that a public
+> trading client can meaningfully expose — market data, account, orders,
+> positions, funds, the bridge, and WebSocket streaming — with the remainder
+> recorded, one by one and with a reason, in
+> [`spec/uncovered-ops.txt`](./spec/uncovered-ops.txt): the `admin_secret`-gated
+> tier routes, and two deprecated routes superseded by ones this client already
+> uses. The [Rust](https://github.com/nexus-xyz/nexus-exchange-rs) and
+> [Python](https://github.com/nexus-xyz/nexus-exchange-py) SDKs are the older,
+> more battle-tested implementations of the same contract.
 
 ## Quick start
 
@@ -38,9 +42,23 @@ signs and assembles its own request, with no shared mutable state and no locks.
 
 `fetchMarketSummaries`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
 `fetchTrades`, `fetchCandles`, `fetchFundingHistory`, `fetchFundingSamples`,
-`fetchMarkPrice`, `fetchMarketStatus`, `fetchStats`, and `fetchStatsHistory` —
-covering the public market-data routes of the pinned spec. Each returns the
-corresponding [typed model](#typed-models).
+`fetchMarkPrice`, `fetchMarketStatus`, `fetchMarketRiskParams`, `fetchStats`,
+`fetchStatsHistory`, and `fetchStatus` — covering the public market-data routes
+of the pinned spec. Each returns the corresponding
+[typed model](#typed-models).
+
+`fetchStatus` is venue-wide health (indexer / engine / oracle / bots) for a
+status page; branch on the top-level `status`, since the per-component `services`
+map is explicitly informational and free to evolve. `fetchMarketStatus` is the
+different thing it sounds like: one market's halt state.
+
+Two market reads are **authenticated** despite living in this family, because the
+spec gives them `hmacAuth`: `fetchMarkets` (full trading parameters — tick and
+lot size, order-size bounds, margin rates, max leverage) and `fetchAdlEvents` (a
+market's auto-deleveraging settlements). Without credentials they throw
+`MissingCredentialsError` before anything reaches the wire. `fetchMarketSummaries`
+is the unauthenticated way to enumerate markets, and `fetchMarketRiskParams` the
+public read of one market's margin rates and leverage cap.
 
 Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 `transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
@@ -108,13 +126,29 @@ Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
 authenticated endpoints: account (`getAccount`, `getAccountSummary`,
 `getAccountState`, `getAccountFees`, `getEquityHistory`,
-`getPortfolioHistory`, `getRateLimit`, `claimCredit`); funds (`deposit`,
+`getPortfolioHistory`, `getRateLimit`, `getAdlHistory`, `claimCredit`,
+`getCancelOnDisconnect`, `setCancelOnDisconnect`); funds (`deposit`,
 `createDeposit`, `getDeposits`, `getWithdrawals`, `getAccountFunding`,
 `claimFaucet`, `adjustMargin`);
 positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
-`placeOrder`, `placeOrderBatch`, `previewOrder`, `getOpenOrders`,
+`placeOrder`, `placeOrderBatch`, `previewOrder`, `getOrder`, `getOpenOrders`,
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
+
+`getOrder(orderId, marketId)` takes the market as a second **required**
+argument, not an optional filter: the spec marks its `market_id` query parameter
+required because the lookup is routed by market, so omitting it could only ever
+answer `400`.
+
+`setCancelOnDisconnect(true)` arms a per-account dead man's switch: when the
+account's last authenticated `/ws` connection drops and does not reconnect
+within `grace_secs`, the exchange cancels every resting order. It is off by
+default — a passive order left resting while offline should not die to a blip —
+so enable it deliberately, typically for market makers and algorithmic traders.
+Read the result's two booleans as a pair: `enabled` is your opt-in, `active`
+additionally requires the exchange-side feature switch, so `enabled && !active`
+means COD will **not** fire. A client that only ever trades over REST is not
+covered at all, since there is no `/ws` disconnect to trigger it.
 
 Market-family orders can carry `max_slippage_bps` (spec v0.7.3), a server-enforced
 cap: the engine pins the book mid at submission and holds the running fill VWAP
@@ -553,7 +587,7 @@ const agents = await client.listAgents();
 await client.revokeAgent(agent.address);
 ```
 
-### Bridge (deposits)
+### Bridge (deposits & withdrawal wallets)
 
 `getBridgeAssets`, `createBridgeDepositAddress`, `listBridgeDepositAddresses`,
 `getBridgeDeposits`, and `getBridgeDeposit` wrap the `/bridge` Phase A surface
@@ -571,6 +605,41 @@ const [deposit] = await client.getBridgeDeposits({
 });
 // deposit?.status: "detected" | "confirming" | "credited" | "failed"
 ```
+
+Paying **out** needs a registered withdrawal wallet, and your API credentials say
+nothing about who controls the destination address — so registration is a
+two-step ownership proof. `createBridgeWalletChallenge` issues a message bound to
+your account and the address; the wallet's own key signs it EIP-191; and
+`registerBridgeWallet` submits the signature. `listBridgeWallets` reads them back
+(an envelope — the wallets are on `.wallets`).
+
+```ts
+const signer = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
+const challenge = await client.createBridgeWalletChallenge(signer.address);
+const wallet = await client.registerBridgeWallet(
+  signer.registerWallet(challenge),
+);
+console.log(wallet.address, wallet.is_default);
+```
+
+`EthSigner.registerWallet` signs `challenge.message` **verbatim** — the server
+holds no state between the two calls and re-derives the signed bytes, the
+integrity tag, the account binding and the expiry from that one field, so
+reformatting, re-encoding or trimming it invalidates the proof. It refuses a
+challenge issued for an address other than the signer's (comparing
+case-insensitively, since EIP-55 checksummed and lowercase hex are the same
+address), but it does not check `expires_at`: the signer carries no clock, so a
+stale challenge signs fine and the server answers `challenge_expired` — re-issue
+and sign again. The message is server-defined and opaque, so only sign challenges
+from a deployment you trust, i.e. one whose `baseUrl` you control.
+
+Registration is idempotent for the _same_ address and a hard error for a
+different one: re-registering returns the existing record, while registering a
+second address answers `409` / `wallet_already_registered`. An account holds one
+wallet in this cut and replacement is not supported, so this is not a way to
+rotate the destination. For the same reason `verified` and `is_default` are
+always `true` here — do not branch on them; they start varying with the
+wallet-lifecycle follow-up.
 
 ## WebSocket streaming
 

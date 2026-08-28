@@ -53,6 +53,11 @@ GET /orders/history
 PATCH /orders/{order_id}
 DELETE /orders/{order_id}
 DELETE /orders
+# Cancel-on-disconnect, dual-mounted like the rows above: the client targets
+# `GET,PUT /api/v1/account/cancel-on-disconnect` (endpoints.txt) and never the
+# bare form. Same operation, second spelling — not a gap.
+GET /account/cancel-on-disconnect
+PUT /account/cancel-on-disconnect
 
 # The funds surface used to sit here — `POST /account/{deposit,margin}`,
 # `{GET,POST} /deposits`, `GET /withdrawals`, `POST /faucet` — because the client
@@ -61,34 +66,15 @@ DELETE /orders
 # the spec declares and are listed in endpoints.txt, so they are covered rather
 # than uncovered.
 
-# ── Surface with no client method yet ─────────────────────────────────────────
-#
-# Real coverage gaps: `src/client.ts` has no wrapper. Several already have their
-# models in src/models.ts (cancel-on-disconnect and the bridge shapes landed with
-# the v0.7.1 bump), so for those the remaining work is the wrapper plus a line in
-# endpoints.txt. Listed here so the backlog is visible rather than invisible.
-GET /markets
-GET /orders/{order_id}
-GET /status
-GET /markets/{market_id}/risk-params
-GET /markets/{market_id}/adl-events
-GET /account/{address}/adl-history
-# Cancel-on-disconnect (both stacks).
-GET /account/cancel-on-disconnect
-PUT /account/cancel-on-disconnect
-GET /api/v1/account/cancel-on-disconnect
-PUT /api/v1/account/cancel-on-disconnect
-# Withdrawal wallets (v0.7.3). The two-step ownership proof:
-# `POST …/challenge` issues a message, the wallet signs it EIP-191, and
-# `POST …/wallets` registers the address. Modeled already
-# (CreateBridgeWalletChallengeRequest, BridgeWalletChallenge,
-# RegisterBridgeWalletRequest, BridgeWallet, BridgeWalletsResponse), so what is
-# left is the three wrappers — which want `EthSigner` plumbing for the signing
-# step, hence their own change rather than the spec bump. Spec ships only the
-# `/api/v1` forms; there are no legacy-root twins to record.
-POST /api/v1/bridge/wallets/challenge
-POST /api/v1/bridge/wallets
-GET /api/v1/bridge/wallets
+# There is no "surface with no client method yet" block any more: every spec
+# operation that this SDK can meaningfully expose now has one (ENG-9199). What
+# remains below is the twin spellings above, the two deprecated routes, and the
+# admin surface — none of them coverage gaps. The last real gaps to close were
+# `GET /markets`, `GET /status`, `GET /markets/{market_id}/risk-params`,
+# `GET /markets/{market_id}/adl-events`, `GET /account/{address}/adl-history`,
+# `GET /orders/{order_id}`, the cancel-on-disconnect pair, and the three
+# withdrawal-wallet routes; all are in endpoints.txt.
+
 # ── Deprecated / superseded — intentionally never targeted ─────────────────────
 #
 # POST /ws-tokens — the LEGACY token route, superseded by POST /ws/token, which

@@ -5,9 +5,11 @@
  * bindings) is being extracted and sanitized out of the Nexus web app's
  * existing bindings and lands incrementally. The typed request/response models
  * (mirrored from the vendored OpenAPI spec and held in sync by the spec drift
- * check), the public market-data REST client, the authenticated account/order
- * endpoints, and the WebSocket streaming client have landed. Imports added here
- * become part of the published package's public API.
+ * check), the market-data REST client, the authenticated account / order /
+ * funds / bridge endpoints, and the WebSocket streaming client have landed —
+ * every spec operation but the admin tier routes and two deprecated ones, which
+ * spec/uncovered-ops.txt records with their reasons. Imports added here become
+ * part of the published package's public API.
  *
  * @example
  * ```ts

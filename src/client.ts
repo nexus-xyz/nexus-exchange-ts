@@ -3,9 +3,10 @@
 // A thin, typed wrapper over the REST routes, mirroring the Rust and Python
 // SDKs: typed methods over the public market-data endpoints and the
 // authenticated account/order endpoints, HMAC request signing, one error
-// hierarchy. **Experimental** — the public market-data and authenticated
-// account/trading endpoints are implemented (see the README's support table);
-// WebSocket streaming is still in progress.
+// hierarchy. **Experimental** — but complete against the pinned spec: every
+// operation it declares has a method here except the admin tier routes and two
+// deprecated ones, each recorded with its reason in spec/uncovered-ops.txt and
+// enforced by scripts/check-spec-drift.mjs.
 //
 // The client holds no per-request mutable state: every call computes its own
 // signature and assembles its own URL, so a single Client instance is safe to
@@ -31,6 +32,7 @@ import type {
   AccountPortfolioSummary,
   AccountState,
   AccountSummary,
+  AdlEventRecord,
   AgentInfo,
   AgentRegistrationRequest,
   AmendOrderRequest,
@@ -40,9 +42,14 @@ import type {
   BridgeDeposit,
   BridgeDepositAddress,
   BridgeDepositStatus,
+  BridgeWallet,
+  BridgeWalletChallenge,
+  BridgeWalletsResponse,
   Candle,
+  CancelOnDisconnectStatus,
   ClosedPosition,
   CreateBridgeDepositAddressRequest,
+  CreateBridgeWalletChallengeRequest,
   CreatedApiKey,
   CreditRequest,
   CreditResponse,
@@ -58,6 +65,8 @@ import type {
   MarginAdjustRequest,
   MarginAdjustResponse,
   LoginResponse,
+  Market,
+  MarketRiskParams,
   MarketStatus,
   MarketSummary,
   MarkPrice,
@@ -72,6 +81,9 @@ import type {
   Position,
   PreviewResponse,
   RateLimitStatus,
+  RegisterBridgeWalletRequest,
+  ServiceHealth,
+  SetCancelOnDisconnectRequest,
   StatsSnapshot,
   ThroughputSample,
   Ticker,
@@ -1268,9 +1280,14 @@ interface RequestOptions {
   /**
    * Target a route the pinned spec declares at the deployment root, with no
    * {@link API_BASE_PATH} variant — `POST /ws/token`, `POST /auth/login`, the
-   * key and agent routes, and the funds surface. The path is sent and signed
-   * bare, but still relative to `baseUrl` — these routes are gateway-relative,
-   * not host-root.
+   * key and agent routes, the funds surface, `GET /markets`, `GET /status`, the
+   * two ADL reads, `…/risk-params`, and `GET /orders/{order_id}`. The path is
+   * sent and signed bare, but still relative to `baseUrl` — these routes are
+   * gateway-relative, not host-root.
+   *
+   * Set this off the operation's OWN spelling in the spec, never off its
+   * neighbours': `/orders/{order_id}` is declared bare for `GET` and both ways
+   * for `PATCH`/`DELETE`, so the three verbs on that one path do not agree.
    *
    * ## Why one base covers them, and when it would stop
    *
@@ -1848,6 +1865,29 @@ export class Client {
 
   // -- public market data ---------------------------------------------------
 
+  /**
+   * `GET /markets` — full trading parameters for every perpetual market: tick
+   * and lot size, order-size bounds, margin rates, and max leverage.
+   *
+   * **Authenticated, unlike the rest of this section.** The spec gives this
+   * operation `security: [{ hmacAuth: [] }]` and documents a `401`, so it is
+   * sent signed and a credential-less client gets `MissingCredentialsError`
+   * before anything reaches the wire. That is the contract, not an oversight
+   * here — `GET /markets/summary` is the unauthenticated way to enumerate
+   * markets, and {@link fetchMarketRiskParams} is the public read of the margin
+   * rates and leverage cap for one of them.
+   *
+   * `root: true`: the spec declares this at the deployment root and no
+   * `/api/v1` twin of it, unlike the `/markets/{market_id}/…` reads below.
+   */
+  fetchMarkets(opts?: { signal?: AbortSignal }): Promise<Market[]> {
+    return this.#request<Market[]>("GET", "/markets", {
+      signed: true,
+      root: true,
+      signal: opts?.signal,
+    });
+  }
+
   /** `GET /markets/summary` — per-market 24h volume and halt state. */
   fetchMarketSummaries(opts?: {
     signal?: AbortSignal;
@@ -1972,6 +2012,60 @@ export class Client {
     );
   }
 
+  /**
+   * `GET /markets/{market_id}/risk-params` — the market's margin requirements
+   * and leverage cap.
+   *
+   * Public (`security: []`), so no credentials are needed — this is the
+   * unauthenticated read of the risk fields {@link fetchMarkets} also carries.
+   * `root: true`: the spec declares no `/api/v1` twin of it, unlike the sibling
+   * `/markets/{market_id}/…` reads. Answers `404` for an unknown market.
+   */
+  fetchMarketRiskParams(
+    marketId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MarketRiskParams> {
+    return this.#request<MarketRiskParams>(
+      "GET",
+      `/markets/${seg(marketId)}/risk-params`,
+      { root: true, signal: opts?.signal },
+    );
+  }
+
+  /**
+   * `GET /markets/{market_id}/adl-events` — the market's auto-deleveraging
+   * settlements, most recent first (v0.21).
+   *
+   * An ADL settlement is recorded when the insurance fund is depleted and the
+   * engine closes opposite-side positions to absorb a bankrupt account's bad
+   * debt; each record names the target account, the bankruptcy price, and every
+   * counterparty closure. Authenticated (`hmacAuth`) even though the data is
+   * market-wide, and `root: true` — the spec declares it bare.
+   *
+   * `limit` is bounded to an integer in `[1, 1000]`; omit it for the server's
+   * default of 100. Only the maximum is spec-derived (`maximum: 1000` on the
+   * parameter) — the lower bound of 1 is the SDK's own, since a `limit` of 0 is
+   * not a useful request. The operation takes no `cursor`, so this is a single
+   * capped read rather than a paginated one.
+   *
+   * An out-of-range `limit` **rejects** the returned promise with `RangeError`
+   * rather than throwing synchronously; `async` is load-bearing for that.
+   *
+   * @see {@link getAdlHistory} for the same events filtered to one account.
+   */
+  async fetchAdlEvents(
+    marketId: string,
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<AdlEventRecord[]> {
+    assertLimitInRange(opts.limit, 1, 1000);
+    const query = buildQuery({ limit: opts.limit });
+    return this.#request<AdlEventRecord[]>(
+      "GET",
+      `/markets/${seg(marketId)}/adl-events`,
+      { query, signed: true, root: true, signal: opts.signal },
+    );
+  }
+
   /** `GET /stats` — aggregate venue statistics (incl. rolling unique-trader counts). */
   fetchStats(opts?: { signal?: AbortSignal }): Promise<StatsSnapshot> {
     return this.#request<StatsSnapshot>("GET", "/stats", opts);
@@ -1982,6 +2076,26 @@ export class Client {
     signal?: AbortSignal;
   }): Promise<ThroughputSample[]> {
     return this.#request<ThroughputSample[]>("GET", "/stats/history", opts);
+  }
+
+  /**
+   * `GET /status` — aggregate health of the indexer, engine, oracle and bots,
+   * as the public status page consumes it.
+   *
+   * Public (`security: []`) and `root: true` — the spec declares it bare, with
+   * no `/api/v1` twin. Branch on the top-level `status` (`"ok"` | `"degraded"` |
+   * `"down"` | `"starting"`, worst-of across components); the per-component
+   * `services` map is explicitly informational and free to evolve, which is why
+   * it is typed as `Record<string, unknown>` rather than a fixed shape.
+   *
+   * Venue-wide, and distinct from {@link fetchMarketStatus}, which is one
+   * market's halt state.
+   */
+  fetchStatus(opts?: { signal?: AbortSignal }): Promise<ServiceHealth> {
+    return this.#request<ServiceHealth>("GET", "/status", {
+      root: true,
+      signal: opts?.signal,
+    });
   }
 
   /**
@@ -2225,6 +2339,88 @@ export class Client {
     });
   }
 
+  /**
+   * `GET /account/{address}/adl-history` — the auto-deleveraging settlements
+   * that touched `address`, either as the bankrupt target or as a counterparty
+   * whose position was closed (v0.21).
+   *
+   * `address` is a 0x-prefixed account address. The route names it in the path
+   * rather than deriving it from the credentials, so it is a required argument;
+   * the request is still signed, and the server decides which accounts the
+   * caller may read. `root: true` — the spec declares it bare, with no `/api/v1`
+   * twin, unlike the other `/account/…` reads in this section.
+   *
+   * `limit` is bounded to an integer in `[1, 1000]` on the same terms as
+   * {@link fetchAdlEvents}, including the `RangeError` rejection.
+   */
+  async getAdlHistory(
+    address: string,
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<AdlEventRecord[]> {
+    assertLimitInRange(opts.limit, 1, 1000);
+    const query = buildQuery({ limit: opts.limit });
+    return this.#request<AdlEventRecord[]>(
+      "GET",
+      `/account/${seg(address)}/adl-history`,
+      { query, signed: true, root: true, signal: opts.signal },
+    );
+  }
+
+  /**
+   * `GET /account/cancel-on-disconnect` — the account's cancel-on-disconnect
+   * (COD) status.
+   *
+   * COD is an opt-in dead man's switch: when the account's last authenticated
+   * `/ws` connection drops and does not reconnect inside `grace_secs`, the
+   * exchange cancels every resting order, so a crashed client cannot leave
+   * orders exposed. Read the two booleans as a pair — `enabled` is the account's
+   * own opt-in, `active` additionally requires the exchange-side feature switch,
+   * so `enabled && !active` means COD is armed on paper and will **not** fire.
+   * `grace_secs` is `null` when the feature is unavailable on the deployment.
+   *
+   * A client that trades purely over REST and never opens a `/ws` connection is
+   * not covered by COD at all — there is no disconnect to trigger it.
+   *
+   * Dual-mounted in the spec, which declares both the bare and the `/api/v1`
+   * spelling; this sends the `/api/v1` one, like the other `/account/…` reads,
+   * and spec/uncovered-ops.txt records the bare twin as the same operation.
+   */
+  getCancelOnDisconnect(opts?: {
+    signal?: AbortSignal;
+  }): Promise<CancelOnDisconnectStatus> {
+    return this.#request<CancelOnDisconnectStatus>(
+      "GET",
+      "/account/cancel-on-disconnect",
+      { signed: true, signal: opts?.signal },
+    );
+  }
+
+  /**
+   * `PUT /account/cancel-on-disconnect` — enable or disable
+   * cancel-on-disconnect, returning the resulting status (same shape as
+   * {@link getCancelOnDisconnect}).
+   *
+   * Off by default and per account: someone who deliberately leaves a passive
+   * order resting while offline should not have a brief blip cancel it. Enable
+   * it when you want the guarantee that a dead client cannot keep orders
+   * resting — the market-maker / algorithmic case.
+   *
+   * Check `active` on the result rather than assuming the write took effect end
+   * to end: a `true` here with `active: false` means the exchange has the
+   * feature switched off, so no cancel fires however this is set.
+   */
+  setCancelOnDisconnect(
+    enabled: boolean,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CancelOnDisconnectStatus> {
+    const body: SetCancelOnDisconnectRequest = { enabled };
+    return this.#request<CancelOnDisconnectStatus>(
+      "PUT",
+      "/account/cancel-on-disconnect",
+      { body, signed: true, signal: opts?.signal },
+    );
+  }
+
   /** `GET /account/rate-limit` — the caller's current rate-limit status. */
   getRateLimit(opts?: { signal?: AbortSignal }): Promise<RateLimitStatus> {
     return this.#request<RateLimitStatus>("GET", "/account/rate-limit", {
@@ -2445,6 +2641,96 @@ export class Client {
     });
   }
 
+  // -- authenticated: bridge (withdrawal wallets) ---------------------------
+  //
+  // Registering a withdrawal wallet is a two-step ownership proof, because the
+  // account's HMAC credentials say nothing about who controls the destination
+  // address: `POST /bridge/wallets/challenge` issues a message bound to both the
+  // authenticated account and the address, the wallet's key signs it EIP-191,
+  // and `POST /bridge/wallets` submits the signature. The server holds no state
+  // between the two — it re-derives everything from the echoed `message` and its
+  // integrity tag — which is why the message must be passed back byte-for-byte.
+  //
+  // {@link EthSigner.registerWallet} does the middle step; the signer never
+  // leaves the process and this client never sees a private key.
+
+  /**
+   * `POST /bridge/wallets/challenge` — start registering `address` as the
+   * account's withdrawal wallet, returning the message to sign.
+   *
+   * Sign {@link BridgeWalletChallenge.message} verbatim with EIP-191
+   * `personal_sign` (see {@link EthSigner.registerWallet}) and submit the result
+   * to {@link registerBridgeWallet} before `expires_at`. The message format is
+   * server-defined: treat it as opaque, and do not reformat, re-encode or trim
+   * it — the server re-derives the signed bytes from exactly what you echo back.
+   *
+   * Answers `400` / `invalid_address` when `address` is not a 0x-prefixed
+   * 20-byte hex string, and `503` / `wallet_registration_unavailable` when the
+   * deployment has no challenge key configured — in which case registration is
+   * off rather than issuing challenges that cannot be trusted.
+   */
+  createBridgeWalletChallenge(
+    address: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<BridgeWalletChallenge> {
+    const body: CreateBridgeWalletChallengeRequest = { address };
+    return this.#request<BridgeWalletChallenge>(
+      "POST",
+      "/bridge/wallets/challenge",
+      { body, signed: true, signal: opts?.signal },
+    );
+  }
+
+  /**
+   * `POST /bridge/wallets` — register the ownership-proven wallet as the
+   * account's withdrawal sink.
+   *
+   * `request` carries the address, the challenge `message` echoed back verbatim,
+   * and the EIP-191 signature over it; build it with
+   * {@link EthSigner.registerWallet} from the {@link createBridgeWalletChallenge}
+   * result. The address recovered from the signature must equal `request.address`
+   * and the account named in the challenge must be the authenticated one.
+   *
+   * **Idempotent for the same address, a hard error for a different one.**
+   * Re-registering an address already registered to the account returns the
+   * existing record; registering a *different* address while one is registered
+   * answers `409` / `wallet_already_registered`, because an account holds one
+   * wallet in this cut and replacement is not supported. So this is not a way to
+   * rotate the withdrawal destination — do not call it expecting an update.
+   *
+   * Other failures arrive as `400` with `code` one of `invalid_address`,
+   * `invalid_challenge`, `challenge_expired`, `signature_mismatch` or
+   * `account_mismatch`, and `503` / `wallet_registration_unavailable`.
+   */
+  registerBridgeWallet(
+    request: RegisterBridgeWalletRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<BridgeWallet> {
+    return this.#request<BridgeWallet>("POST", "/bridge/wallets", {
+      body: request,
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `GET /bridge/wallets` — the account's registered withdrawal wallets.
+   *
+   * Returns the spec's envelope, so the wallets are on `.wallets`. Wallets are
+   * not chain-scoped: one EVM address is valid on every supported EVM chain and
+   * the chain is chosen per withdrawal. In this cut the list holds at most one
+   * entry, and both `verified` and `is_default` are always `true` — do not
+   * branch on either; they start varying with the wallet-lifecycle follow-up.
+   */
+  listBridgeWallets(opts?: {
+    signal?: AbortSignal;
+  }): Promise<BridgeWalletsResponse> {
+    return this.#request<BridgeWalletsResponse>("GET", "/bridge/wallets", {
+      signed: true,
+      signal: opts?.signal,
+    });
+  }
+
   /**
    * `POST /account/margin` — add or remove isolated margin on an open position.
    * Only applies to a position in isolated mode; the server rejects a
@@ -2515,6 +2801,35 @@ export class Client {
   getOpenOrders(opts?: { signal?: AbortSignal }): Promise<Order[]> {
     return this.#request<Order[]>("GET", "/orders", {
       signed: true,
+      signal: opts?.signal,
+    });
+  }
+
+  /**
+   * `GET /orders/{order_id}` — one order by id.
+   *
+   * `marketId` is **required**, not a filter: the spec marks the `market_id`
+   * query parameter `required: true` because the lookup is routed by market, so
+   * omitting it can only ever answer `400`. Answers `404` when the market holds
+   * no such order. Pass the same `market_id` the order was placed with.
+   *
+   * `root: true`, and note this is the one verb on `/orders/{order_id}` that is:
+   * the spec declares the `GET` only at the deployment root, while the `PATCH`
+   * and `DELETE` on the same path also have `/api/v1` twins, which is why
+   * {@link amendOrder} and {@link cancelOrder} — further down this section —
+   * send the prefixed form and this does not. The spelling is the spec's, so it must be
+   * read off the operation rather than off its neighbours.
+   */
+  getOrder(
+    orderId: string,
+    marketId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Order> {
+    const query = buildQuery({ market_id: marketId });
+    return this.#request<Order>("GET", `/orders/${seg(orderId)}`, {
+      query,
+      signed: true,
+      root: true,
       signal: opts?.signal,
     });
   }
