@@ -10,8 +10,7 @@
 ### Features
 
 * **client:** implement the last 11 uncovered spec operations (ENG-9199) ([#73](https://github.com/nexus-xyz/nexus-exchange-ts/issues/73)) ([ebccfb1](https://github.com/nexus-xyz/nexus-exchange-ts/commit/ebccfb1db38bcdc64ece20bea58e8b450ed80533))
-* **client:** read the account's funding payments ([#71](https://github.com/nexus-xyz/nexus-exchange-ts/issues/71)) ([7703a41](https://github.com/nexus-xyz/nexus-exchange-ts/commit/7703a415a58472fb39df7e47a79955ccca95a7a7))
-* **client:** read the account's funding payments (ENG-5132) ([7703a41](https://github.com/nexus-xyz/nexus-exchange-ts/commit/7703a415a58472fb39df7e47a79955ccca95a7a7))
+* **client:** read the account's funding payments (ENG-5132) ([#71](https://github.com/nexus-xyz/nexus-exchange-ts/issues/71)) ([7703a41](https://github.com/nexus-xyz/nexus-exchange-ts/commit/7703a415a58472fb39df7e47a79955ccca95a7a7))
 
 
 ### Bug Fixes
