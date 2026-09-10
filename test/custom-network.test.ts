@@ -65,9 +65,10 @@ test("a custom descriptor is accepted in place of the enum and drives the target
   assert.equal(client.hasFaucet, true);
   assert.equal(client.isRealFunds, false);
   assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
-  // No wsUrl declared, so it is derived from the REST origin — the stream stays
-  // on the host the ws token was minted on.
-  assert.equal(client.wsUrl, "wss://exchange.example.com");
+  // No wsUrl declared, so it is derived from the REST base — scheme swapped,
+  // host *and route prefix* kept (ENG-14963), so the stream stays on the host
+  // and the prefix the ws token was minted on.
+  assert.equal(client.wsUrl, "wss://exchange.example.com/api/exchange");
   assert.equal(client.requireSigningChainId(), 1234);
   // The bundle travels with the transport: what the client reports is what the
   // descriptor declared, with nothing left behind.
@@ -122,7 +123,7 @@ test("a request is sent to the custom base, and host-root routes to its origin",
   );
 });
 
-test("a declared wsUrl is honoured, and origin-only", () => {
+test("a declared wsUrl on another origin is honoured as declared", () => {
   const client = new Client({
     network: customNetwork(
       options({ wsUrl: "wss://stream.example.com", funds: "unknown" }),
@@ -139,13 +140,14 @@ test("a declared wsUrl is honoured, and origin-only", () => {
   );
 });
 
-// A path here would be doubled: createWsClient appends "/ws" or "/stream".
+// The segment createWsClient appends ("/ws" or "/stream") would be doubled.
+// A route *prefix* would not, and is accepted — see the ENG-14963 section.
 test("a wsUrl with a path, or a plaintext one under https, is refused", () => {
   assert.throws(
     () => customNetwork(options({ wsUrl: "wss://stream.example.com/ws" })),
     (err: unknown) => {
       assert.ok(err instanceof NexusExchangeError);
-      assert.match(err.message, /origin with no path/);
+      assert.match(err.message, /must not end in "\/ws"/);
       return true;
     },
   );
@@ -674,4 +676,171 @@ test("networkConfig and baseUrlForNetwork accept a descriptor too", () => {
   );
   // The built-in entries keep working unchanged.
   assert.equal(networkConfig(Network.Testnet), NETWORKS[Network.Testnet]);
+});
+
+// ── A prefixed deployment's WebSocket (ENG-14963) ────────────────────────────
+//
+// Both routes to a prefixed socket were closed: the derived WS base dropped the
+// REST base's route prefix, and an explicit `wsUrl` carrying that prefix was
+// refused outright. The measured shape this has to express — the durable
+// testnet indexer mounts REST *and* both stream paths under one prefix, and the
+// bare origin 404s on all of them:
+//
+//   wss://<host>/<prefix>/stream   101 Switching Protocols
+//   wss://<host>/<prefix>/ws       401 ws_token_missing
+//   wss://<host>/stream            404
+//   wss://<host>/ws                404
+//
+// The rejection was not arbitrary, so it is narrowed rather than dropped: what
+// it guarded against is a base already carrying the segment the SDK appends,
+// which a route prefix is not.
+
+/** A deployment that mounts its whole surface under one route prefix. */
+const ROUTE_PREFIX = "/indexer";
+const PREFIXED_BASE = `https://exchange.example.com${ROUTE_PREFIX}`;
+
+test("a derived wsUrl keeps the REST base's route prefix", () => {
+  const target = customNetwork(options({ baseUrl: PREFIXED_BASE }));
+  // Resolved on the descriptor, not left null for the client to guess at.
+  assert.equal(target.wsUrl, "wss://exchange.example.com/indexer");
+  const client = new Client({ network: target, fetchImpl: NEVER_CALLED });
+  assert.equal(client.wsUrl, "wss://exchange.example.com/indexer");
+  // Same host as REST, always: a ws token minted on one origin must not be
+  // spendable on another.
+  assert.equal(new URL(client.wsUrl).host, new URL(client.baseUrl).host);
+  // http:// derives ws://, not wss://.
+  assert.equal(
+    customNetwork(options({ baseUrl: `http://localhost:9099${ROUTE_PREFIX}` }))
+      .wsUrl,
+    "ws://localhost:9099/indexer",
+  );
+  // A base with no prefix still derives the bare origin.
+  assert.equal(
+    customNetwork(options({ baseUrl: "https://exchange.example.com" })).wsUrl,
+    "wss://exchange.example.com",
+  );
+});
+
+test("an explicit wsUrl carrying a route prefix is accepted", () => {
+  for (const declared of [
+    "wss://exchange.example.com/indexer",
+    "wss://exchange.example.com/indexer/", // trailing slash trimmed
+    "wss://stream.example.com/indexer/v2", // a deeper prefix, another host
+  ]) {
+    const target = customNetwork(
+      options({ baseUrl: PREFIXED_BASE, wsUrl: declared }),
+    );
+    assert.equal(target.wsUrl, declared.replace(/\/+$/, ""));
+    assert.equal(
+      new Client({ network: target, fetchImpl: NEVER_CALLED }).wsUrl,
+      declared.replace(/\/+$/, ""),
+    );
+  }
+});
+
+// The narrowed guard: what it always existed to stop still throws.
+test("a wsUrl ending in the segment the SDK appends is still refused", () => {
+  for (const [declared, segment] of [
+    ["wss://exchange.example.com/indexer/ws", "/ws"],
+    ["wss://exchange.example.com/indexer/stream", "/stream"],
+    ["wss://exchange.example.com/ws", "/ws"],
+    ["wss://exchange.example.com/stream", "/stream"],
+  ] as const) {
+    assert.throws(
+      () => customNetwork(options({ baseUrl: PREFIXED_BASE, wsUrl: declared })),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, new RegExp(`must not end in "\\${segment}"`));
+        // The message names the base to pass instead, prefix intact.
+        assert.match(err.message, /Give the deployment's WS base/);
+        return true;
+      },
+      declared,
+    );
+  }
+  // A prefix that merely *contains* those letters is not the doubling case.
+  assert.equal(
+    customNetwork(options({ wsUrl: "wss://exchange.example.com/newsstream" }))
+      .wsUrl,
+    "wss://exchange.example.com/newsstream",
+  );
+});
+
+// assertNotVersionedBase refuses `/api/v1` in a REST base because the version
+// prefix belongs to the route (the `/v1`-in-base layout ENG-9134 rejected).
+// Relaxing the WS path check must not reopen that on the WS side.
+test("a versioned base is still refused, on both baseUrl and wsUrl", () => {
+  assert.throws(
+    () =>
+      customNetwork(
+        options({ baseUrl: "https://exchange.example.com/api/v1" }),
+      ),
+    /baseUrl must not include "\/api\/v1"/,
+  );
+  // Including under a route prefix, which is exactly the shape now allowed
+  // through for everything else.
+  assert.throws(
+    () => customNetwork(options({ baseUrl: `${PREFIXED_BASE}/api/v1` })),
+    /baseUrl must not include "\/api\/v1"/,
+  );
+  for (const declared of [
+    "wss://exchange.example.com/api/v1",
+    "wss://exchange.example.com/indexer/api/v1",
+  ]) {
+    assert.throws(
+      () => customNetwork(options({ baseUrl: PREFIXED_BASE, wsUrl: declared })),
+      (err: unknown) => {
+        assert.ok(err instanceof NexusExchangeError);
+        assert.match(err.message, /wsUrl must not include "\/api\/v1"/);
+        return true;
+      },
+      declared,
+    );
+  }
+});
+
+// Re-validating a descriptor has to mean the same thing as building it, or a
+// round-trip through JSON.parse would tighten or loosen the rules.
+test("a resolved prefixed descriptor survives re-validation unchanged", () => {
+  const target = customNetwork(options({ baseUrl: PREFIXED_BASE }));
+  assert.equal(networkConfig(target), target);
+  // The same values arriving as a plain literal — not from customNetwork, so
+  // they go through the full validation pass — resolve identically.
+  const literal = networkConfig({
+    label: target.label,
+    funds: target.funds,
+    faucet: target.faucet,
+    baseUrl: target.baseUrl,
+    wsUrl: target.wsUrl,
+    signingDomain: target.signingDomain,
+  });
+  assert.equal(literal.wsUrl, "wss://exchange.example.com/indexer");
+  assert.equal(literal.baseUrl, PREFIXED_BASE);
+});
+
+// The named axis is unchanged by all of the above: NETWORKS entries are frozen
+// literals that never pass through customNetwork's builder, so whatever the map
+// declares is what a named client gets.
+test("the named-network path is untouched by the custom-descriptor change", () => {
+  for (const [network, config] of Object.entries(NETWORKS)) {
+    if (config.baseUrl === null) continue;
+    const client = new Client({
+      network: network as Network,
+      fetchImpl: NEVER_CALLED,
+    });
+    assert.equal(
+      client.wsUrl,
+      config.wsUrl ?? client.wsUrl,
+      `${network}: a declared wsUrl must be returned as declared`,
+    );
+    assert.equal(new URL(client.wsUrl).host, new URL(config.baseUrl).host);
+  }
+  // And a bare `baseUrl` override still resolves to an undeclared target that
+  // declares no wsUrl, so it keeps deriving from the origin it was given.
+  const overridden = new Client({
+    baseUrl: PREFIXED_BASE,
+    fetchImpl: NEVER_CALLED,
+  });
+  assert.equal(overridden.networkConfig.wsUrl, null);
+  assert.equal(overridden.funds, "unknown");
 });

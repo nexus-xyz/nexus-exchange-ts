@@ -310,19 +310,41 @@ it against an allowlist or a denylist, because that would put a hostname back in
 It carries the whole bundle rather than just a URL, because a URL alone is what
 lets a client report play-funds guardrails while pointed at a real-funds host:
 
-| Field            | Required | Notes                                                                     |
-| ---------------- | -------- | ------------------------------------------------------------------------- |
-| `label`          | yes      | `[A-Za-z0-9._-]`, ≤64 chars, not `.`/`..` — it is a credential-store key  |
-| `baseUrl`        | yes      | absolute `http(s)`, **without** `/api/v1`, no userinfo/query/fragment     |
-| `funds`          | yes      | `"play" \| "real" \| "unknown"` — no default                              |
-| `faucet`         | no       | defaults to `false`; only valid with `funds: "play"`                      |
-| `wsUrl`          | no       | origin only; omitted ⇒ derived from `baseUrl`'s origin                    |
-| `signingChainId` | no       | omitted ⇒ `requireSigningChainId()` refuses rather than guessing a domain |
+| Field            | Required | Notes                                                                                                         |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `label`          | yes      | `[A-Za-z0-9._-]`, ≤64 chars, not `.`/`..` — it is a credential-store key                                      |
+| `baseUrl`        | yes      | absolute `http(s)`, **without** `/api/v1`, no userinfo/query/fragment                                         |
+| `funds`          | yes      | `"play" \| "real" \| "unknown"` — no default                                                                  |
+| `faucet`         | no       | defaults to `false`; only valid with `funds: "play"`                                                          |
+| `wsUrl`          | no       | origin, plus a route prefix if the stream is mounted under one; omitted ⇒ derived from `baseUrl`, prefix kept |
+| `signingChainId` | no       | omitted ⇒ `requireSigningChainId()` refuses rather than guessing a domain                                     |
 
 Everything optional is **absent until declared**, never inferred. A rejected
 field throws from `customNetwork()`, before a client exists; a hand-written
 object literal is re-validated by the `Client` constructor rather than trusted,
 since untyped callers and `JSON.parse` bypass the types.
+
+### A deployment behind a route prefix
+
+If the deployment mounts its whole surface under a path prefix, put the prefix
+in `baseUrl` and leave `wsUrl` alone — the WS base is derived from the REST
+base with the prefix **kept**, because the streams are mounted under the same
+prefix as REST and the bare origin `404`s:
+
+```ts
+const target = customNetwork({
+  label: "dev",
+  baseUrl: "https://exchange.example.com/indexer",
+  funds: "play",
+});
+target.wsUrl; // "wss://exchange.example.com/indexer"
+new Client({ network: target }).wsUrl; // the same — hand to createWsClient
+```
+
+Declaring it explicitly works too, prefix and all. What `wsUrl` still refuses
+is a base carrying the segment the SDK appends itself — `/ws`, `/stream` —
+which would dial `…/ws/ws`, or one carrying `/api/v1`, which belongs to the
+route exactly as it does in `baseUrl`.
 
 The label is constrained because sibling clients namespace **stored credentials**
 by it (the CLI puts it in a keyring entry or a path), so `../other` or `one/two`
@@ -372,7 +394,8 @@ Every route hangs off this base, including the ones (`/auth/login`, `/keys`,
 `/agents/*`, `/ws/token`, `/ws`) that have no `/api/v1` variant yet — those drop
 the version prefix but stay under the base. `client.wsUrl` is derived from the
 base's **origin**, so the stream can never end up on a different host than the
-REST calls.
+REST calls — note that this drops a route prefix, so a prefixed deployment
+wants `customNetwork({ baseUrl })` (above) rather than this shortcut.
 
 The Python SDK carries a _second_ base for those v1-less routes
 (`direct_base_url`, at the host root). One field is enough here because on the
