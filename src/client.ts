@@ -286,20 +286,22 @@ export type NetworkSelector = Network | NetworkConfig;
  * string literal.
  *
  * This prefix lives in the **path**, never in {@link NetworkConfig.baseUrl}. A
- * base names a deployment (`https://exchange.nexus.xyz/api/exchange`); the path
+ * base names a deployment (`https://api.testnet.nexus.xyz/indexer`); the path
  * names a surface (`/api/v1/orders`), and `#sendOnce` composes the two. Keeping
  * them separate is what lets the signed path differ from the sent URL, which it
- * must: the gateway strips its own `/api/exchange` prefix before the indexer
- * verifies the HMAC, so a request sent to `…/api/exchange/api/v1/orders` is
- * verified as `/api/v1/orders`. The signature therefore covers the *logical*
- * path — `/api/v1` included, the base's own path excluded — and is independent
- * of which deployment the base points at.
+ * must: the deployment strips its own route prefix before the indexer verifies
+ * the HMAC, so a request sent to `…/indexer/api/v1/orders` is verified as
+ * `/api/v1/orders`. The signature therefore covers the *logical* path —
+ * `/api/v1` included, the base's own path excluded — and is independent of
+ * which deployment the base points at. The retired `…/api/exchange` gateway had
+ * the same topology, which is why swapping testnet onto the durable host
+ * (ENG-8867) was a hostname change and nothing more.
  *
  * Folding the prefix into the base instead (the pre-0.3 layout) forced those two
  * to be equal, and no single base could satisfy both: a host-root
- * `…/exchange.nexus.xyz/api/v1` base signed correctly but 404s to the frontend,
- * while a gateway base reached the API but signed the un-stripped
- * `/api/exchange/api/v1/orders` — a path the indexer never sees.
+ * `…/api.testnet.nexus.xyz/api/v1` base signs correctly but 404s (measured),
+ * while a prefixed base reaches the API but would sign the un-stripped
+ * `/indexer/api/v1/orders` — a path the indexer never sees.
  */
 export const API_BASE_PATH = "/api/v1";
 
@@ -382,17 +384,19 @@ export interface NetworkConfig {
    * {@link Client.wsUrl} resolves this for you.
    *
    * A prefix is allowed here, and required by any deployment that mounts its
-   * surface under a route prefix: `wss://api.testnet.nexus.xyz/indexer`, whose
-   * bare origin `404`s on both stream paths (ENG-14963, measured). What stays
-   * refused is a base that already ends in the segment the SDK appends
-   * (`/ws`, `/stream`) or in {@link API_BASE_PATH} — see
+   * surface under one: `wss://api.testnet.nexus.xyz/indexer`, whose bare origin
+   * `404`s on both stream paths (ENG-8867, measured). On a built-in
+   * {@link NETWORKS} entry this is the REST base with the scheme swapped,
+   * **route prefix included**, and a unit test pins every entry against its
+   * REST base. What stays refused is a base that already ends in the segment
+   * the SDK appends (`/ws`, `/stream`) or in {@link API_BASE_PATH} — see
    * {@link CustomNetworkOptions.wsUrl}.
    *
    * A descriptor from {@link customNetwork} always carries one: when the caller
    * declares none it is derived from `baseUrl`, scheme swapped and **route
-   * prefix kept**, so the stream stays on the host and prefix the ws token was
-   * minted on. Declare it only for a deployment that genuinely serves its
-   * stream elsewhere.
+   * prefix kept** (ENG-14963), so the stream stays on the host and prefix the
+   * ws token was minted on. Declare it only for a deployment that genuinely
+   * serves its stream elsewhere.
    */
   readonly wsUrl: string | null;
   /**
@@ -445,12 +449,41 @@ const SIGNING_DOMAIN: NetworkSigningDomain = Object.freeze({
  * in deliberately once a host is live — there you supply the URL and so own its
  * path layout.
  *
- * Testnet keeps the legacy-but-live gateway base until `api.testnet.nexus.xyz`
- * is resolvable; the spec says the same ("keep pinning the legacy base above
- * until it is live"), and the `/api/v1` surface is mounted *under* that prefix
- * rather than at the host root — measured, see {@link API_BASE_PATH}. Its
- * traffic migrates to `https://api.testnet.nexus.xyz/v1` — never to the bare
- * `api.nexus.xyz`, which is real funds.
+ * ## Testnet is on its durable host (ENG-8867)
+ *
+ * `api.testnet.nexus.xyz` resolves and serves the `apps-prod-testnet` indexer,
+ * so testnet no longer points at the legacy `exchange.nexus.xyz/api/exchange`
+ * gateway. That was not cosmetic: the gateway proxies to a decommissioned Cloud
+ * Run indexer and answers `500` on every route (ENG-14039), so the base this
+ * SDK shipped was dead and the replacement is live.
+ *
+ * **The base is the host plus `/indexer`, not the host root.** The indexer's
+ * `HTTPRoute` mounts it under a `/indexer` path prefix on the shared per-env
+ * hostname and strips the prefix before forwarding, so the app still sees bare
+ * spec paths (nexus monorepo,
+ * `indexer/helmchart/values/apps-prod-testnet.yaml`:
+ * `hostnames: [api.testnet.nexus.xyz]`, `pathPrefix: "/indexer"`). Measured
+ * 2026-09-09:
+ *
+ * ```text
+ * https://api.testnet.nexus.xyz/indexer/markets/summary         200 JSON
+ * https://api.testnet.nexus.xyz/indexer/api/v1/markets/summary  200 JSON
+ * https://api.testnet.nexus.xyz/markets/summary                 404
+ * https://api.testnet.nexus.xyz/api/v1/markets/summary          404
+ * wss://api.testnet.nexus.xyz/indexer/{stream,ws}               upgrade handled
+ * wss://api.testnet.nexus.xyz/{stream,ws}                       404
+ * ```
+ *
+ * Both surfaces answer under that one prefix, exactly as they did under the
+ * gateway prefix, so **nothing about path composition or signing changes**: the
+ * HMAC still covers the logical path (`/api/v1/orders`) and still excludes
+ * whatever prefix the base carries. See {@link API_BASE_PATH}.
+ *
+ * Mainnet's entry is deliberately untouched by that swap. Testnet turning out
+ * to be `/indexer`-prefixed means host-root is no longer the obvious correction
+ * for its stale `/v1`-in-base note either, and there is no host to measure
+ * against — `api.nexus.xyz` has no DNS record at all (NODATA, 2026-09-09). It
+ * waits for ENG-8155's mainnet half rather than being improved on a guess.
  */
 export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
   {
@@ -458,8 +491,10 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       label: "Testnet",
       funds: "play",
       faucet: true,
-      baseUrl: "https://exchange.nexus.xyz/api/exchange",
-      wsUrl: "wss://exchange.nexus.xyz",
+      baseUrl: "https://api.testnet.nexus.xyz/indexer",
+      // Scheme-swapped `baseUrl`, route prefix and all: the stream is mounted
+      // under the same `/indexer` prefix as REST, and the bare origin 404s.
+      wsUrl: "wss://api.testnet.nexus.xyz/indexer",
       signingDomain: SIGNING_DOMAIN,
     }) as NetworkConfig,
     [Network.Mainnet]: Object.freeze({
@@ -1195,9 +1230,9 @@ function assertAbsoluteHttpUrl(baseUrl: string): void {
  * was this SDK's own default before 0.3 and is still pasted from older docs and
  * from `Network.Testnet`'s previous value. Both siblings agree with the layout
  * enforced here: the Python SDK's `base_url` and the Rust SDK's
- * `Network::Testnet.base_url()` are both the bare gateway base
- * (`https://exchange.nexus.xyz/api/exchange`), with `/api/v1` supplied by the
- * route. See the README's "What `baseUrl` is" for the correspondence.
+ * `Network::Testnet.base_url()` carry the deployment base and nothing more,
+ * with `/api/v1` supplied by the route. See the README's "What `baseUrl` is"
+ * for the correspondence.
  */
 function assertNotVersionedBase(parsed: URL): void {
   const path = parsed.pathname.replace(/\/+$/, "");
@@ -1209,8 +1244,8 @@ function assertNotVersionedBase(parsed: URL): void {
       `"${API_BASE_PATH}${API_BASE_PATH}/…" while signing "${API_BASE_PATH}/…". ` +
       `Pass the deployment base without it, e.g. ` +
       `${JSON.stringify(`${parsed.origin}${path.slice(0, -API_BASE_PATH.length)}`)}. ` +
-      `(On the public deployment that is ` +
-      `"https://exchange.nexus.xyz/api/exchange" — the same value the Python ` +
+      `(On testnet that is ` +
+      `"https://api.testnet.nexus.xyz/indexer" — the same value the Python ` +
       `and Rust SDKs use.)`,
   );
 }
@@ -1410,10 +1445,10 @@ interface RequestOptions {
    * ## Why one base covers them, and when it would stop
    *
    * This is a deliberate simplification over the Python SDK, which carries a
-   * *second* base for exactly these routes (`base_url` for the gateway,
-   * `direct_base_url` for the host root). One field is enough here because on
-   * the public deployment both surfaces are co-mounted under the gateway —
-   * measured, with negative controls, so a permissive catch-all is ruled out:
+   * *second* base for exactly these routes (`base_url` and `direct_base_url`).
+   * One field is enough here because on the hosted deployment both surfaces are
+   * co-mounted under the same route prefix — measured, with negative controls,
+   * so a permissive catch-all is ruled out. On the retired gateway:
    *
    * ```text
    * POST /api/exchange/ws/token         401  (exists, wants credentials)
@@ -1422,12 +1457,21 @@ interface RequestOptions {
    * POST /ws/token          (host root) 301  -> marketing site
    * ```
    *
+   * and the durable host has the same shape (measured 2026-09-09, ENG-8867):
+   *
+   * ```text
+   * GET /indexer/markets/summary          200
+   * GET /indexer/api/v1/markets/summary   200
+   * GET /markets/summary     (host root)  404
+   * GET /api/v1/markets/summary   (root)  404
+   * ```
+   *
    * Two caveats, because this is an assumption about a deployment rather than a
    * property of the protocol:
    *
-   * 1. It is measured on `exchange.nexus.xyz` only. Python's split can express
-   *    a deployment where these routes are *not* co-mounted; this SDK cannot.
-   *    Simpler, not strictly more general.
+   * 1. It is measured on the hosted testnet deployment only. Python's split can
+   *    express a deployment where these routes are *not* co-mounted; this SDK
+   *    cannot. Simpler, not strictly more general.
    * 2. There is no escape hatch today — the Rust SDK's `with_direct_base_url`
    *    exists for that case. If a deployment ever separates the two surfaces,
    *    {@link CustomNetworkOptions} needs a matching field; it is not that
@@ -1511,14 +1555,14 @@ function assertHeaderValue(name: string, value: string): void {
 }
 
 /**
- * The path portion of a base URL (e.g. `"/api/exchange"` for
- * `https://exchange.nexus.xyz/api/exchange`), or `""` when it has none.
+ * The path portion of a base URL (e.g. `"/indexer"` for
+ * `https://api.testnet.nexus.xyz/indexer`), or `""` when it has none.
  *
- * Used only to recover the origin for {@link Client.wsUrl}, which is an origin
- * with no path. It is deliberately *not* part of the signed path: the gateway
- * strips its own prefix before the indexer verifies, so signing this would
- * cover bytes the server never sees. Derived by byte-exact string slicing —
- * never re-encoding.
+ * Used only to recover the origin a `baseUrl` override derives its
+ * {@link Client.wsUrl} from. It is deliberately *not* part of the signed path:
+ * the deployment strips its own prefix before the indexer verifies, so signing
+ * this would cover bytes the server never sees. Derived by byte-exact string
+ * slicing — never re-encoding.
  */
 function basePathOf(baseUrl: string): string {
   try {
@@ -1669,14 +1713,23 @@ export class Client {
   readonly #network: NetworkSelector;
   readonly #networkConfig: NetworkConfig;
   readonly #baseUrl: string;
-  // Only for deriving `wsUrl`; request URLs are built from `#baseUrl` alone.
+  // Only for deriving `wsUrl` on a target that declares none; request URLs are
+  // built from `#baseUrl` alone.
   readonly #origin: string;
-  // The WS base a custom descriptor resolved to — declared by the caller, or
-  // derived from its REST base with the route prefix kept (ENG-14963) — or null
-  // to derive one from #origin. Never read from the NETWORKS map: for a named
-  // network the derivation is the invariant (the stream stays on the REST
-  // origin, so a ws token cannot be minted on one host and spent on another)
-  // and a test pins the map's declared values against it.
+  // The resolved target's declared WS base, or null to derive one from #origin.
+  //
+  // A named network's map entry counts (ENG-8867): the durable deployment mounts
+  // its stream under a route prefix (`…/indexer`) that the origin alone drops,
+  // so deriving would silently 404. The safety property that mattered — a ws
+  // token cannot be minted on one host and spent on another — is preserved by
+  // the map being ours and by a test pinning every entry against its REST base.
+  //
+  // A customNetwork descriptor also counts, and since ENG-14963 its derived
+  // value KEEPS the route prefix rather than collapsing to the origin, so a
+  // prefixed custom deployment is reachable the same way a named one is.
+  //
+  // A bare `baseUrl` override still resolves to an undeclared target whose
+  // wsUrl is null, so an override keeps deriving from the host it was given.
   readonly #declaredWsUrl: string | null;
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
@@ -1728,8 +1781,7 @@ export class Client {
     }
     this.#network = options.baseUrl === undefined ? selector : config;
     this.#networkConfig = config;
-    this.#declaredWsUrl =
-      typeof this.#network === "string" ? null : config.wsUrl;
+    this.#declaredWsUrl = config.wsUrl;
     this.#baseUrl = config.baseUrl;
     // The origin (scheme + host [+ port]) is the base URL with its path sliced
     // off — byte-exact, same as `basePathOf`. Used *only* to derive `wsUrl`,
@@ -1960,19 +2012,27 @@ export class Client {
    * });
    * ```
    *
-   * A {@link customNetwork} descriptor carries its own value and it is
-   * returned as-is: the caller's `wsUrl` when they declared one — their
-   * statement that a token minted on the REST origin is spendable there — and
-   * otherwise the REST base scheme-swapped with its **route prefix kept**, so
-   * a prefixed deployment's stream is reachable (ENG-14963).
+   * For a named network this is the map's declared {@link NetworkConfig.wsUrl}
+   * — the REST base with the scheme swapped, **route prefix included**
+   * (`wss://api.testnet.nexus.xyz/indexer`), because the stream is mounted
+   * under the same prefix as REST and the bare origin 404s (ENG-8867). A unit
+   * test pins every entry against its REST base, so the stream cannot drift
+   * onto a different host than the token was minted on.
    *
-   * Otherwise it is derived from the same origin the REST calls use, so it
-   * follows a `baseUrl` override and cannot leave the stream on a different
-   * host than the token was minted on. Throws only if the base URL has no
-   * `http(s)` origin to convert, which `fetch` would reject anyway. Note that
-   * this derivation still drops a route prefix — the deprecated `baseUrl`
-   * shortcut declares nothing about its target, and {@link customNetwork} is
-   * the supported way to name a prefixed deployment.
+   * A {@link customNetwork} descriptor carries its own value and it is returned
+   * as-is: the caller's `wsUrl` when they declared one — their statement that a
+   * token minted on the REST origin is spendable there — and otherwise the REST
+   * base scheme-swapped with its **route prefix kept**, so a prefixed custom
+   * deployment's stream is reachable (ENG-14963).
+   *
+   * For a bare `baseUrl` override — an undeclared target, which declares no
+   * `wsUrl` — it is derived from that base's origin, so it follows the
+   * override and cannot leave the stream on a different host than the token was
+   * minted on. Note that this derivation still drops a route prefix: the
+   * deprecated `baseUrl` shortcut declares nothing about its target, and
+   * {@link customNetwork} is the supported way to name a prefixed deployment.
+   * Throws only if the base URL has no `http(s)` origin to convert, which
+   * `fetch` would reject anyway.
    */
   get wsUrl(): string {
     if (this.#declaredWsUrl !== null) return this.#declaredWsUrl;

@@ -1,10 +1,15 @@
-# Default reviewers. Any member of @nexus-xyz/eng can review and unblock — no
-# single-person bottleneck. @Luc-Campos (SDK lead) and @collinjackson are listed
-# explicitly so both are auto-requested on every PR.
+# Default reviewers: the @nexus-xyz/eng team. Any member can review and unblock --
+# no single-person bottleneck.
+#
+# Deliberately a team rather than named individuals: membership changes in org
+# settings, so joiners and leavers need no PR here. This file previously named a
+# since-departed SDK lead (ENG-14958). GitHub silently omits a non-member from a
+# review request, so such a line looks like coverage while providing none -- it
+# never fails, it just quietly means nothing.
 #
 # ts was the last nexus-exchange-* repo with a single owner. That was not a
-# decision — `8d32938` added @collinjackson directly to main with no PR, #33
+# decision -- `8d32938` added @collinjackson directly to main with no PR, #33
 # reverted it as an unreviewed push, and the deliberate version #33 promised was
 # never opened (ENG-10544).
 # Docs: https://docs.github.com/articles/about-code-owners
-* @nexus-xyz/eng @Luc-Campos @collinjackson
+* @nexus-xyz/eng

@@ -43,9 +43,13 @@ function mockFetch(
 // ── Network axis (ENG-6453) ──────────────────────────────────────────────────
 
 test("live network base URLs are deployment bases, without API_BASE_PATH", () => {
+  // Testnet is on its durable host (ENG-8867). The value carries the `/indexer`
+  // route prefix the service is mounted under, not the bare host:
+  // `api.testnet.nexus.xyz/markets/summary` 404s where
+  // `api.testnet.nexus.xyz/indexer/markets/summary` answers 200.
   assert.equal(
     baseUrlForNetwork(Network.Testnet),
-    "https://exchange.nexus.xyz/api/exchange",
+    "https://api.testnet.nexus.xyz/indexer",
   );
   assert.equal(baseUrlForNetwork(Network.Local), "http://localhost:9090");
 });
@@ -67,25 +71,34 @@ test("no live network base URL carries API_BASE_PATH", () => {
 });
 
 // A wsUrl pointing at a different host than baseUrl would mint a token on one
-// origin and spend it on another. Client.wsUrl derives from the REST origin, so
-// this pins the declared map values against that derivation.
-test("each network's declared wsUrl matches its base URL's origin", () => {
+// origin and spend it on another, so every entry must stay on its REST host.
+// It must also stay under the REST base's *route prefix*: the durable testnet
+// deployment mounts both surfaces under `/indexer`, and the bare origin 404s on
+// `/stream` and `/ws` (measured, ENG-8867) — which is why the map is the scheme
+// swap of the REST base rather than its origin. Client.wsUrl returns the map
+// value for a named network, so this pins the two together.
+test("each network's declared wsUrl is its REST base, scheme-swapped", () => {
   for (const [network, config] of Object.entries(NETWORKS)) {
     if (config.baseUrl === null) {
       assert.equal(config.wsUrl, null, `${network} must not declare a wsUrl`);
       continue;
     }
-    const restOrigin = new URL(config.baseUrl).origin;
-    const derived = new Client({
+    const rest = new URL(config.baseUrl);
+    const dialled = new Client({
       network: network as Network,
       fetchImpl: async () => new Response("{}"),
     }).wsUrl;
     assert.equal(
+      dialled,
       config.wsUrl,
-      derived,
-      `${network}: declared wsUrl ${config.wsUrl} disagrees with ${derived} (REST origin ${restOrigin})`,
+      `${network}: Client.wsUrl ${dialled} disagrees with the map's ${config.wsUrl}`,
     );
-    assert.equal(new URL(derived).host, new URL(restOrigin).host);
+    assert.equal(
+      config.wsUrl,
+      config.baseUrl.replace(/^http/, "ws").replace(/\/+$/, ""),
+      `${network}: declared wsUrl ${config.wsUrl} is not ${config.baseUrl} scheme-swapped`,
+    );
+    assert.equal(new URL(dialled).host, rest.host);
   }
 });
 
@@ -94,7 +107,7 @@ test("the default network is testnet play funds, never mainnet", () => {
   assert.equal(client.network, Network.Testnet);
   assert.equal(client.isRealFunds, false);
   assert.equal(client.networkConfig.funds, "play");
-  assert.equal(client.baseUrl, "https://exchange.nexus.xyz/api/exchange");
+  assert.equal(client.baseUrl, "https://api.testnet.nexus.xyz/indexer");
 });
 
 // Mainnet is real funds with no resolvable host and a different path
@@ -174,7 +187,7 @@ test("the NETWORKS map and its entries are frozen", () => {
   }, TypeError);
   assert.equal(
     baseUrlForNetwork(Network.Testnet),
-    "https://exchange.nexus.xyz/api/exchange",
+    "https://api.testnet.nexus.xyz/indexer",
   );
 });
 

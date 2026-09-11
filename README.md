@@ -96,10 +96,10 @@ The string is signed with the hex-decoded API secret and sent as three headers:
 query is the empty string; an empty body still contributes `sha256hex("")`.
 `<path>` is the **logical** request path the indexer verifies, including the
 `/api/v1` prefix (e.g. `/api/v1/orders`) but **excluding whatever path the base
-URL carries**. The gateway strips its own `/api/exchange` prefix before the
-indexer verifies, so a request sent to `…/api/exchange/api/v1/orders` is verified
-as `/api/v1/orders`. Signing the wire pathname instead would cover bytes the
-server never sees — see [What `baseUrl` is](#what-baseurl-is).
+URL carries**. The testnet deployment strips its own `/indexer` route prefix
+before the indexer verifies, so a request sent to `…/indexer/api/v1/orders` is
+verified as `/api/v1/orders`. Signing the wire pathname instead would cover
+bytes the server never sees — see [What `baseUrl` is](#what-baseurl-is).
 
 ```ts
 import { Client, Network } from "@nexus-xyz/exchange-ts";
@@ -237,11 +237,17 @@ The public axis is **testnet** (play funds) vs **mainnet** (real funds).
 carried in the _host_, not the path, and each one is its own origin terminating
 its own TLS and WebSocket upgrades.
 
-| Network                     | Funds    | Faucet | REST base                                 | WebSocket base             |
-| --------------------------- | -------- | ------ | ----------------------------------------- | -------------------------- |
-| `Network.Testnet` (default) | play     | yes    | `https://exchange.nexus.xyz/api/exchange` | `wss://exchange.nexus.xyz` |
-| `Network.Mainnet`           | **real** | no     | _not live yet — see below_                | —                          |
-| `Network.Local`             | play     | yes    | `http://localhost:9090`                   | `ws://localhost:9090`      |
+| Network                     | Funds    | Faucet | REST base                               | WebSocket base                        |
+| --------------------------- | -------- | ------ | --------------------------------------- | ------------------------------------- |
+| `Network.Testnet` (default) | play     | yes    | `https://api.testnet.nexus.xyz/indexer` | `wss://api.testnet.nexus.xyz/indexer` |
+| `Network.Mainnet`           | **real** | no     | _not live yet — see below_              | —                                     |
+| `Network.Local`             | play     | yes    | `http://localhost:9090`                 | `ws://localhost:9090`                 |
+
+> [!NOTE]
+> Note the `/indexer` in testnet's bases. It is a **route prefix the deployment
+> mounts the service under**, not part of the API contract — the bare host
+> answers `404` on every path, REST and WebSocket alike. Copy the base whole
+> rather than trimming it to the hostname.
 
 `networkConfig(network)` returns the bundled config (label, funds, faucet, base
 URLs, signing domain); `NETWORKS` is the whole frozen map. Anywhere a `Network`
@@ -256,8 +262,8 @@ client.label; // "Testnet"
 client.funds; // "play" — gate money-moving actions on this, not on the name
 client.isRealFunds; // false — true for "real" *and* "unknown" (it fails closed)
 client.hasFaucet; // true
-client.baseUrl; // "https://exchange.nexus.xyz/api/exchange"
-client.wsUrl; // "wss://exchange.nexus.xyz" — hand to createWsClient({ url })
+client.baseUrl; // "https://api.testnet.nexus.xyz/indexer"
+client.wsUrl; // "wss://api.testnet.nexus.xyz/indexer" — hand to createWsClient({ url })
 ```
 
 `funds` is a **tri-state** — `"play" | "real" | "unknown"` — because a boolean
@@ -380,14 +386,14 @@ supply the URL and own the layout.
 > rules flag it; nothing warns at runtime.
 
 `baseUrl` names a **deployment**, not a surface: scheme, host, and whatever
-prefix that deployment mounts the API under. On the public host that is
-`https://exchange.nexus.xyz/api/exchange`; on a direct-service host it is a bare
+prefix that deployment mounts the API under. On testnet that is
+`https://api.testnet.nexus.xyz/indexer`; on a locally run indexer it is a bare
 origin. The version prefix is **not** part of it — the client appends
 `/api/v1` to every route, so a base carrying it is refused at construction
 rather than sending `/api/v1/api/v1/orders`:
 
 ```ts
-new Client({ baseUrl: "https://your-host/api/exchange" });
+new Client({ baseUrl: "https://your-host/indexer" });
 ```
 
 Every route hangs off this base, including the ones (`/auth/login`, `/keys`,
@@ -395,20 +401,23 @@ Every route hangs off this base, including the ones (`/auth/login`, `/keys`,
 the version prefix but stay under the base. `client.wsUrl` is derived from the
 base's **origin**, so the stream can never end up on a different host than the
 REST calls — note that this drops a route prefix, so a prefixed deployment
-wants `customNetwork({ baseUrl })` (above) rather than this shortcut.
+wants `customNetwork({ baseUrl })` (above) rather than this shortcut. (A named
+network is the other case: there `client.wsUrl` is the map's declared value with
+the prefix kept — see the network table.)
 
 The Python SDK carries a _second_ base for those v1-less routes
-(`direct_base_url`, at the host root). One field is enough here because on the
-public deployment both surfaces are co-mounted under the gateway —
-`POST /api/exchange/ws/token` answers `401` while host-root `POST /ws/token`
-`301`s to the marketing site. That is an assumption about this deployment
-rather than a property of the protocol: if one ever serves those routes beside
-the gateway instead of under it, this SDK would need the second field too.
+(`direct_base_url`). One field is enough here because on the hosted deployment
+both surfaces are co-mounted under the same route prefix —
+`…/indexer/api/v1/markets/summary` and `…/indexer/markets/summary` both answer
+`200` while the host root `404`s on either. That is an assumption about this
+deployment rather than a property of the protocol: if one ever serves those
+routes beside the prefixed surface instead of under it, this SDK would need the
+second field too.
 
 The signed path is composed independently: it is the logical path
 (`/api/v1/orders`, or `/ws/token`), never the base's own prefix. That
-separation is what lets one base serve a gateway deployment correctly — the
-gateway strips `/api/exchange` before the indexer verifies, so folding it into
+separation is what lets one base serve a prefixed deployment correctly — the
+deployment strips `/indexer` before the indexer verifies, so folding it into
 the signature would break every authenticated call.
 
 `baseUrl` is **sugar for `customNetwork()` with nothing declared**, so there is
@@ -419,7 +428,7 @@ domain, and it **replaces** `network` rather than modifying it:
 ```ts
 const client = new Client({
   network: Network.Testnet,
-  baseUrl: "https://your-host/api/exchange",
+  baseUrl: "https://your-host/indexer",
 });
 
 client.funds; // "unknown" — not testnet's "play"
@@ -435,11 +444,17 @@ to get those guardrails back honestly.
 Porting a base URL between the Nexus SDKs is now direct, because they agree on
 what the field means — the prefix is appended by the SDK in every one of them:
 
-| SDK    | Field                         | Value for testnet                         |
-| ------ | ----------------------------- | ----------------------------------------- |
-| **ts** | `baseUrl`                     | `https://exchange.nexus.xyz/api/exchange` |
-| py     | `base_url`                    | `https://exchange.nexus.xyz/api/exchange` |
-| rs     | `Network::Testnet.base_url()` | `https://exchange.nexus.xyz/api/exchange` |
+| SDK    | Field                         | Value for testnet                       |
+| ------ | ----------------------------- | --------------------------------------- |
+| **ts** | `baseUrl`                     | `https://api.testnet.nexus.xyz/indexer` |
+| py     | `base_url`                    | `https://api.testnet.nexus.xyz/indexer` |
+| rs     | `Network::Testnet.base_url()` | `https://api.testnet.nexus.xyz/indexer` |
+
+All three move off the retired `exchange.nexus.xyz/api/exchange` gateway under
+ENG-8865, because it proxies to a decommissioned indexer and returns `500` on
+every route (ENG-14039). `ts` and `py` ship the value above; `rs` lands it
+under ENG-8870. Check a given SDK's release notes before assuming a pinned
+older version already has it.
 
 This is a **breaking change from 0.2.x**, where `baseUrl` carried `/api/v1` and
 was expected to sit at the host root. That layout could not reach the public
@@ -673,8 +688,9 @@ socket, tracks per-channel sequence numbers, and reconnects with replay-from-
 ```ts
 import { createWsClient } from "@nexus-xyz/exchange-ts";
 
-// Public market data — no auth.
-const client = createWsClient({ url: "wss://stream.exchange.nexus.xyz" });
+// Public market data — no auth. `url` is a base; `path` (default `/ws`) is
+// appended, so pass the deployment base whole — `client.wsUrl` gives you it.
+const client = createWsClient({ url: "wss://api.testnet.nexus.xyz/indexer" });
 const book = client.subscribe("book", { market: "BTC-PERP" });
 
 for await (const evt of book.events) {
@@ -703,7 +719,7 @@ reserved.
 
 ```ts
 const client = createWsClient({
-  url: "wss://stream.exchange.nexus.xyz",
+  url: "wss://api.testnet.nexus.xyz/indexer",
   tokenProvider: async () => myMintWsToken(), // your auth, e.g. an agent-signed mint
 });
 const orders = client.subscribe("orders");
