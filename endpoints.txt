@@ -28,8 +28,9 @@
 # Dual-stack routing (ENG-4947 / gateway elimination ENG-4740): the path here is
 # the LOGICAL path — the one the SDK signs, which is the wire path minus whatever
 # prefix the deployment base carries (ENG-8463 split the two: the testnet base is
-# `https://exchange.nexus.xyz/api/exchange`, and the gateway strips that before
-# verifying the HMAC). A method that does not pass `root: true` composes
+# `https://api.testnet.nexus.xyz/indexer` since ENG-8867, and the deployment
+# strips that prefix before the HMAC is verified). A method that does not pass
+# `root: true` composes
 # `API_BASE_PATH` + its path and is listed with the `/api/v1` prefix; a method
 # that does passes it bare and is listed bare. Which of the two a route uses is
 # not a style choice — it is whichever spelling the spec declares, since a line
