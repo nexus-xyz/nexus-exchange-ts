@@ -247,7 +247,7 @@ its own TLS and WebSocket upgrades.
 > Note the `/indexer` in testnet's bases. It is a **route prefix the deployment
 > mounts the service under**, not part of the API contract. Copy the base whole
 > rather than trimming it to the hostname — and note that trimming it does
-> *not* fail cleanly. The host serves `/api/v1/*` unprefixed as well, so a
+> _not_ fail cleanly. The host serves `/api/v1/*` unprefixed as well, so a
 > trimmed
 > base keeps quoting markets and placing orders while `/auth/login`, `/keys`,
 > `/agents/*`, `/ws/token` and `/ws` all `404`. The signature covers the logical
