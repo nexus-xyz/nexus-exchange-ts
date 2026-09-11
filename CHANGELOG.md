@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.4.0...v0.4.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **client:** point testnet at its durable host, api.testnet.nexus.xyz/indexer (ENG-8867) ([#78](https://github.com/nexus-xyz/nexus-exchange-ts/issues/78)) ([13bbfb3](https://github.com/nexus-xyz/nexus-exchange-ts/commit/13bbfb3f77f0c0ed0bc9f84fff8743554c0f3f0e))
+
 ## [0.4.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.3.0...v0.4.0) (2026-08-28)
 
 
