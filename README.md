@@ -245,9 +245,14 @@ its own TLS and WebSocket upgrades.
 
 > [!NOTE]
 > Note the `/indexer` in testnet's bases. It is a **route prefix the deployment
-> mounts the service under**, not part of the API contract — the bare host
-> answers `404` on every path, REST and WebSocket alike. Copy the base whole
-> rather than trimming it to the hostname.
+> mounts the service under**, not part of the API contract. Copy the base whole
+> rather than trimming it to the hostname — and note that trimming it does
+> *not* fail cleanly. The host serves `/api/v1/*` unprefixed as well, so a
+> trimmed
+> base keeps quoting markets and placing orders while `/auth/login`, `/keys`,
+> `/agents/*`, `/ws/token` and `/ws` all `404`. The signature covers the logical
+> path, not the base, so it verifies either way and nothing surfaces the mistake
+> at the auth layer.
 
 `networkConfig(network)` returns the bundled config (label, funds, faucet, base
 URLs, signing domain); `NETWORKS` is the whole frozen map. Anywhere a `Network`
@@ -384,10 +389,12 @@ The Python SDK carries a _second_ base for those v1-less routes
 (`direct_base_url`). One field is enough here because on the hosted deployment
 both surfaces are co-mounted under the same route prefix —
 `…/indexer/api/v1/markets/summary` and `…/indexer/markets/summary` both answer
-`200` while the host root `404`s on either. That is an assumption about this
-deployment rather than a property of the protocol: if one ever serves those
-routes beside the prefixed surface instead of under it, this SDK would need the
-second field too.
+`200`. That is an assumption about this deployment rather than a property of the
+protocol: if one ever serves those routes beside the prefixed surface instead of
+under it, this SDK would need the second field too. The host root is already
+_half_ of that case — it answers `200` for `/api/v1/*` and `404` for the
+v1-less routes — which is why the base has to be copied whole rather than
+trimmed.
 
 The signed path is composed independently: it is the logical path
 (`/api/v1/orders`, or `/ws/token`), never the base's own prefix. That
