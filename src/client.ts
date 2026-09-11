@@ -378,24 +378,25 @@ export interface NetworkConfig {
    */
   readonly baseUrl: string | null;
   /**
-   * WebSocket base, or `null` when there is none to declare. Append `/ws` for
-   * authenticated streams and `/stream` for market data; {@link Client.wsUrl}
-   * resolves this for you.
+   * WebSocket base — origin, plus the deployment's route prefix if it mounts
+   * the stream under one — or `null` when there is none to declare. The SDK
+   * appends `/ws` for authenticated streams and `/stream` for market data;
+   * {@link Client.wsUrl} resolves this for you.
    *
-   * On a built-in {@link NETWORKS} entry this is the REST base with the scheme
-   * swapped, **route prefix included** — `wss://api.testnet.nexus.xyz/indexer`,
-   * not the bare origin. The stream is mounted under the same prefix as the
-   * REST surface, so dropping it 404s exactly as it does on the REST side
-   * (measured; a unit test pins every entry against its REST base).
+   * A prefix is allowed here, and required by any deployment that mounts its
+   * surface under one: `wss://api.testnet.nexus.xyz/indexer`, whose bare origin
+   * `404`s on both stream paths (ENG-8867, measured). On a built-in
+   * {@link NETWORKS} entry this is the REST base with the scheme swapped,
+   * **route prefix included**, and a unit test pins every entry against its
+   * REST base. What stays refused is a base that already ends in the segment
+   * the SDK appends (`/ws`, `/stream`) or in {@link API_BASE_PATH} — see
+   * {@link CustomNetworkOptions.wsUrl}.
    *
-   * `null` on a custom descriptor means **derive it from the REST origin**,
-   * which is what {@link Client.wsUrl} has always done — so the stream cannot
-   * end up on a different host than the one the token was minted on. Declare it
-   * only for a deployment that genuinely serves its stream elsewhere;
-   * {@link customNetwork} still requires an origin with no path there, so a
-   * custom deployment that mounts its stream under a route prefix cannot yet
-   * spell that. Out of scope for ENG-8867 — the built-in map is the only
-   * prefixed target today.
+   * A descriptor from {@link customNetwork} always carries one: when the caller
+   * declares none it is derived from `baseUrl`, scheme swapped and **route
+   * prefix kept** (ENG-14963), so the stream stays on the host and prefix the
+   * ws token was minted on. Declare it only for a deployment that genuinely
+   * serves its stream elsewhere.
    */
   readonly wsUrl: string | null;
   /**
@@ -696,15 +697,31 @@ export interface CustomNetworkOptions {
    */
   faucet?: boolean;
   /**
-   * WebSocket base, origin only (`wss://stream.example.com`). Omit it and
-   * {@link Client.wsUrl} derives one from {@link baseUrl}'s origin, which keeps
-   * the stream on the host the ws token was minted on — declare it only for a
-   * deployment that really serves its stream from another origin.
+   * WebSocket base — an origin (`wss://stream.example.com`), optionally with
+   * the route prefix the deployment mounts its stream under
+   * (`wss://api.testnet.nexus.xyz/indexer`). Omit it and it is derived from
+   * {@link baseUrl}: scheme swapped, host and route prefix kept, which keeps
+   * the stream on the host *and* prefix the ws token was minted on. Declare it
+   * only for a deployment that really serves its stream somewhere else.
    *
-   * Validated as an absolute `ws(s)` URL with no path, userinfo, query or
-   * fragment (the SDK appends `/ws` or `/stream` itself). A `ws://` stream
-   * alongside an `https://` REST base is refused: that is a TLS downgrade for
-   * the socket the ws token is spent on.
+   * Validated as an absolute `ws(s)` URL with no userinfo, query or fragment.
+   * Two path shapes are refused, and both are the same mistake as a base that
+   * carries what the route supplies:
+   *
+   * - **ending in the segment this SDK appends** — `/ws` for authenticated
+   *   streams, `/stream` for market data — which would dial `…/ws/ws`. This is
+   *   the original reason a path was refused here at all (ENG-9825); the
+   *   rejection is kept, narrowed from "any path" to "the appended segment",
+   *   because a deployment prefix is not the doubling this was guarding
+   *   against (ENG-14963).
+   * - **ending in {@link API_BASE_PATH}** — the version prefix belongs to the
+   *   path, never to a base. Same rule `assertNotVersionedBase` applies to
+   *   `baseUrl`, and the `/v1`-in-base layout it exists to stop is the one
+   *   ENG-9134 rejected; relaxing the path check must not let it back in
+   *   through the WS door.
+   *
+   * A `ws://` stream alongside an `https://` REST base is refused: that is a
+   * TLS downgrade for the socket the ws token is spent on.
    */
   wsUrl?: string;
   /**
@@ -816,7 +833,16 @@ function buildDescriptor(
   const baseUrl = base.trimmed;
   const funds = normalizeFunds(fields.funds, where);
   const faucet = normalizeFaucet(fields.faucet, funds, where);
-  const wsUrl = normalizeCustomWsUrl(fields.wsUrl, base.url, where);
+  // Resolved here rather than left `null` for `Client.wsUrl` to derive from the
+  // bare origin: that derivation drops the base's route prefix, and a
+  // deployment that mounts its surface under one serves the streams under it
+  // too — so the origin alone `404`s (ENG-14963, measured on the durable
+  // testnet host). Deriving from the whole base keeps the socket on the host
+  // *and* prefix the ws token was minted on, which is the property the origin
+  // derivation was there for in the first place.
+  const wsUrl =
+    normalizeCustomWsUrl(fields.wsUrl, base.url, where) ??
+    wsBaseForRestBase(base.url);
   const chainId = normalizeSigningChainId(signingChainId, where);
   const config = Object.freeze({
     label,
@@ -1008,6 +1034,65 @@ function parseCustomUrl(
   return { url, trimmed };
 }
 
+/**
+ * The path segments this SDK appends to a WebSocket base itself — `/ws` for
+ * authenticated streams, `/stream` for market data. A base already ending in
+ * one of them would dial `…/ws/ws`, which is the doubling the `wsUrl` path
+ * check exists to prevent. Kept in sync with `createWsClient`'s default
+ * `path` and the market-data path the README hands it.
+ */
+const WS_APPENDED_PATHS = Object.freeze(["/ws", "/stream"] as const);
+
+/**
+ * Reject a WebSocket base whose path is one this SDK *supplies* rather than one
+ * the deployment *mounts under*.
+ *
+ * A route prefix (`/indexer`) is fine and is the whole point of ENG-14963: the
+ * durable testnet deployment serves both stream paths under it, and the bare
+ * origin `404`s. What is not fine is a base that already carries the segment
+ * appended to it — `/ws`, `/stream`, or {@link API_BASE_PATH} — because each of
+ * those silently builds a URL nobody asked for:
+ *
+ * ```text
+ * wss://host/indexer          + /stream -> wss://host/indexer/stream   ok
+ * wss://host/indexer/ws       + /ws     -> wss://host/indexer/ws/ws    doubled
+ * wss://host/indexer/api/v1   + /ws     -> wss://host/indexer/api/v1/ws
+ * ```
+ *
+ * The `/api/v1` arm is deliberate rather than incidental. `assertNotVersionedBase`
+ * refuses a versioned REST base for the same reason (the version prefix belongs
+ * to the path, and the `/v1`-in-base layout is the one ENG-9134 rejected), and
+ * relaxing the WS path check from "no path at all" to "no appended segment"
+ * must not open that door on the WS side.
+ */
+function assertWsBasePathIsPrefixOnly(
+  url: URL,
+  path: string,
+  where: string,
+): void {
+  for (const appended of WS_APPENDED_PATHS) {
+    if (!path.endsWith(appended)) continue;
+    throw new NexusExchangeError(
+      `${where} wsUrl must not end in ${JSON.stringify(appended)}, got ` +
+        `${JSON.stringify(path)}. This SDK appends "/ws" for authenticated ` +
+        `streams and "/stream" for market data itself, so that base would dial ` +
+        `${JSON.stringify(`${path}${appended}`)}. Give the deployment's WS ` +
+        `base — its origin, plus the route prefix it mounts the stream under ` +
+        `if it has one, e.g. ` +
+        `${JSON.stringify(`${url.protocol}//${url.host}${path.slice(0, -appended.length)}`)}.`,
+    );
+  }
+  if (path.endsWith(API_BASE_PATH)) {
+    throw new NexusExchangeError(
+      `${where} wsUrl must not include "${API_BASE_PATH}", got ` +
+        `${JSON.stringify(path)}. The version prefix belongs to the path, not ` +
+        `to a base — the same rule \`baseUrl\` is held to — and the streams ` +
+        `are not mounted under it. Give the deployment's WS base, e.g. ` +
+        `${JSON.stringify(`${url.protocol}//${url.host}${path.slice(0, -API_BASE_PATH.length)}`)}.`,
+    );
+  }
+}
+
 function normalizeCustomWsUrl(
   raw: unknown,
   base: URL,
@@ -1017,14 +1102,11 @@ function normalizeCustomWsUrl(
   // `null`, and re-validating one has to mean the same thing as building it.
   if (raw === undefined || raw === null) return null;
   const { url } = parseCustomUrl(where, "wsUrl", raw, ["ws:", "wss:"]);
-  if (url.pathname !== "" && url.pathname !== "/") {
-    throw new NexusExchangeError(
-      `${where} wsUrl must be an origin with no path, got ` +
-        `${JSON.stringify(url.pathname)}. This SDK appends "/ws" for ` +
-        `authenticated streams and "/stream" for market data itself, so a path ` +
-        `here would be doubled.`,
-    );
-  }
+  // Trailing slashes are already trimmed off the string by `parseCustomUrl`,
+  // but `URL` re-adds one for a bare origin, so normalize here too. `""` and
+  // `"/"` both mean "origin only".
+  const path = url.pathname.replace(/\/+$/, "");
+  assertWsBasePathIsPrefixOnly(url, path, where);
   // Both sides compared as *parsed* schemes, which `URL` lowercases. A raw-string
   // prefix test would read "HTTPS://…" as not-TLS and wave the downgrade
   // through — the base is kept byte-exact (see `basePathOf`), so its string form
@@ -1036,7 +1118,7 @@ function normalizeCustomWsUrl(
         `plaintext; use "wss://".`,
     );
   }
-  return `${url.protocol}//${url.host}`;
+  return `${url.protocol}//${url.host}${path}`;
 }
 
 function normalizeSigningChainId(
@@ -1178,6 +1260,34 @@ function assertNotVersionedBase(parsed: URL): void {
  * and spend it on another. A unit test pins this against every
  * {@link NETWORKS} entry's declared `wsUrl`, so a typo in the map is caught.
  */
+/**
+ * The WebSocket base for a parsed REST base URL: same host, `http`→`ws` /
+ * `https`→`wss`, **route prefix kept**.
+ *
+ * The prefix is the difference from {@link wsUrlForOrigin}, and it is the fix
+ * for ENG-14963. A deployment that mounts its REST surface under a route
+ * prefix mounts the streams under the same one — this SDK already relies on
+ * that co-mounting for the `/ws/token` and `/api/v1` split (see
+ * {@link RequestOptions.root}) — so scheme-swapping the origin alone produces a
+ * URL that `404`s:
+ *
+ * ```text
+ * wss://api.testnet.nexus.xyz/indexer/stream   101 Switching Protocols
+ * wss://api.testnet.nexus.xyz/indexer/ws       401 ws_token_missing
+ * wss://api.testnet.nexus.xyz/stream           404
+ * wss://api.testnet.nexus.xyz/ws               404
+ * ```
+ *
+ * Only reached for a {@link customNetwork} descriptor whose caller declared no
+ * `wsUrl`; the base has already been through {@link parseCustomUrl} and
+ * {@link assertNotVersionedBase}, so it has a real `http(s)` origin, no query
+ * or fragment, and no `/api/v1` tail.
+ */
+function wsBaseForRestBase(base: URL): string {
+  const scheme = base.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${base.host}${base.pathname.replace(/\/+$/, "")}`;
+}
+
 function wsUrlForOrigin(origin: string): string | null {
   try {
     const url = new URL(origin);
@@ -1607,11 +1717,17 @@ export class Client {
   // built from `#baseUrl` alone.
   readonly #origin: string;
   // The resolved target's declared WS base, or null to derive one from #origin.
+  //
   // A named network's map entry counts (ENG-8867): the durable deployment mounts
   // its stream under a route prefix (`…/indexer`) that the origin alone drops,
   // so deriving would silently 404. The safety property that mattered — a ws
   // token cannot be minted on one host and spent on another — is preserved by
   // the map being ours and by a test pinning every entry against its REST base.
+  //
+  // A customNetwork descriptor also counts, and since ENG-14963 its derived
+  // value KEEPS the route prefix rather than collapsing to the origin, so a
+  // prefixed custom deployment is reachable the same way a named one is.
+  //
   // A bare `baseUrl` override still resolves to an undeclared target whose
   // wsUrl is null, so an override keeps deriving from the host it was given.
   readonly #declaredWsUrl: string | null;
@@ -1899,19 +2015,24 @@ export class Client {
    * For a named network this is the map's declared {@link NetworkConfig.wsUrl}
    * — the REST base with the scheme swapped, **route prefix included**
    * (`wss://api.testnet.nexus.xyz/indexer`), because the stream is mounted
-   * under the same prefix as REST and the bare origin 404s. A unit test pins
-   * every entry against its REST base, so the stream cannot drift onto a
-   * different host than the token was minted on.
+   * under the same prefix as REST and the bare origin 404s (ENG-8867). A unit
+   * test pins every entry against its REST base, so the stream cannot drift
+   * onto a different host than the token was minted on.
    *
-   * For a `baseUrl` override — an undeclared target, which declares no `wsUrl`
-   * — it is derived from that base's origin, so it follows the override.
+   * A {@link customNetwork} descriptor carries its own value and it is returned
+   * as-is: the caller's `wsUrl` when they declared one — their statement that a
+   * token minted on the REST origin is spendable there — and otherwise the REST
+   * base scheme-swapped with its **route prefix kept**, so a prefixed custom
+   * deployment's stream is reachable (ENG-14963).
+   *
+   * For a bare `baseUrl` override — an undeclared target, which declares no
+   * `wsUrl` — it is derived from that base's origin, so it follows the
+   * override and cannot leave the stream on a different host than the token was
+   * minted on. Note that this derivation still drops a route prefix: the
+   * deprecated `baseUrl` shortcut declares nothing about its target, and
+   * {@link customNetwork} is the supported way to name a prefixed deployment.
    * Throws only if the base URL has no `http(s)` origin to convert, which
    * `fetch` would reject anyway.
-   *
-   * A custom descriptor that **declares** `wsUrl`, for a deployment that really
-   * serves its stream from another origin, is returned as declared: the
-   * caller's statement that a token minted on the REST origin is spendable
-   * there.
    */
   get wsUrl(): string {
     if (this.#declaredWsUrl !== null) return this.#declaredWsUrl;
