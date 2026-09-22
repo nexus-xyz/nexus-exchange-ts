@@ -266,6 +266,65 @@ export interface RegisterAgentOptions {
 }
 
 /**
+ * Parse a 32-byte hex secp256k1 private key (`0x`-prefix optional) and derive
+ * its Ethereum address. Shared by {@link EthSigner} and the agent-key request
+ * signer (agent.ts), so both keys are validated and addressed identically.
+ *
+ * Throws {@link MissingCredentialsError} if the key is not 32 bytes of valid
+ * hex or is not a valid secp256k1 scalar. The error never echoes the key.
+ *
+ * @internal Not re-exported from the package entry point.
+ */
+export function parsePrivateKey(privateKey: string): {
+  key: Uint8Array;
+  address: string;
+} {
+  let bytes: Uint8Array;
+  try {
+    bytes = hexToBytes(strip0x(privateKey));
+  } catch {
+    throw new MissingCredentialsError("private key must be hex");
+  }
+  if (bytes.length !== 32) {
+    throw new MissingCredentialsError("private key must be 32 bytes");
+  }
+  let pub: Uint8Array;
+  try {
+    // Uncompressed public key: 0x04 || X(32) || Y(32).
+    pub = secp256k1.getPublicKey(bytes, false);
+  } catch {
+    throw new MissingCredentialsError("invalid secp256k1 private key");
+  }
+  // Address = keccak256(pubkey[1..])[12..], lowercase 0x-prefixed hex.
+  const hash = keccak_256(pub.subarray(1));
+  return { key: bytes, address: `0x${bytesToHex(hash.subarray(12))}` };
+}
+
+/**
+ * Sign a 32-byte prehash, returning a `0x`-prefixed 65-byte `r||s||v`
+ * signature with `v ∈ {27, 28}` (Ethereum convention). Deterministic
+ * (RFC 6979) and low-S normalized (EIP-2), matching the reference SDKs.
+ *
+ * @internal Not re-exported from the package entry point.
+ */
+export function signPrehash(
+  digest: Uint8Array,
+  privateKey: Uint8Array,
+): string {
+  // `recovered` format returns 65 bytes as recid(1) || r(32) || s(32); the
+  // Ethereum wire order is r || s || v where v = 27 + recid.
+  const recovered = secp256k1.sign(digest, privateKey, {
+    prehash: false,
+    lowS: true,
+    format: "recovered",
+  });
+  const out = new Uint8Array(65);
+  out.set(recovered.subarray(1), 0);
+  out[64] = 27 + recovered[0];
+  return `0x${bytesToHex(out)}`;
+}
+
+/**
  * An EVM wallet key that authorizes the wallet-signed auth flows.
  *
  * Construct from a 32-byte hex private key with {@link EthSigner.fromHex}. The
@@ -299,26 +358,8 @@ export class EthSigner {
    * hex or is not a valid secp256k1 scalar.
    */
   static fromHex(privateKey: string): EthSigner {
-    let bytes: Uint8Array;
-    try {
-      bytes = hexToBytes(strip0x(privateKey));
-    } catch {
-      throw new MissingCredentialsError("private key must be hex");
-    }
-    if (bytes.length !== 32) {
-      throw new MissingCredentialsError("private key must be 32 bytes");
-    }
-    let pub: Uint8Array;
-    try {
-      // Uncompressed public key: 0x04 || X(32) || Y(32).
-      pub = secp256k1.getPublicKey(bytes, false);
-    } catch {
-      throw new MissingCredentialsError("invalid secp256k1 private key");
-    }
-    // Address = keccak256(pubkey[1..])[12..], lowercase 0x-prefixed hex.
-    const hash = keccak_256(pub.subarray(1));
-    const address = `0x${bytesToHex(hash.subarray(12))}`;
-    return new EthSigner(bytes, address);
+    const { key, address } = parsePrivateKey(privateKey);
+    return new EthSigner(key, address);
   }
 
   /** The wallet's Ethereum address, lowercase `0x`-prefixed hex. */
@@ -420,22 +461,8 @@ export class EthSigner {
     };
   }
 
-  /**
-   * Sign a 32-byte prehash, returning a `0x`-prefixed 65-byte `r||s||v`
-   * signature with `v ∈ {27, 28}` (Ethereum convention). Deterministic
-   * (RFC 6979) and low-S normalized (EIP-2), matching the reference SDKs.
-   */
+  /** Sign a 32-byte prehash; see {@link signPrehash}. */
   #signDigest(digest: Uint8Array): string {
-    // `recovered` format returns 65 bytes as recid(1) || r(32) || s(32); the
-    // Ethereum wire order is r || s || v where v = 27 + recid.
-    const recovered = secp256k1.sign(digest, this.#privateKey, {
-      prehash: false,
-      lowS: true,
-      format: "recovered",
-    });
-    const out = new Uint8Array(65);
-    out.set(recovered.subarray(1), 0);
-    out[64] = 27 + recovered[0];
-    return `0x${bytesToHex(out)}`;
+    return signPrehash(digest, this.#privateKey);
   }
 }
