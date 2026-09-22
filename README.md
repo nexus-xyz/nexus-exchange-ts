@@ -632,6 +632,46 @@ const agents = await client.listAgents();
 await client.revokeAgent(agent.address);
 ```
 
+#### Signing requests with an agent key
+
+Once registered, the agent signs requests itself with `AgentSigner` — the
+spec's `agentAuth` scheme, byte-for-byte identical to the Rust SDK and pinned
+against the spec's `x-nexus-test-vectors`. Pass it as `agentSigner` **instead
+of** `apiKey`/`apiSecret` (the two are mutually exclusive):
+
+```ts
+import { AgentSigner, Client, Network } from "@nexus-xyz/exchange-ts";
+
+const agent = AgentSigner.fromHex(process.env.AGENT_PRIVATE_KEY!);
+const trader = new Client({ network: Network.Testnet, agentSigner: agent });
+await trader.placeOrder({ ... });
+```
+
+Every signed request then carries four headers — `x-agent`, `x-timestamp`,
+`x-nonce`, `x-signature` — over a six-line canonical string whose field order
+differs from HMAC's (method first, timestamp after the body hash):
+
+```text
+<METHOD>\n<path>\n<query>\n<sha256hex(body)>\n<timestamp_ms>\n<nonce>
+```
+
+The digest is `keccak256` of that string with **no** EIP-191 prefix, and the
+signature is low-S `0x` + 65-byte `r||s||v` with `v ∈ {27, 28}`. `<path>` is the
+same logical path HMAC signs. The server allows ±30 s of clock skew; nonces are
+issued as `max(last + 1, timestamp_ms)` per signer and must strictly increase on
+writes (reads parse but do not enforce them). `agentCanonicalString` is exported
+for debugging, since every rejection is the same opaque `401`.
+
+- **Agent keys are trade-only and cannot withdraw.** Agent-signed withdrawals
+  are refused (`403 AGENT_CANNOT_WITHDRAW`), and `listAgents` / `revokeAgent`
+  need an HMAC client — an agent-signed client refuses them locally.
+- **Concurrent writes from one agent key can be refused as replays**
+  (ENG-17010). Nonces are issued in order but can _arrive_ out of order; if
+  the higher one lands first, the lower one gets a `401` indistinguishable from
+  a bad signature. The SDK does not queue per signer (yet), so keep one mutating
+  request in flight per agent key, or register one agent key per concurrent
+  writer. Likewise, don't share one agent key across processes.
+
 ### Bridge (deposits & withdrawal wallets)
 
 `getBridgeAssets`, `createBridgeDepositAddress`, `listBridgeDepositAddresses`,

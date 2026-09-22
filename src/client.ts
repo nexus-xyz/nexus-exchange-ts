@@ -25,6 +25,7 @@ import { signRequest } from "./sign.js";
 import { API_VERSION, SDK_VERSION } from "./version.js";
 import { Cursor, Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
+import type { AgentSigner } from "./agent.js";
 import type { EthSigner } from "./wallet.js";
 import type {
   AccountFees,
@@ -1378,6 +1379,23 @@ export interface ClientOptions {
   /** Hex-encoded API secret for signed requests (paired with `apiKey`). */
   apiSecret?: string;
   /**
+   * A registered agent key to sign authenticated requests with, instead of an
+   * HMAC API key: every signed request then carries `x-agent` / `x-timestamp` /
+   * `x-nonce` / `x-signature` (the spec's `agentAuth` scheme). See
+   * {@link AgentSigner}.
+   *
+   * Mutually exclusive with `apiKey` / `apiSecret` — a client has one request
+   * credential, as in the Rust SDK, so which one signed a request is never a
+   * guess. Agent keys are trade-only: they **cannot withdraw**, and the
+   * agent-management calls ({@link Client.listAgents},
+   * {@link Client.revokeAgent}) need an HMAC client, so they are refused
+   * locally here.
+   *
+   * Concurrent writes from one agent key can be refused as replays (ENG-17010);
+   * keep one mutating request in flight per agent key. See {@link AgentSigner}.
+   */
+  agentSigner?: AgentSigner;
+  /**
    * Session bearer token from {@link Client.signIn} (`POST /auth/login`), used
    * to authenticate the API-key management endpoints (`/keys`). Can be supplied
    * up front or set later with {@link Client.setSessionToken} after signing in.
@@ -1429,6 +1447,12 @@ interface RequestOptions {
    * exclusive with `signed`.
    */
   session?: boolean;
+  /**
+   * The operation accepts `hmacAuth` but not `agentAuth` (the server answers an
+   * agent-signed request with `403`). With an `agentSigner` configured the
+   * request is refused locally, before anything is signed or sent.
+   */
+  hmacOnly?: boolean;
   signal?: AbortSignal;
   /**
    * Target a route the pinned spec declares at the deployment root, with no
@@ -1733,6 +1757,7 @@ export class Client {
   readonly #declaredWsUrl: string | null;
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
+  readonly #agentSigner?: AgentSigner;
   // Mutable: {@link setSessionToken} / {@link signIn} update it after login.
   #sessionToken?: string;
   readonly #timeoutMs: number;
@@ -1792,8 +1817,21 @@ export class Client {
       basePath && this.#baseUrl.endsWith(basePath)
         ? this.#baseUrl.slice(0, this.#baseUrl.length - basePath.length)
         : this.#baseUrl;
+    if (
+      options.agentSigner !== undefined &&
+      (options.apiKey !== undefined || options.apiSecret !== undefined)
+    ) {
+      throw new NexusExchangeError(
+        "pass either `agentSigner` or `apiKey`/`apiSecret`, not both: a client " +
+          "signs with one request credential, and silently preferring one of " +
+          "them would leave which key authorized a trade to a rule nobody " +
+          "reads. Use two clients if you need both (e.g. an HMAC client for " +
+          "listAgents/revokeAgent).",
+      );
+    }
     this.#apiKey = options.apiKey;
     this.#apiSecret = options.apiSecret;
+    this.#agentSigner = options.agentSigner;
     this.#sessionToken = options.sessionToken;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
@@ -1876,9 +1914,12 @@ export class Client {
     );
   }
 
-  /** Whether this client was given both an API key and secret. */
+  /**
+   * Whether this client can sign requests: it was given both an API key and
+   * secret, or an {@link ClientOptions.agentSigner}.
+   */
   get hasCredentials(): boolean {
-    return Boolean(this.#apiKey && this.#apiSecret);
+    return Boolean((this.#apiKey && this.#apiSecret) || this.#agentSigner);
   }
 
   /**
@@ -3430,11 +3471,12 @@ export class Client {
   /**
    * `GET /agents` — list the non-expired agent keys registered to the
    * authenticated wallet. Requires HMAC API-key credentials (`apiKey` /
-   * `apiSecret`).
+   * `apiSecret`); an agent-signed client is refused locally.
    */
   listAgents(opts?: { signal?: AbortSignal }): Promise<AgentInfo[]> {
     return this.#request<AgentInfo[]>("GET", "/agents", {
       signed: true,
+      hmacOnly: true,
       root: true,
       signal: opts?.signal,
     });
@@ -3443,11 +3485,13 @@ export class Client {
   /**
    * `DELETE /agents/{address}` — revoke an agent key by address. After this
    * returns, in-flight requests signed by the agent are rejected. Requires HMAC
-   * API-key credentials (`apiKey` / `apiSecret`).
+   * API-key credentials (`apiKey` / `apiSecret`); an agent-signed client is
+   * refused locally.
    */
   revokeAgent(address: string, opts?: { signal?: AbortSignal }): Promise<void> {
     return this.#request<void>("DELETE", `/agents/${seg(address)}`, {
       signed: true,
+      hmacOnly: true,
       root: true,
       signal: opts?.signal,
     });
@@ -3515,6 +3559,7 @@ export class Client {
       body,
       signed = false,
       session = false,
+      hmacOnly = false,
       signal,
       root = false,
     } = options;
@@ -3552,10 +3597,30 @@ export class Client {
       }
       headers["authorization"] = `Bearer ${this.#sessionToken}`;
     }
-    if (signed) {
+    if (signed && this.#agentSigner) {
+      if (hmacOnly) {
+        throw new MissingCredentialsError(
+          `${method.toUpperCase()} ${logicalPath} does not accept agent-key ` +
+            `signatures (the server answers 403); use a client configured ` +
+            `with apiKey/apiSecret`,
+        );
+      }
+      // Same logical path and exact query/body bytes as the HMAC branch below.
+      // The nonce is issued here, per attempt, so a retry never reuses one.
+      Object.assign(
+        headers,
+        this.#agentSigner.authHeaders({
+          method,
+          path: logicalPath,
+          query,
+          body: bodyBytes,
+          timestampMs: this.#now(),
+        }),
+      );
+    } else if (signed) {
       if (!this.#apiKey || !this.#apiSecret) {
         throw new MissingCredentialsError(
-          "signed request requires apiKey and apiSecret",
+          "signed request requires apiKey and apiSecret, or an agentSigner",
         );
       }
       Object.assign(

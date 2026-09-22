@@ -80,6 +80,15 @@ export {
 
 export { signRequest, sha256Hex, bytesToHex, hexToBytes } from "./sign.js";
 
+// Agent-key request signer (the spec's `agentAuth` scheme): pass an
+// `AgentSigner` as `ClientOptions.agentSigner` in place of apiKey/apiSecret.
+export {
+  AgentSigner,
+  agentCanonicalString,
+  type AgentAuthHeaders,
+  type AgentRequestParts,
+} from "./agent.js";
+
 // Cursor / auto-paging helpers for list endpoints (mirrors the Rust SDK).
 export {
   Cursor,
