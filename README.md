@@ -240,14 +240,20 @@ The public axis is **testnet** (play funds) vs **mainnet** (real funds).
 carried in the _host_, not the path, and each one is its own origin terminating
 its own TLS and WebSocket upgrades.
 
-| Network                     | Funds    | Faucet | REST base                               | WebSocket base                        |
-| --------------------------- | -------- | ------ | --------------------------------------- | ------------------------------------- |
-| `Network.Testnet` (default) | play     | yes    | `https://api.testnet.nexus.xyz/indexer` | `wss://api.testnet.nexus.xyz/indexer` |
-| `Network.Mainnet`           | **real** | no     | _not live yet — see below_              | —                                     |
-| `Network.Local`             | play     | yes    | `http://localhost:9090`                 | `ws://localhost:9090`                 |
+| Network                     | Funds    | Faucet | REST base                               | WebSocket base                                   |
+| --------------------------- | -------- | ------ | --------------------------------------- | ------------------------------------------------ |
+| `Network.Testnet` (default) | play     | yes    | `https://api.testnet.nexus.xyz/indexer` | `wss://api.testnet.nexus.xyz/v1`                 |
+| `Network.Mainnet`           | **real** | no     | _not live yet — see below_              | `wss://api.nexus.xyz/v1` (no DNS yet, ENG-15183) |
+| `Network.Local`             | play     | yes    | `http://localhost:9090`                 | `ws://localhost:9090`                            |
+
+Market data is `<WebSocket base>/stream` and authenticated streams are
+`<WebSocket base>/ws?token=…`, e.g. `wss://api.testnet.nexus.xyz/v1/stream`. The
+public hosts route no WebSocket path at their root: `wss://<host>/stream` is a
+`404`. The WebSocket base is the spec's REST base (`https://<host>/v1`) with the
+scheme swapped.
 
 > [!NOTE]
-> Note the `/indexer` in testnet's bases. It is a **route prefix the deployment
+> Note the `/indexer` in testnet's REST base. It is a **route prefix the deployment
 > mounts the service under**, not part of the API contract. Copy the base whole
 > rather than trimming it to the hostname — and note that trimming it does
 > _not_ fail cleanly. The host serves `/api/v1/*` unprefixed as well, so a
@@ -271,7 +277,7 @@ client.funds; // "play" — gate money-moving actions on this, not on the name
 client.isRealFunds; // false — true for "real" *and* "unknown" (it fails closed)
 client.hasFaucet; // true
 client.baseUrl; // "https://api.testnet.nexus.xyz/indexer"
-client.wsUrl; // "wss://api.testnet.nexus.xyz/indexer" — hand to createWsClient({ url })
+client.wsUrl; // "wss://api.testnet.nexus.xyz/v1" — hand to createWsClient({ url })
 ```
 
 `funds` is a **tri-state** — `"play" | "real" | "unknown"` — because a boolean

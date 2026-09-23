@@ -385,11 +385,11 @@ export interface NetworkConfig {
    * {@link Client.wsUrl} resolves this for you.
    *
    * A prefix is allowed here, and required by any deployment that mounts its
-   * surface under one: `wss://api.testnet.nexus.xyz/indexer`, whose bare origin
+   * surface under one: `wss://api.testnet.nexus.xyz/v1`, whose bare origin
    * `404`s on both stream paths (ENG-8867, measured). On a built-in
-   * {@link NETWORKS} entry this is the REST base with the scheme swapped,
-   * **route prefix included**, and a unit test pins every entry against its
-   * REST base. What stays refused is a base that already ends in the segment
+   * {@link NETWORKS} entry this is the spec's REST base (`x-nexus-networks`
+   * `rest_base`) with the scheme swapped, **route prefix included**, on the
+   * same host as {@link baseUrl}; a unit test pins every entry to both. What stays refused is a base that already ends in the segment
    * the SDK appends (`/ws`, `/stream`) or in {@link API_BASE_PATH} — see
    * {@link CustomNetworkOptions.wsUrl}.
    *
@@ -432,7 +432,7 @@ const SIGNING_DOMAIN: NetworkSigningDomain = Object.freeze({
  * ## Why `Mainnet` has a `null` base
  *
  * Its durable base is `https://api.nexus.xyz/v1` and its WS base
- * `wss://api.nexus.xyz`, but neither is usable from this SDK yet, for two
+ * `wss://api.nexus.xyz/v1`, but neither is usable from this SDK yet, for two
  * independent reasons — and both fail *only* on real funds:
  *
  * 1. **DNS/TLS is not live** (ENG-8155), so the host does not resolve.
@@ -475,6 +475,27 @@ const SIGNING_DOMAIN: NetworkSigningDomain = Object.freeze({
  * wss://api.testnet.nexus.xyz/{stream,ws}                       404
  * ```
  *
+ * ## The WS base is `/v1` (ENG-17132)
+ *
+ * The host routes three prefixes and strips each before the indexer sees the
+ * path: `/indexer` (kept for existing consumers), `/api/v1` (only while a kill
+ * switch is on) and `/v1` — the spec's REST base (EDR-006) and the prefix its
+ * `x-nexus-networks` WS URLs publish. The stream uses `/v1`, so the socket URL
+ * is the spec's REST base with the scheme swapped. The host is what a
+ * `/ws/token` token is bound to, and it is the same host as this entry's REST
+ * base. `/v1` and `/indexer` are both stripped to `/`, so the prefix does not
+ * change any signed path. Measured 2026-09-23 (RFC 6455 handshake, HTTP/1.1):
+ *
+ * ```text
+ * wss://api.testnet.nexus.xyz/v1/stream        101 Switching Protocols
+ * wss://api.testnet.nexus.xyz/v1/ws?token=x    401
+ * wss://api.testnet.nexus.xyz/indexer/stream   101 Switching Protocols
+ * wss://api.testnet.nexus.xyz/stream           404
+ * ```
+ *
+ * The REST `baseUrl` here is still `/indexer`. Moving it to `/v1` is a
+ * separate change.
+ *
  * Both surfaces answer under that one prefix, exactly as they did under the
  * gateway prefix, so **nothing about path composition or signing changes**: the
  * HMAC still covers the logical path (`/api/v1/orders`) and still excludes
@@ -493,9 +514,11 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       funds: "play",
       faucet: true,
       baseUrl: "https://api.testnet.nexus.xyz/indexer",
-      // Scheme-swapped `baseUrl`, route prefix and all: the stream is mounted
-      // under the same `/indexer` prefix as REST, and the bare origin 404s.
-      wsUrl: "wss://api.testnet.nexus.xyz/indexer",
+      // The spec's REST base (`https://api.testnet.nexus.xyz/v1`, EDR-006)
+      // with the scheme swapped — see "The WS base is `/v1`" above. Not this
+      // entry's `baseUrl` scheme-swapped: that is still `/indexer`, which also
+      // routes, but `/v1` is the prefix the spec publishes.
+      wsUrl: "wss://api.testnet.nexus.xyz/v1",
       signingDomain: SIGNING_DOMAIN,
     }) as NetworkConfig,
     [Network.Mainnet]: Object.freeze({
@@ -503,7 +526,11 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       funds: "real",
       faucet: false,
       baseUrl: null,
-      wsUrl: null,
+      // Same shape as testnet, published by the spec — but `api.nexus.xyz`
+      // has no DNS record yet (ENG-15183), so this does not resolve today.
+      // Declared rather than `null` so the map mirrors `x-nexus-networks`;
+      // `baseUrl` stays `null`, so a `Client` for mainnet still refuses.
+      wsUrl: "wss://api.nexus.xyz/v1",
       signingDomain: SIGNING_DOMAIN,
     }) as NetworkConfig,
     [Network.Local]: Object.freeze({
@@ -1797,7 +1824,7 @@ export class Client {
   // The resolved target's declared WS base, or null to derive one from #origin.
   //
   // A named network's map entry counts (ENG-8867): the durable deployment mounts
-  // its stream under a route prefix (`…/indexer`) that the origin alone drops,
+  // its stream under a route prefix (`…/v1`) that the origin alone drops,
   // so deriving would silently 404. The safety property that mattered — a ws
   // token cannot be minted on one host and spent on another — is preserved by
   // the map being ours and by a test pinning every entry against its REST base.
@@ -2108,11 +2135,11 @@ export class Client {
    * ```
    *
    * For a named network this is the map's declared {@link NetworkConfig.wsUrl}
-   * — the REST base with the scheme swapped, **route prefix included**
-   * (`wss://api.testnet.nexus.xyz/indexer`), because the stream is mounted
-   * under the same prefix as REST and the bare origin 404s (ENG-8867). A unit
-   * test pins every entry against its REST base, so the stream cannot drift
-   * onto a different host than the token was minted on.
+   * — the spec's REST base with the scheme swapped, **route prefix included**
+   * (`wss://api.testnet.nexus.xyz/v1`), because the bare origin 404s
+   * (ENG-8867, ENG-17132). A unit test pins every entry to the vendored spec's
+   * `rest_base` and to the host of this client's REST base, so the stream
+   * cannot drift onto a different host than the token was minted on.
    *
    * A {@link customNetwork} descriptor carries its own value and it is returned
    * as-is: the caller's `wsUrl` when they declared one — their statement that a
