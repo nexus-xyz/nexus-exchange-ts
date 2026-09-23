@@ -795,7 +795,17 @@ export interface Position {
   funding_paid?: Decimal;
 }
 
-/** A closed position record (`GET /positions/closed`). */
+/**
+ * A closed position record (`GET /positions/closed`).
+ *
+ * Declared in the pinned v0.8.1 spelling. Spec `0.9.74` (ENG-15258) serves this
+ * record under CCXT's unified names instead — `symbol`, `entryPrice`,
+ * `lastPrice`, `realizedPnl`, `lastUpdateTimestamp` — and the client fills each
+ * field below from its CCXT twin when only the twin was sent, so these stay
+ * populated on either side of that publish (ENG-16850). The wire `lastPrice`
+ * lands on {@link exit_price}: on a closed position it is the exit price, not
+ * the open {@link Position}'s last traded price.
+ */
 export interface ClosedPosition {
   market_id: string;
   /** The side the position was on before it closed. */
