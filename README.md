@@ -119,7 +119,7 @@ const { order } = await client.placeOrder({
   quantity: "0.1",
   time_in_force: "GTC",
 });
-await client.cancelOrder(order.id);
+await client.cancelOrder(order.id, order.market_id);
 ```
 
 Credentials are optional — construct the client without them for public reads;
@@ -135,10 +135,13 @@ positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
 `getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
 
-`getOrder(orderId, marketId)` takes the market as a second **required**
-argument, not an optional filter: the spec marks its `market_id` query parameter
-required because the lookup is routed by market, so omitting it could only ever
-answer `400`.
+`getOrder(orderId, marketId)`, `amendOrder(orderId, marketId, amend)` and
+`cancelOrder(orderId, marketId)` take the market as a second **required**
+argument, not an optional filter: the spec marks their `market_id` query
+parameter required because single-order operations are routed by market, so
+omitting it could only ever be rejected. Each throws `InvalidRequestError` on an
+empty `marketId` without sending anything. Pass the `market_id` the order was
+placed with.
 
 `setCancelOnDisconnect(true)` arms a per-account dead man's switch: when the
 account's last authenticated `/ws` connection drops and does not reconnect

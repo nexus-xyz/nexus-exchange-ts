@@ -1561,6 +1561,21 @@ function checkPageSize(
 }
 
 /**
+ * Reject a required string argument that is missing or empty, before the
+ * request is signed and sent — the Rust SDK's `require_non_empty`.
+ *
+ * Also catches a non-string, which is what a caller still on a pre-`marketId`
+ * signature passes (`cancelOrder(id)` → `undefined`, `cancelOrder(id, { signal })`
+ * or `amendOrder(id, { size })` → an object); without this, the object would be
+ * stringified into the query.
+ */
+function requireNonEmpty(value: unknown, what: string): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new InvalidRequestError(`${what} must be a non-empty string`);
+  }
+}
+
+/**
  * Reject a header value that carries control characters (CR/LF/NUL/DEL etc.).
  * `fetch` would throw on these at send time; validating the configured
  * `User-Agent` / `X-Nexus-Api-Version` up front turns a cryptic per-request
@@ -3035,7 +3050,8 @@ export class Client {
    * `marketId` is **required**, not a filter: the spec marks the `market_id`
    * query parameter `required: true` because the lookup is routed by market, so
    * omitting it can only ever answer `400`. Answers `404` when the market holds
-   * no such order. Pass the same `market_id` the order was placed with.
+   * no such order. Pass the same `market_id` the order was placed with. An
+   * empty `marketId` throws {@link InvalidRequestError} without sending.
    *
    * `root: true`, and note this is the one verb on `/orders/{order_id}` that is:
    * the spec declares the `GET` only at the deployment root, while the `PATCH`
@@ -3044,11 +3060,12 @@ export class Client {
    * send the prefixed form and this does not. The spelling is the spec's, so it must be
    * read off the operation rather than off its neighbours.
    */
-  getOrder(
+  async getOrder(
     orderId: string,
     marketId: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Order> {
+    requireNonEmpty(marketId, "getOrder marketId");
     const query = buildQuery({ market_id: marketId });
     return this.#request<Order>("GET", `/orders/${seg(orderId)}`, {
       query,
@@ -3082,22 +3099,49 @@ export class Client {
   /**
    * `PATCH /orders/{order_id}` — atomic cancel-replace of a resting order.
    * At least one of `price` or `size` must be set. Returns the amended order.
+   *
+   * `marketId` is **required**, as on {@link getOrder} and {@link cancelOrder}:
+   * the engine's `amend_order` handler takes the same non-optional
+   * `?market_id=` routing query (ENG-3123) and the spec marks it
+   * `required: true`, so an amend without it is rejected before any handler
+   * runs. An empty `marketId` throws {@link InvalidRequestError} locally.
    */
-  amendOrder(
+  async amendOrder(
     orderId: string,
+    marketId: string,
     amend: AmendOrderRequest,
     opts?: { signal?: AbortSignal },
   ): Promise<Order> {
+    requireNonEmpty(marketId, "amendOrder marketId");
+    const query = buildQuery({ market_id: marketId });
     return this.#request<Order>("PATCH", `/orders/${seg(orderId)}`, {
+      query,
       body: amend,
       signed: true,
       signal: opts?.signal,
     });
   }
 
-  /** `DELETE /orders/{order_id}` — cancel one order by exchange id. */
-  cancelOrder(orderId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+  /**
+   * `DELETE /orders/{order_id}` — cancel one order by exchange id.
+   *
+   * `marketId` is **required**, as it is on {@link getOrder}: the engine routes a
+   * single-order cancel by market (ENG-3123), the extractor's `market_id` is not
+   * optional, and the spec marks the query parameter `required: true`. A cancel
+   * without it is rejected before any handler runs, so an empty `marketId`
+   * throws {@link InvalidRequestError} locally rather than spending a signed
+   * round trip on a request that can only fail — the Rust SDK's
+   * `require_non_empty`. Pass the same `market_id` the order was placed with.
+   */
+  async cancelOrder(
+    orderId: string,
+    marketId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    requireNonEmpty(marketId, "cancelOrder marketId");
+    const query = buildQuery({ market_id: marketId });
     return this.#request<void>("DELETE", `/orders/${seg(orderId)}`, {
+      query,
       signed: true,
       signal: opts?.signal,
     });

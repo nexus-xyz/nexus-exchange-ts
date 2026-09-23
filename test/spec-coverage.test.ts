@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
 import { Client, Network } from "../src/client.js";
-import { MissingCredentialsError } from "../src/errors.js";
+import { InvalidRequestError, MissingCredentialsError } from "../src/errors.js";
 
 // The operations that closed the last real gaps against the pinned spec
 // (ENG-9199): `GET /markets`, `GET /status`, `…/risk-params`, `…/adl-events`,
@@ -307,8 +307,8 @@ test("GET /orders/{id} is bare while PATCH and DELETE on it are /api/v1", async 
   const { client, calls } = capture({}, () => new Response("{}"));
 
   await client.getOrder("ord-1", "BTC-USDX-PERP");
-  await client.amendOrder("ord-1", { size: "1" });
-  await client.cancelOrder("ord-1");
+  await client.amendOrder("ord-1", "BTC-USDX-PERP", { size: "1" });
+  await client.cancelOrder("ord-1", "BTC-USDX-PERP");
 
   assert.deepEqual(
     calls.map((c) => `${c.method} ${new URL(c.url).pathname}`),
@@ -324,7 +324,154 @@ test("GET /orders/{id} is bare while PATCH and DELETE on it are /api/v1", async 
     "/orders/ord-1",
     "market_id=BTC-USDX-PERP",
   );
-  assertSignedOver(calls[2]!, "DELETE", "/api/v1/orders/ord-1");
+  assertSignedOver(
+    calls[2]!,
+    "DELETE",
+    "/api/v1/orders/ord-1",
+    "market_id=BTC-USDX-PERP",
+  );
+});
+
+test("getOrder rejects a missing or empty marketId without sending", async () => {
+  const { client, calls } = capture({}, () => new Response("{}"));
+
+  await assert.rejects(client.getOrder("ord-1", ""), InvalidRequestError);
+  await assert.rejects(
+    client.getOrder("ord-1", undefined as unknown as string),
+    InvalidRequestError,
+  );
+  assert.equal(calls.length, 0, "nothing reaches the wire");
+});
+
+// ─── PATCH /api/v1/orders/{order_id} ─────────────────────────────────────────
+
+test("amendOrder sends the required market_id on the wire and signs over it", async () => {
+  // ENG-17118: the engine's `amend_order` takes the same non-optional
+  // `Query<OrderRoutingQuery>` as cancel (ENG-3123), and the spec marks
+  // `market_id` required on this PATCH. Asserted on the outgoing request — the
+  // URL `fetch` was handed and the canonical query the signature covers — with
+  // the body still signed alongside it.
+  const { client, calls } = capture({}, () => new Response("{}"));
+
+  await client.amendOrder("ord-1", "BTC-USDX-PERP", { price: "65000" });
+
+  assert.equal(calls.length, 1);
+  const c = calls[0]!;
+  assert.equal(c.method, "PATCH");
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/orders/ord-1?market_id=BTC-USDX-PERP",
+  );
+  assert.equal(new URL(c.url).searchParams.get("market_id"), "BTC-USDX-PERP");
+  assert.equal(c.body?.toString("utf8"), '{"price":"65000"}');
+  assertSignedOver(
+    c,
+    "PATCH",
+    "/api/v1/orders/ord-1",
+    "market_id=BTC-USDX-PERP",
+  );
+});
+
+test("amendOrder escapes the market id in the URL and the signed query alike", async () => {
+  const { client, calls } = capture({}, () => new Response("{}"));
+
+  await client.amendOrder("a/b", "X&Y", { size: "1" });
+
+  const c = calls[0]!;
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/orders/a%2Fb?market_id=X%26Y",
+  );
+  assertSignedOver(c, "PATCH", "/api/v1/orders/a%2Fb", "market_id=X%26Y");
+});
+
+test("amendOrder rejects a missing or empty marketId without sending", async () => {
+  const { client, calls } = capture({}, () => new Response("{}"));
+
+  await assert.rejects(
+    client.amendOrder("ord-1", "", { size: "1" }),
+    InvalidRequestError,
+  );
+  // The old `amendOrder(id, amend)` shape puts the amend body where the market
+  // now goes.
+  await assert.rejects(
+    client.amendOrder(
+      "ord-1",
+      { size: "1" } as unknown as string,
+      undefined as unknown as { size: string },
+    ),
+    InvalidRequestError,
+  );
+  assert.equal(calls.length, 0, "nothing reaches the wire");
+});
+
+// ─── DELETE /api/v1/orders/{order_id} ────────────────────────────────────────
+
+test("cancelOrder sends the required market_id on the wire and signs over it", async () => {
+  // ENG-17118: `market_id` is `required: true` on this DELETE and the engine's
+  // extractor has no default for it (ENG-3123), so a cancel without it is
+  // rejected before any handler runs. This asserts the outgoing request itself —
+  // the URL `fetch` was handed and the canonical query the signature covers —
+  // so dropping the parameter fails here, not in production.
+  const { client, calls } = capture(
+    {},
+    () => new Response(null, { status: 204 }),
+  );
+
+  await client.cancelOrder("ord-1", "BTC-USDX-PERP");
+
+  assert.equal(calls.length, 1);
+  const c = calls[0]!;
+  assert.equal(c.method, "DELETE");
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/orders/ord-1?market_id=BTC-USDX-PERP",
+  );
+  assert.equal(new URL(c.url).searchParams.get("market_id"), "BTC-USDX-PERP");
+  assertSignedOver(
+    c,
+    "DELETE",
+    "/api/v1/orders/ord-1",
+    "market_id=BTC-USDX-PERP",
+  );
+});
+
+test("cancelOrder escapes the market id in the URL and the signed query alike", async () => {
+  const { client, calls } = capture(
+    {},
+    () => new Response(null, { status: 204 }),
+  );
+
+  await client.cancelOrder("a/b", "X&Y");
+
+  const c = calls[0]!;
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/orders/a%2Fb?market_id=X%26Y",
+  );
+  assertSignedOver(c, "DELETE", "/api/v1/orders/a%2Fb", "market_id=X%26Y");
+});
+
+test("cancelOrder rejects a missing or empty marketId without sending", async () => {
+  const { client, calls } = capture(
+    {},
+    () => new Response(null, { status: 204 }),
+  );
+
+  await assert.rejects(client.cancelOrder("ord-1", ""), InvalidRequestError);
+  // What a caller still on the old one-argument signature sends from JS (or
+  // past a cast): no market, or the options bag where the market now goes.
+  await assert.rejects(
+    client.cancelOrder("ord-1", undefined as unknown as string),
+    InvalidRequestError,
+  );
+  await assert.rejects(
+    client.cancelOrder("ord-1", {
+      signal: undefined,
+    } as unknown as string),
+    InvalidRequestError,
+  );
+  assert.equal(calls.length, 0, "nothing reaches the wire");
 });
 
 test("getOrder escapes both the order id and the market id", async () => {
