@@ -558,17 +558,20 @@ test("post-only order serializes time_in_force as the exact wire value PostOnly"
 test("path params are percent-encoded and the signed path matches the URL", async () => {
   const { client, calls } = signedClientWithCapture();
   // An id containing '/' and '?' must not inject extra path/query segments.
-  await client.cancelOrder("a/b?c");
+  await client.cancelOrder("a/b?c", "BTC-USDX-PERP");
 
   const c = calls[0]!;
   assert.equal(c.method, "DELETE");
-  assert.equal(c.url, "http://localhost:9090/api/v1/orders/a%2Fb%3Fc");
+  assert.equal(
+    c.url,
+    "http://localhost:9090/api/v1/orders/a%2Fb%3Fc?market_id=BTC-USDX-PERP",
+  );
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "DELETE",
     "/api/v1/orders/a%2Fb%3Fc",
-    "",
+    "market_id=BTC-USDX-PERP",
     Buffer.alloc(0),
   );
   assert.equal(c.headers.get("x-signature"), expected);
