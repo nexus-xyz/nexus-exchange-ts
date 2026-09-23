@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.4.0...v0.5.0) (2026-09-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** `Client.cancelOrder(orderId, opts?)` is now `Client.cancelOrder(orderId, marketId, opts?)`, and `Client.amendOrder(orderId, amend, opts?)` is now `Client.amendOrder(orderId, marketId, amend, opts?)`. Pass the `market_id` the order was placed with. The old forms could never succeed against the engine, so there is no deprecation period.
+
+### Features
+
+* **auth:** agent-key request signer (ENG-17009) ([#84](https://github.com/nexus-xyz/nexus-exchange-ts/issues/84)) ([06bc79b](https://github.com/nexus-xyz/nexus-exchange-ts/commit/06bc79ba4c14198884cce962b2b84a90bd942705))
+
+
+### Bug Fixes
+
+* **client:** let customNetwork reach a prefixed WebSocket endpoint (ENG-14963) ([#80](https://github.com/nexus-xyz/nexus-exchange-ts/issues/80)) ([76ac231](https://github.com/nexus-xyz/nexus-exchange-ts/commit/76ac231619f0192221d6b96e9ae3edcb4fb5a68e))
+* **client:** move the WebSocket bases to the /v1 prefix (ENG-17132) ([#87](https://github.com/nexus-xyz/nexus-exchange-ts/issues/87)) ([7bdf060](https://github.com/nexus-xyz/nexus-exchange-ts/commit/7bdf06076600947477b822835df8e2b266a8fa1e))
+* **client:** point testnet at its durable host, api.testnet.nexus.xyz/indexer (ENG-8867) ([#78](https://github.com/nexus-xyz/nexus-exchange-ts/issues/78)) ([13bbfb3](https://github.com/nexus-xyz/nexus-exchange-ts/commit/13bbfb3f77f0c0ed0bc9f84fff8743554c0f3f0e))
+* **client:** read /positions/closed under both wire spellings ahead of spec 0.9.74 (ENG-16850) ([#86](https://github.com/nexus-xyz/nexus-exchange-ts/issues/86)) ([527e258](https://github.com/nexus-xyz/nexus-exchange-ts/commit/527e25812557cb1a3e79f1e1f8f3bccbe1b2906f))
+* **client:** send the required market_id on cancelOrder and amendOrder (ENG-17118) ([#85](https://github.com/nexus-xyz/nexus-exchange-ts/issues/85)) ([55f3211](https://github.com/nexus-xyz/nexus-exchange-ts/commit/55f321182400f2ae4ee6ed709ef68f24b7b39eac))
+
 ## [0.4.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.3.0...v0.4.0) (2026-08-28)
 
 
