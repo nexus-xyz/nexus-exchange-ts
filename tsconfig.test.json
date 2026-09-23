@@ -44,6 +44,11 @@
   // `exclude` does not merge across `extends`, and the base excludes "test" —
   // so leaving it inherited would reproduce the exact gap this file closes.
   // Verified with `tsc -p tsconfig.test.json --listFiles`.
-  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "examples/**/*.ts",
+    "bench/**/*.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }
