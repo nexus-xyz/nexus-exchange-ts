@@ -818,6 +818,14 @@ omit it.
 > for `fetch`, so browsers silently drop it — it is applied only on runtimes that
 > allow it (e.g. Node). `X-Nexus-Api-Version` is sent everywhere.
 
+## Benchmarks
+
+`pnpm bench` measures client-side request signing, both HMAC (`signRequest`)
+and agent-key (`AgentSigner`), on one fixed order request (no network I/O), and
+prints p50 / p95 per signature, signatures/sec and the Node.js version.
+Published results and methodology: the API Reference's Rate Limits guide, "Can
+your signer keep up?".
+
 ## API version
 
 This SDK targets a released version of the Exchange API spec, pinned in
