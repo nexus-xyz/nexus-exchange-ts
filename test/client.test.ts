@@ -71,18 +71,13 @@ test("no live network base URL carries API_BASE_PATH", () => {
 });
 
 // A wsUrl pointing at a different host than baseUrl would mint a token on one
-// origin and spend it on another, so every entry must stay on its REST host.
-// It must also stay under the REST base's *route prefix*: the durable testnet
-// deployment mounts both surfaces under `/indexer`, and the bare origin 404s on
-// `/stream` and `/ws` (measured, ENG-8867) — which is why the map is the scheme
-// swap of the REST base rather than its origin. Client.wsUrl returns the map
-// value for a named network, so this pins the two together.
-test("each network's declared wsUrl is its REST base, scheme-swapped", () => {
+// host and spend it on another, so every entry must stay on its REST host. The
+// full URL is the spec's REST base with the scheme swapped (ENG-17132), which
+// test/network-urls.test.ts pins. Client.wsUrl returns the map value for a named
+// network, so this pins the two together.
+test("each network's declared wsUrl stays on its REST host", () => {
   for (const [network, config] of Object.entries(NETWORKS)) {
-    if (config.baseUrl === null) {
-      assert.equal(config.wsUrl, null, `${network} must not declare a wsUrl`);
-      continue;
-    }
+    if (config.baseUrl === null) continue;
     const rest = new URL(config.baseUrl);
     const dialled = new Client({
       network: network as Network,
@@ -93,12 +88,11 @@ test("each network's declared wsUrl is its REST base, scheme-swapped", () => {
       config.wsUrl,
       `${network}: Client.wsUrl ${dialled} disagrees with the map's ${config.wsUrl}`,
     );
-    assert.equal(
-      config.wsUrl,
-      config.baseUrl.replace(/^http/, "ws").replace(/\/+$/, ""),
-      `${network}: declared wsUrl ${config.wsUrl} is not ${config.baseUrl} scheme-swapped`,
-    );
     assert.equal(new URL(dialled).host, rest.host);
+    assert.equal(
+      new URL(dialled).protocol,
+      rest.protocol === "https:" ? "wss:" : "ws:",
+    );
   }
 });
 
