@@ -799,6 +799,45 @@ const VALIDATED_CONFIGS = new WeakSet<NetworkConfig>();
  * are *not* read from it: they are contract-level constants, so a literal
  * claiming different ones is ignored rather than signed under.
  */
+/**
+ * `ClosedPosition`'s v0.8.1 field names, each paired with the CCXT unified name
+ * spec `0.9.74` serves in its place (ENG-15258).
+ */
+const CLOSED_POSITION_CCXT_SPELLINGS = [
+  ["market_id", "symbol"],
+  ["entry_price", "entryPrice"],
+  ["exit_price", "lastPrice"],
+  ["realized_pnl", "realizedPnl"],
+  ["closed_at_ms", "lastUpdateTimestamp"],
+] as const;
+
+/**
+ * Read a `/positions/closed` row under either wire spelling (ENG-16850).
+ *
+ * From spec `0.9.74` the venue serves {@link ClosedPosition} under CCXT's
+ * unified names. This fills each v0.8.1 field the declared type promises from
+ * its CCXT twin when only the twin was sent, so `p.exit_price` stays true on
+ * both sides of that publish instead of silently becoming `undefined`. A field
+ * sent under the v0.8.1 name wins, matching the pinned spec; every key the
+ * server sent is kept, and a row that needs nothing is returned as-is.
+ *
+ * `lastPrice` fills `exit_price` on purpose: on an OPEN {@link Position} the
+ * spec's `lastPrice` is the market's last traded price, while here it is the
+ * price the position closed at — the two must never share one field.
+ */
+function readClosedPosition(row: ClosedPosition): ClosedPosition {
+  if (row === null || typeof row !== "object") return row;
+  const wire = row as unknown as Record<string, unknown>;
+  let filled: Record<string, unknown> | undefined;
+  for (const [legacy, ccxt] of CLOSED_POSITION_CCXT_SPELLINGS) {
+    if (!(legacy in wire) && ccxt in wire) {
+      filled ??= { ...wire };
+      filled[legacy] = wire[ccxt];
+    }
+  }
+  return (filled ?? wire) as unknown as ClosedPosition;
+}
+
 function normalizeDescriptor(input: NetworkConfig): NetworkConfig {
   const domain: unknown = input.signingDomain;
   const chainId =
@@ -2549,11 +2588,12 @@ export class Client {
         "positions/closed",
       ),
     });
-    return this.#request<ClosedPosition[]>("GET", "/positions/closed", {
-      query,
-      signed: true,
-      signal: opts.signal,
-    });
+    const rows = await this.#request<ClosedPosition[]>(
+      "GET",
+      "/positions/closed",
+      { query, signed: true, signal: opts.signal },
+    );
+    return (rows ?? []).map(readClosedPosition);
   }
 
   /**
@@ -3200,6 +3240,8 @@ export class Client {
       limitMax: number;
       signed?: boolean;
       signal?: AbortSignal;
+      /** Applied to each row of every page, e.g. {@link readClosedPosition}. */
+      mapRow?: (row: T) => T;
     },
   ): FetchPage<T> {
     return async (req) => {
@@ -3215,7 +3257,11 @@ export class Client {
       );
       // A 204 / empty body decodes to `undefined`; an empty page is a legitimate
       // response (and, with a cursor, not even the last one).
-      return new Page<T>(value ?? [], nextCursorFrom(headers));
+      const rows = value ?? [];
+      return new Page<T>(
+        opts.mapRow ? rows.map(opts.mapRow) : rows,
+        nextCursorFrom(headers),
+      );
     };
   }
 
@@ -3312,6 +3358,7 @@ export class Client {
         limitMax: CLOSED_POSITIONS_LIMIT_MAX,
         signed: true,
         signal: opts.signal,
+        mapRow: readClosedPosition,
       }),
     );
   }

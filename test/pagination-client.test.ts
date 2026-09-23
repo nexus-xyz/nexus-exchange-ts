@@ -437,6 +437,67 @@ test("getClosedPositions forwards limit, which it previously discarded", async (
   assert.equal(query(calls[0]!.url).get("limit"), "200");
 });
 
+// -- /positions/closed reads both wire spellings (ENG-16850) -----------------
+
+/** A spec-0.9.74 `/positions/closed` row: CCXT's unified names (ENG-15258). */
+const CCXT_CLOSED_ROW = {
+  symbol: "BTC-USDX-PERP",
+  side: "Short",
+  size: "0.5",
+  entryPrice: "49000.25",
+  lastPrice: "51000.75",
+  realizedPnl: "-1000.25",
+  lastUpdateTimestamp: 1776033900000,
+};
+
+test("getClosedPositions fills the v0.8.1 fields from a 0.9.74 row", async () => {
+  const { impl } = mockFetch([CCXT_CLOSED_ROW]);
+  const [p] = await authed(impl).getClosedPositions();
+  assert.equal(p!.market_id, "BTC-USDX-PERP");
+  assert.equal(p!.side, "Short");
+  assert.equal(p!.size, "0.5");
+  assert.equal(p!.entry_price, "49000.25");
+  // The CLOSED reading of `lastPrice`: the exit price, not a last trade.
+  assert.equal(p!.exit_price, "51000.75");
+  assert.equal(p!.realized_pnl, "-1000.25");
+  assert.equal(p!.closed_at_ms, 1776033900000);
+});
+
+test("getClosedPositions leaves a v0.8.1 row exactly as served", async () => {
+  const row = {
+    market_id: "ETH-USDX-PERP",
+    side: "Long",
+    size: "2",
+    entry_price: "3000",
+    exit_price: "3100",
+    realized_pnl: "200",
+    closed_at_ms: 1776033900000,
+  };
+  const { impl } = mockFetch([row]);
+  const [p] = await authed(impl).getClosedPositions();
+  assert.deepEqual(p, row);
+});
+
+test("getClosedPositions does not invent a field neither spelling sent", async () => {
+  const { impl } = mockFetch([{ symbol: "BTC-USDX-PERP" }]);
+  const [p] = await authed(impl).getClosedPositions();
+  assert.equal(p!.market_id, "BTC-USDX-PERP");
+  assert.equal("exit_price" in p!, false);
+  assert.equal("closed_at_ms" in p!, false);
+});
+
+test("getClosedPositionsPaginated fills the v0.8.1 fields on every page", async () => {
+  const { impl } = mockPagedFetch([
+    { items: [CCXT_CLOSED_ROW], nextCursor: "c1" },
+    { items: [{ ...CCXT_CLOSED_ROW, lastPrice: "52000" }] },
+  ]);
+  const all = await authed(impl).getClosedPositionsPaginated().all();
+  assert.deepEqual(
+    all.map((p) => p.exit_price),
+    ["51000.75", "52000"],
+  );
+});
+
 test("the flat getters reject an out-of-range limit (async, not a sync throw)", async () => {
   // These are declared `async` precisely so a schema violation surfaces as a
   // rejected promise: a method typed `Promise<T>` that threw synchronously would
