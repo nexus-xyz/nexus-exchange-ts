@@ -355,10 +355,12 @@ test("a target with no declared chain id refuses to supply one for signing", () 
 
 test("only the chain id is caller-supplied; name and version stay fixed", () => {
   const target = customNetwork(options({ signingChainId: 8453 }));
+  // No salt: a custom target names no network, so registerAgent refuses it.
   assert.deepEqual(target.signingDomain, {
     name: "Nexus Exchange",
     version: "1",
     chainId: 8453,
+    salt: null,
   });
   assert.ok(Object.isFrozen(target.signingDomain));
   // `0` is the value a missing chain id collapses to, so it is rejected rather

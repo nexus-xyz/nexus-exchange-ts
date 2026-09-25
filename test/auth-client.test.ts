@@ -189,7 +189,8 @@ test("registerAgent posts the EIP-712 body to host-root /agents/register unauthe
   const wallet = EthSigner.fromHex(TEST_KEY);
   const registration = wallet.registerAgent({
     agent: "0x1234567890abcdef1234567890abcdef12345678",
-    chainId: 393,
+    chainId: 20056,
+    network: Network.Local,
     expiresAtMs: 1_782_000_000_000,
     nonce: 1,
   });

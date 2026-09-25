@@ -19,6 +19,8 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
+import { networkConfig } from "./client.js";
+import type { NetworkSelector } from "./client.js";
 import { MissingCredentialsError, NexusExchangeError } from "./errors.js";
 import { bytesToHex, hexToBytes } from "./sign.js";
 import type {
@@ -31,8 +33,8 @@ import type {
 /** The exact, fixed message the API requires for EIP-191 session login. */
 export const SIGN_IN_MESSAGE = "Sign in to Nexus Exchange";
 
-// EIP-712 domain, matching what the server verifies (and the Rust SDK's pinned
-// known-answer vectors). NOTE: the OpenAPI prose for `POST /agents/register`
+// EIP-712 domain, matching what the server verifies: these two, the chain id,
+// and (for `RegisterAgent`) a per-network `salt` (see `registerSalt`). NOTE: the OpenAPI prose for `POST /agents/register`
 // reads `name: 'NexusExchange'` / `uint256` fields, but the server (and the
 // reference Rust SDK's cross-checked vectors) actually use `"Nexus Exchange"`
 // (with a space) and `uint64` struct fields — that is a spec-prose error, so we
@@ -179,15 +181,42 @@ function eip191Digest(message: Uint8Array): Uint8Array {
 }
 
 /**
+ * The `RegisterAgent` domain salt for a network, or refuse to sign.
+ *
+ * The server verifies `RegisterAgent` under a domain salted with its own network
+ * name, `keccak256(network)`, with no unsalted fallback (ENG-15643). A custom
+ * target names no network, so it has no salt, and an unsalted signature would
+ * only be refused by the server as `signer_mismatch`.
+ */
+function registerSalt(network: NetworkSelector): Uint8Array {
+  const config = networkConfig(network);
+  const { salt } = config.signingDomain;
+  if (salt === null) {
+    throw new NexusExchangeError(
+      `no RegisterAgent signing salt is known for target ` +
+        `${JSON.stringify(config.label)}: the server binds agent registrations ` +
+        `to its network name (salt = keccak256(network)), and a custom target ` +
+        `names none. Pass \`network: Network.Mainnet | Network.Testnet | ` +
+        `Network.Local\`, whichever the target server runs as. The salt only ` +
+        `names the network; the client you send the registration through ` +
+        `still picks the host.`,
+    );
+  }
+  return hexToBytes(strip0x(salt));
+}
+
+/**
  * EIP-712 digest for `RegisterAgent{agent, expiresAt, nonce}` under the
- * `Nexus Exchange` domain (no `verifyingContract`):
- * `keccak256(0x1901 || domainSeparator || hashStruct(message))`.
+ * `Nexus Exchange` domain with `salt` and no `verifyingContract`:
+ * `keccak256(0x1901 || domainSeparator || hashStruct(message))`. Matches the
+ * server's `agent_store::eip712::register_agent_digest`.
  */
 function registerAgentDigest(
   agent: Uint8Array,
   expiresAtMs: number | bigint,
   nonce: number | bigint,
   chainId: number | bigint,
+  network: NetworkSelector,
 ): Uint8Array {
   // Before any hashing: a bad domain silently yields a signature for the wrong
   // network rather than an error at signing time, and a non-round-tripping
@@ -195,10 +224,13 @@ function registerAgentDigest(
   assertChainId(chainId);
   assertWireSafeUint(expiresAtMs, "expiresAtMs");
   assertWireSafeUint(nonce, "nonce");
+  const salt = registerSalt(network);
   const enc = (s: string) => new TextEncoder().encode(s);
 
   const domainTypeHash = keccak_256(
-    enc("EIP712Domain(string name,string version,uint256 chainId)"),
+    enc(
+      "EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)",
+    ),
   );
   const domainSeparator = keccak_256(
     concatBytes(
@@ -206,6 +238,7 @@ function registerAgentDigest(
       keccak_256(enc(EIP712_DOMAIN_NAME)),
       keccak_256(enc(EIP712_DOMAIN_VERSION)),
       u256(chainId),
+      salt,
     ),
   );
 
@@ -245,6 +278,15 @@ export interface RegisterAgentOptions {
    * running against Ethereum Mainnet via the USDX bridge, not a Nexus L1 chain.
    */
   chainId: number | bigint;
+  /**
+   * The network the registration is for. Required: the server salts the
+   * `RegisterAgent` domain with `keccak256(network name)` (ENG-15643), so a
+   * registration verifies only on the network it was signed for. Pass the
+   * sending client's `network`. The salt is read from
+   * `networkConfig(network).signingDomain.salt`; a custom target has none and is
+   * refused.
+   */
+  network: NetworkSelector;
   /**
    * Expiry as Unix milliseconds. The server expects it in `[now+1d, now+90d]`.
    * When omitted the server defaults to `now+30d`, but signing requires a
@@ -391,6 +433,7 @@ export class EthSigner {
       options.expiresAtMs,
       options.nonce,
       options.chainId,
+      options.network,
     );
     const body: AgentRegistrationRequest = {
       wallet: this.#address,

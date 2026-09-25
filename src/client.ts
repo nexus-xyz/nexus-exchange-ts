@@ -21,7 +21,9 @@ import {
   TransportError,
   sanitizeErrorBody,
 } from "./errors.js";
-import { signRequest } from "./sign.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+
+import { bytesToHex, signRequest } from "./sign.js";
 import { API_VERSION, SDK_VERSION } from "./version.js";
 import { Cursor, Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
@@ -328,6 +330,16 @@ export interface NetworkSigningDomain {
    * valid on a *different* network.
    */
   readonly chainId: number | null;
+  /**
+   * The `RegisterAgent` domain `salt`: `keccak256(network name)`, `0x`-prefixed
+   * 32-byte hex, as published in the spec's `x-nexus-networks[*].signing_domain`.
+   * The server salts only `RegisterAgent` with it (ENG-15643), so a registration
+   * signed for one network does not verify on another.
+   *
+   * `null` on a custom target, which names no network. `EthSigner.registerAgent`
+   * refuses to sign there rather than drop the salt.
+   */
+  readonly salt: string | null;
 }
 
 /**
@@ -410,14 +422,22 @@ export interface NetworkConfig {
   readonly signingDomain: NetworkSigningDomain;
 }
 
-// One `name`/`version` pair across all networks; only the chain id is
-// per-network, and it is deliberately unpublished here (see
-// `NetworkSigningDomain`).
+// One `name`/`version` pair across all networks. The chain id is per-network
+// and deliberately unpublished here (see `NetworkSigningDomain`); the salt is
+// per-network and derived from the network name, so this base has none and is
+// what a custom target gets.
 const SIGNING_DOMAIN: NetworkSigningDomain = Object.freeze({
   name: "Nexus Exchange",
   version: "1",
   chainId: null,
+  salt: null,
 });
+
+/** A named network's signing domain: {@link SIGNING_DOMAIN} salted with `keccak256(network)`. */
+function namedSigningDomain(network: Network): NetworkSigningDomain {
+  const salt = keccak_256(new TextEncoder().encode(network));
+  return Object.freeze({ ...SIGNING_DOMAIN, salt: `0x${bytesToHex(salt)}` });
+}
 
 /**
  * The network → target map, mirroring the spec's `x-nexus-networks`.
@@ -519,7 +539,7 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       // entry's `baseUrl` scheme-swapped: that is still `/indexer`, which also
       // routes, but `/v1` is the prefix the spec publishes.
       wsUrl: "wss://api.testnet.nexus.xyz/v1",
-      signingDomain: SIGNING_DOMAIN,
+      signingDomain: namedSigningDomain(Network.Testnet),
     }) as NetworkConfig,
     [Network.Mainnet]: Object.freeze({
       label: "Mainnet",
@@ -531,7 +551,7 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       // Declared rather than `null` so the map mirrors `x-nexus-networks`;
       // `baseUrl` stays `null`, so a `Client` for mainnet still refuses.
       wsUrl: "wss://api.nexus.xyz/v1",
-      signingDomain: SIGNING_DOMAIN,
+      signingDomain: namedSigningDomain(Network.Mainnet),
     }) as NetworkConfig,
     [Network.Local]: Object.freeze({
       label: "Local",
@@ -539,7 +559,7 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       faucet: true,
       baseUrl: "http://localhost:9090",
       wsUrl: "ws://localhost:9090",
-      signingDomain: SIGNING_DOMAIN,
+      signingDomain: namedSigningDomain(Network.Local),
     }) as NetworkConfig,
   },
 );
