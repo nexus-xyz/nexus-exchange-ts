@@ -521,11 +521,23 @@ declare one up front (`customNetwork({ signingChainId })`);
 known, which is the refusal spelled out as one call:
 
 ```ts
-signer.registerAgent({ agent, chainId: client.requireSigningChainId(), ... });
+signer.registerAgent({
+  agent,
+  chainId: client.requireSigningChainId(),
+  network: client.network,
+  ...
+});
 ```
 
+`RegisterAgent` is also signed under a per-network `salt`,
+`keccak256(network name)`, which the server requires (ENG-15643).
+`signingDomain.salt` carries it for the three named networks, so
+`registerAgent` takes a required `network` and reads it from there. A custom
+target has no salt and is refused rather than signed unsalted.
+
 Only the chain id is ever caller-supplied — the EIP-712 `name`/`version` are
-contract-level constants, identical on every deployment. If you cannot obtain a
+contract-level constants, identical on every deployment, and the salt follows
+from the network. If you cannot obtain a
 chain id, refuse to sign rather than defaulting — a wrong domain either fails
 verification or produces a signature valid on a _different_ network. `0` and
 out-of-range values are rejected for exactly that reason. Do not assume a Nexus
@@ -630,6 +642,7 @@ await client.registerAgent(
   wallet.registerAgent({
     agent: agent.address,
     chainId: 393, // exchange testnet chain id
+    network: client.network, // salts the domain: valid on this network only
     expiresAtMs: Date.now() + 30 * 24 * 3600_000,
     nonce: Date.now(),
     label: "my-bot",
