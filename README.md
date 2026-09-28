@@ -696,22 +696,26 @@ for debugging, since every rejection is the same opaque `401`.
 
 ### Bridge (deposits & withdrawal wallets)
 
-`getBridgeAssets`, `createBridgeDepositAddress`, `listBridgeDepositAddresses`,
-`getBridgeDeposits`, and `getBridgeDeposit` wrap the `/bridge` Phase A surface
-(USDC/USDX). Get-or-create a per-chain deposit address (idempotent per account +
-chain), send funds to it, then poll a deposit until its `status` is `credited`:
+`getBridgeAssets`, `getBridgeDeposits`, and `getBridgeDeposit` wrap the
+`/bridge` read surface (USDC/USDX). They track a cross-chain deposit; they do
+not start one. List the supported chains, then poll a deposit until its
+`status` is `credited`:
 
 ```ts
 const { chains } = await client.getBridgeAssets();
-const addr = await client.createBridgeDepositAddress(chains[0].chain);
-console.log(`send USDC/USDX to ${addr.address} on ${addr.chain}`);
 
 const [deposit] = await client.getBridgeDeposits({
   limit: 1,
-  chain: addr.chain,
+  chain: chains[0].chain,
 });
 // deposit?.status: "detected" | "confirming" | "credited" | "failed"
 ```
+
+The SDK has no way to get a deposit address today.
+`createBridgeDepositAddress` and `listBridgeDepositAddresses` are deprecated: no
+server implements `/bridge/deposit-addresses` (its design was cancelled), and
+no replacement has shipped yet. To fund a testnet account, use `claimFaucet()`
+or `claimCredit()` (see [Money guardrails](#money-guardrails-read-the-descriptor)).
 
 Paying **out** needs a registered withdrawal wallet, and your API credentials say
 nothing about who controls the destination address — so registration is a

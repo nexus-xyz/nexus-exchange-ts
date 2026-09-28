@@ -2905,6 +2905,10 @@ export class Client {
    * `POST /bridge/deposit-addresses` — get or create the account's deposit
    * address on `chain`. Idempotent per `(account, chain)`: repeated calls
    * return the same address.
+   *
+   * @deprecated No server implements this route: it left the contract with
+   * ENG-10373 and its design was cancelled with ENG-11460, so every call
+   * fails. It will be removed in a later minor.
    */
   createBridgeDepositAddress(
     chain: string,
@@ -2918,7 +2922,13 @@ export class Client {
     );
   }
 
-  /** `GET /bridge/deposit-addresses` — the account's deposit addresses. */
+  /**
+   * `GET /bridge/deposit-addresses` — the account's deposit addresses.
+   *
+   * @deprecated No server implements this route: it left the contract with
+   * ENG-10373 and its design was cancelled with ENG-11460, so every call
+   * fails. It will be removed in a later minor.
+   */
   listBridgeDepositAddresses(opts?: {
     signal?: AbortSignal;
   }): Promise<BridgeDepositAddress[]> {
