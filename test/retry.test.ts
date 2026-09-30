@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { Client } from "../src/client.js";
-import { ApiError } from "../src/errors.js";
+import { ApiError, TransportError } from "../src/errors.js";
 import type { OrderRequest } from "../src/models.js";
 
 /**
@@ -224,4 +224,44 @@ test("each retry re-signs with a fresh timestamp", async () => {
     header(calls[1]!, "x-timestamp"),
     "retry must re-sign, not reuse the first attempt's stale timestamp",
   );
+});
+
+// ENG-18682: writes are never auto-retried. A cancel whose response was lost may
+// already have run; re-sending `DELETE /orders` would cancel orders placed since,
+// and re-sending `DELETE /orders/{id}` would answer 404 for a cancelled order.
+const writeClient = (impl: typeof fetch) =>
+  new Client({
+    fetchImpl: impl,
+    baseUrl: BASE,
+    apiKey: "key",
+    apiSecret: "abcd",
+    sleepImpl: recordSleep().impl,
+    retry: { baseDelayMs: 1 },
+  });
+
+test("does NOT retry cancelOrder after a transport failure", async () => {
+  const { impl, calls } = seqFetch(boom, status(404));
+  await assert.rejects(
+    () => writeClient(impl).cancelOrder("o-1", "BTC-USDX-PERP"),
+    (err) => err instanceof TransportError,
+  );
+  assert.equal(calls.length, 1, "DELETE must not be auto-retried");
+});
+
+test("does NOT retry cancelAllOrders after a transient 5xx", async () => {
+  const { impl, calls } = seqFetch(status(503), ok({}));
+  await assert.rejects(
+    () => writeClient(impl).cancelAllOrders(),
+    (err) => err instanceof ApiError && err.status === 503,
+  );
+  assert.equal(calls.length, 1, "DELETE must not be auto-retried");
+});
+
+test("does NOT retry a PUT (cancel-on-disconnect) after a transient 5xx", async () => {
+  const { impl, calls } = seqFetch(status(502), ok({ enabled: true }));
+  await assert.rejects(
+    () => writeClient(impl).setCancelOnDisconnect(true),
+    (err) => err instanceof ApiError && err.status === 502,
+  );
+  assert.equal(calls.length, 1, "PUT must not be auto-retried");
 });

@@ -88,12 +88,12 @@ worth knowing before you write code:
   is no allowlist to park it in: `CODE_ONLY_OPS` in `scripts/check-spec-drift.mjs`
   is empty by policy and the check fails on **any** entry, ticket reference or
   not. Wait for the released tag that defines the operation, bump the pin, then
-  add the method against the path the spec spells. The corollary is that
-  `root: true` is not a routing preference — use it exactly when the spec
-  declares the route without the `/api/v1` prefix.
+  add the method against the path the spec spells: the bare path (EDR-006), or
+  `/api/v1/bridge/…` for the bridge routes, which the pinned spec declares only
+  in that spelling.
 - **The parser needs literals at those call sites.** Pass the method and path
-  inline (`"GET"`, `"/orders"` or `` `/orders/${seg(id)}` ``) and set `root: true`
-  in an inline object literal. A path built into a local variable first would be
+  inline (`"GET"`, `"/orders"` or `` `/orders/${seg(id)}` ``). A path built into a
+  local variable first would be
   invisible to the parser, so it aborts loudly rather than undercounting.
 
 Expect a spec bump to be real work: because the spec is vendored and the models
