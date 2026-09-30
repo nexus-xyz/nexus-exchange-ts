@@ -43,22 +43,18 @@ function mockFetch(
 // ── Network axis (ENG-6453) ──────────────────────────────────────────────────
 
 test("live network base URLs are deployment bases, without API_BASE_PATH", () => {
-  // Testnet is on its durable host (ENG-8867). The value carries the `/indexer`
-  // route prefix the service is mounted under, not the bare host:
-  // `api.testnet.nexus.xyz/markets/summary` 404s where
-  // `api.testnet.nexus.xyz/indexer/markets/summary` answers 200.
+  // Testnet's base is the spec's REST base (EDR-006): the host strips `/v1`
+  // before the indexer sees the path, and the bare host root 404s.
   assert.equal(
     baseUrlForNetwork(Network.Testnet),
-    "https://api.testnet.nexus.xyz/indexer",
+    "https://api.testnet.nexus.xyz/v1",
   );
   assert.equal(baseUrlForNetwork(Network.Local), "http://localhost:9090");
 });
 
-// scripts/check-spec-drift.mjs reads API_BASE_PATH as the prefix every non-root
-// request composes, and derives the operations it compares against the spec from
-// it (invariant H). The prefix now lives in the path rather than the base, so
-// the invariant inverts: a base that *carries* it would make the client send
-// `/api/v1/api/v1/…` while the checker kept reporting green.
+// A base carrying the legacy `/api/v1` prefix is the pre-0.3 layout; under it
+// the bridge routes (still spelled `/api/v1/bridge/…`) would double it. No
+// built-in network may ship one.
 test("no live network base URL carries API_BASE_PATH", () => {
   assert.equal(API_BASE_PATH, "/api/v1");
   for (const [network, config] of Object.entries(NETWORKS)) {
@@ -101,7 +97,7 @@ test("the default network is testnet play funds, never mainnet", () => {
   assert.equal(client.network, Network.Testnet);
   assert.equal(client.isRealFunds, false);
   assert.equal(client.networkConfig.funds, "play");
-  assert.equal(client.baseUrl, "https://api.testnet.nexus.xyz/indexer");
+  assert.equal(client.baseUrl, "https://api.testnet.nexus.xyz/v1");
 });
 
 // Mainnet is real funds with no resolvable host and a different path
@@ -181,7 +177,7 @@ test("the NETWORKS map and its entries are frozen", () => {
   }, TypeError);
   assert.equal(
     baseUrlForNetwork(Network.Testnet),
-    "https://api.testnet.nexus.xyz/indexer",
+    "https://api.testnet.nexus.xyz/v1",
   );
 });
 
@@ -220,11 +216,8 @@ test("a relative or non-HTTP baseUrl is refused at construction", () => {
   );
 });
 
-// The version prefix lives in the path, and the client appends it to every
-// non-root route. A base that already carries `/api/v1` — this SDK's own
-// pre-0.3 default, still pasted from older docs — would therefore send
-// `/api/v1/api/v1/orders` while signing the correct `/api/v1/orders`: a 404
-// whose signature looks fine, which is a confusing pair to debug.
+// A base that already carries `/api/v1` is this SDK's pre-0.3 default, still
+// pasted from older docs. It is refused with the value to use instead.
 test("a baseUrl carrying API_BASE_PATH is refused at construction", () => {
   for (const baseUrl of [
     "https://exchange.nexus.xyz/api/v1",
@@ -237,7 +230,7 @@ test("a baseUrl carrying API_BASE_PATH is refused at construction", () => {
         assert.ok(err instanceof NexusExchangeError);
         assert.match(err.message, /must not include "\/api\/v1"/);
         // The message must name the value to use instead.
-        assert.match(err.message, /Pass the deployment base without it/);
+        assert.match(err.message, /api\.testnet\.nexus\.xyz\/v1/);
         return true;
       },
       `expected ${JSON.stringify(baseUrl)} to be refused`,
@@ -288,7 +281,7 @@ test("fetchMarketSummaries hits /markets/summary and decodes the body", async ()
 
   const out = await client.fetchMarketSummaries();
   assert.deepEqual(out, summaries);
-  assert.equal(calls[0]!.url, "https://example.test/api/v1/markets/summary");
+  assert.equal(calls[0]!.url, "https://example.test/markets/summary");
   assert.equal(calls[0]!.init.method, "GET");
 });
 
@@ -302,13 +295,13 @@ test("query params are appended in order and only when present", async () => {
   await client.fetchCandles("ETH-USDX-PERP", { timeframe: "1m", limit: 200 });
   assert.equal(
     calls[0]!.url,
-    "https://example.test/api/v1/markets/ETH-USDX-PERP/candles?timeframe=1m&limit=200",
+    "https://example.test/markets/ETH-USDX-PERP/candles?timeframe=1m&limit=200",
   );
 
   await client.fetchTrades("ETH-USDX-PERP"); // no limit → no query string
   assert.equal(
     calls[1]!.url,
-    "https://example.test/api/v1/markets/ETH-USDX-PERP/trades",
+    "https://example.test/markets/ETH-USDX-PERP/trades",
   );
 });
 
@@ -322,7 +315,7 @@ test("path segments are URL-encoded so they cannot escape the path", async () =>
   await client.fetchTicker("weird/../id");
   assert.equal(
     calls[0]!.url,
-    "https://example.test/api/v1/markets/weird%2F..%2Fid/ticker",
+    "https://example.test/markets/weird%2F..%2Fid/ticker",
   );
 });
 
@@ -333,10 +326,7 @@ test("trailing slashes on baseUrl are trimmed", async () => {
     baseUrl: "https://example.test/api/",
   });
   await client.fetchMarketSummaries();
-  assert.equal(
-    calls[0]!.url,
-    "https://example.test/api/api/v1/markets/summary",
-  );
+  assert.equal(calls[0]!.url, "https://example.test/api/markets/summary");
 });
 
 test("4xx is a terminal ApiError; 5xx is transient; code/message parsed", async () => {
@@ -484,18 +474,18 @@ test("signed GET sends valid x-api-key / x-timestamp / x-signature", async () =>
 
   assert.equal(calls.length, 1);
   const c = calls[0]!;
-  assert.equal(c.url, "http://localhost:9090/api/v1/account");
+  assert.equal(c.url, "http://localhost:9090/account");
   assert.equal(c.method, "GET");
   assert.equal(c.headers.get("x-api-key"), "nx_test");
 
   const ts = c.headers.get("x-timestamp")!;
   assert.match(ts, /^\d{13}$/);
-  // The signed path is the FULL request path incl. the `/api/v1` prefix — the
-  // server verifies the HMAC over that, not the method-relative `/account`.
+  // The signed path is the spec's bare path, which is what the indexer
+  // verifies once the deployment has stripped the base's own prefix.
   const expected = referenceSignature(
     ts,
     "GET",
-    "/api/v1/account",
+    "/account",
     "",
     Buffer.alloc(0),
   );
@@ -522,14 +512,8 @@ test("signed POST signs the exact JSON body bytes that are sent", async () => {
 
   const ts = c.headers.get("x-timestamp")!;
   // Signature must verify against the body bytes actually transmitted, over the
-  // full `/api/v1/orders` path.
-  const expected = referenceSignature(
-    ts,
-    "POST",
-    "/api/v1/orders",
-    "",
-    c.body!,
-  );
+  // bare `/orders` path.
+  const expected = referenceSignature(ts, "POST", "/orders", "", c.body!);
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
@@ -558,13 +542,13 @@ test("path params are percent-encoded and the signed path matches the URL", asyn
   assert.equal(c.method, "DELETE");
   assert.equal(
     c.url,
-    "http://localhost:9090/api/v1/orders/a%2Fb%3Fc?market_id=BTC-USDX-PERP",
+    "http://localhost:9090/orders/a%2Fb%3Fc?market_id=BTC-USDX-PERP",
   );
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "DELETE",
-    "/api/v1/orders/a%2Fb%3Fc",
+    "/orders/a%2Fb%3Fc",
     "market_id=BTC-USDX-PERP",
     Buffer.alloc(0),
   );
@@ -575,8 +559,8 @@ test("the signed path excludes the base URL's own path prefix", async () => {
   // The inverse of what this used to assert, and the reason authenticated calls
   // could not reach the public deployment. The gateway strips its own prefix
   // before the indexer verifies, so the HMAC must cover the LOGICAL path
-  // (`/api/v1/account`) and not the wire pathname
-  // (`/api/exchange/api/v1/account`). Folding the base in signed bytes the
+  // (`/account`) and not the wire pathname
+  // (`/api/exchange/account`). Folding the base in signed bytes the
   // server never sees, which surfaces as an auth failure on a URL that is
   // demonstrably correct.
   const calls: Captured[] = [];
@@ -599,16 +583,59 @@ test("the signed path excludes the base URL's own path prefix", async () => {
   await client.getAccount();
 
   const c = calls[0]!;
-  assert.equal(c.url, "https://proxy.internal/api/exchange/api/v1/account");
+  assert.equal(c.url, "https://proxy.internal/api/exchange/account");
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "GET",
-    "/api/v1/account",
+    "/account",
     "",
     Buffer.alloc(0),
   );
   assert.equal(c.headers.get("x-signature"), expected);
+});
+
+test("under a /v1 base, every route is sent under the base and signed bare", async () => {
+  // EDR-006 (ENG-18321): the edge strips `/v1` before the indexer verifies, so
+  // `/v1/orders` is sent and `/orders` is signed. The bridge routes are the one
+  // exception: the pinned spec has no bare twin for them yet, so they keep the
+  // `/api/v1` spelling in both the URL and the signature.
+  const calls: Captured[] = [];
+  const fetchImpl = (async (url: unknown, init: RequestInit | undefined) => {
+    calls.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      headers: new Headers(init?.headers),
+      body: undefined,
+    });
+    return new Response("[]", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const client = new Client({
+    baseUrl: "https://api.example.test/v1",
+    apiKey: "nx_test",
+    apiSecret: SECRET,
+    fetchImpl,
+  });
+  await client.getOpenOrders();
+  await client.getBridgeDeposits();
+
+  const cases: Array<[string, string]> = [
+    ["https://api.example.test/v1/orders", "/orders"],
+    [
+      "https://api.example.test/v1/api/v1/bridge/deposits",
+      "/api/v1/bridge/deposits",
+    ],
+  ];
+  cases.forEach(([url, signedPath], i) => {
+    const c = calls[i]!;
+    assert.equal(c.url, url);
+    const ts = c.headers.get("x-timestamp")!;
+    assert.equal(
+      c.headers.get("x-signature"),
+      referenceSignature(ts, "GET", signedPath, "", Buffer.alloc(0)),
+    );
+  });
 });
 
 test("calling a signed endpoint without credentials throws MissingCredentialsError", async () => {
@@ -710,7 +737,7 @@ test("getAccountState hits /account/state and decodes summary + positions", asyn
   );
   const got = await client.getAccountState();
 
-  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/state");
+  assert.equal(calls[0]!.url, "http://localhost:9090/account/state");
   assert.equal(calls[0]!.method, "GET");
   // Signed: the consolidated snapshot is account-scoped.
   assert.equal(calls[0]!.headers.get("x-api-key"), "nx_test");
@@ -733,7 +760,7 @@ test("getAccountFees decodes a negative maker rebate and open tier/schedule", as
   );
   const got = await client.getAccountFees();
 
-  assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/fees");
+  assert.equal(calls[0]!.url, "http://localhost:9090/account/fees");
   // A rebate is negative — it must survive decoding, not be clamped or dropped.
   assert.equal(got.maker_fee_bps, -2);
   assert.equal(got.volume_30d_estimated, false);
@@ -751,7 +778,7 @@ test("getPortfolioHistory omits the window param entirely when not given", async
   // rather than the SDK hard-coding a default that could drift from the spec.
   assert.equal(
     calls[0]!.url,
-    "http://localhost:9090/api/v1/account/portfolio-history",
+    "http://localhost:9090/account/portfolio-history",
   );
   // The served window is authoritative and echoed back.
   assert.equal(got.window, "day");
@@ -781,13 +808,13 @@ test("getPortfolioHistory signs the exact query string it sends", async () => {
   // byte-identical — a mismatch here would make every request fail HMAC checks.
   assert.equal(
     c.url,
-    "http://localhost:9090/api/v1/account/portfolio-history?window=week&limit=168",
+    "http://localhost:9090/account/portfolio-history?window=week&limit=168",
   );
   const ts = c.headers.get("x-timestamp")!;
   const expected = referenceSignature(
     ts,
     "GET",
-    "/api/v1/account/portfolio-history",
+    "/account/portfolio-history",
     "window=week&limit=168",
     Buffer.alloc(0),
   );
@@ -890,7 +917,7 @@ test("getPortfolioHistory accepts both ends of the documented limit range", asyn
     await client.getPortfolioHistory({ window: "all", limit });
     assert.equal(
       calls[0]!.url,
-      `http://localhost:9090/api/v1/account/portfolio-history?window=all&limit=${limit}`,
+      `http://localhost:9090/account/portfolio-history?window=all&limit=${limit}`,
     );
   }
 });
