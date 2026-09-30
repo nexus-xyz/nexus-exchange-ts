@@ -113,6 +113,7 @@ export {
   type WsSubscription,
   type WsEvent,
   type WsStatus,
+  type WsStreamHealth,
   type Channel,
   type PublicChannel,
   type AccountChannel,
