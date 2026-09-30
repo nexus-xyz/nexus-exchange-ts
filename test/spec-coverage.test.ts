@@ -298,12 +298,10 @@ test("getOrder sends the required market_id and signs the bare path", async () =
   assertSignedOver(c, "GET", "/orders/ord-1", "market_id=BTC-USDX-PERP");
 });
 
-test("GET /orders/{id} is bare while PATCH and DELETE on it are /api/v1", async () => {
-  // The trap this pins: the three verbs on one path do NOT share a spelling.
-  // The spec declares the GET only at the root, and gives the PATCH and DELETE
-  // `/api/v1` twins — so the spelling is read off each operation, never off its
-  // neighbours. Getting this wrong 404s (or signs a path the server never
-  // verifies) on exactly one of the three.
+test("GET, PATCH and DELETE on /orders/{id} all send and sign the bare path", async () => {
+  // Every route is bare under the `/v1` base (EDR-006), so the three verbs on
+  // one path now share a spelling, where they used to split between bare and
+  // `/api/v1`.
   const { client, calls } = capture({}, () => new Response("{}"));
 
   await client.getOrder("ord-1", "BTC-USDX-PERP");
@@ -312,11 +310,7 @@ test("GET /orders/{id} is bare while PATCH and DELETE on it are /api/v1", async 
 
   assert.deepEqual(
     calls.map((c) => `${c.method} ${new URL(c.url).pathname}`),
-    [
-      "GET /orders/ord-1",
-      "PATCH /api/v1/orders/ord-1",
-      "DELETE /api/v1/orders/ord-1",
-    ],
+    ["GET /orders/ord-1", "PATCH /orders/ord-1", "DELETE /orders/ord-1"],
   );
   assertSignedOver(
     calls[0]!,
@@ -327,7 +321,7 @@ test("GET /orders/{id} is bare while PATCH and DELETE on it are /api/v1", async 
   assertSignedOver(
     calls[2]!,
     "DELETE",
-    "/api/v1/orders/ord-1",
+    "/orders/ord-1",
     "market_id=BTC-USDX-PERP",
   );
 });
@@ -343,7 +337,7 @@ test("getOrder rejects a missing or empty marketId without sending", async () =>
   assert.equal(calls.length, 0, "nothing reaches the wire");
 });
 
-// ─── PATCH /api/v1/orders/{order_id} ─────────────────────────────────────────
+// ─── PATCH /orders/{order_id} ────────────────────────────────────────────────
 
 test("amendOrder sends the required market_id on the wire and signs over it", async () => {
   // ENG-17118: the engine's `amend_order` takes the same non-optional
@@ -360,16 +354,11 @@ test("amendOrder sends the required market_id on the wire and signs over it", as
   assert.equal(c.method, "PATCH");
   assert.equal(
     c.url,
-    "http://localhost:9090/api/v1/orders/ord-1?market_id=BTC-USDX-PERP",
+    "http://localhost:9090/orders/ord-1?market_id=BTC-USDX-PERP",
   );
   assert.equal(new URL(c.url).searchParams.get("market_id"), "BTC-USDX-PERP");
   assert.equal(c.body?.toString("utf8"), '{"price":"65000"}');
-  assertSignedOver(
-    c,
-    "PATCH",
-    "/api/v1/orders/ord-1",
-    "market_id=BTC-USDX-PERP",
-  );
+  assertSignedOver(c, "PATCH", "/orders/ord-1", "market_id=BTC-USDX-PERP");
 });
 
 test("amendOrder escapes the market id in the URL and the signed query alike", async () => {
@@ -378,11 +367,8 @@ test("amendOrder escapes the market id in the URL and the signed query alike", a
   await client.amendOrder("a/b", "X&Y", { size: "1" });
 
   const c = calls[0]!;
-  assert.equal(
-    c.url,
-    "http://localhost:9090/api/v1/orders/a%2Fb?market_id=X%26Y",
-  );
-  assertSignedOver(c, "PATCH", "/api/v1/orders/a%2Fb", "market_id=X%26Y");
+  assert.equal(c.url, "http://localhost:9090/orders/a%2Fb?market_id=X%26Y");
+  assertSignedOver(c, "PATCH", "/orders/a%2Fb", "market_id=X%26Y");
 });
 
 test("amendOrder rejects a missing or empty marketId without sending", async () => {
@@ -405,7 +391,7 @@ test("amendOrder rejects a missing or empty marketId without sending", async () 
   assert.equal(calls.length, 0, "nothing reaches the wire");
 });
 
-// ─── DELETE /api/v1/orders/{order_id} ────────────────────────────────────────
+// ─── DELETE /orders/{order_id} ───────────────────────────────────────────────
 
 test("cancelOrder sends the required market_id on the wire and signs over it", async () => {
   // ENG-17118: `market_id` is `required: true` on this DELETE and the engine's
@@ -425,15 +411,10 @@ test("cancelOrder sends the required market_id on the wire and signs over it", a
   assert.equal(c.method, "DELETE");
   assert.equal(
     c.url,
-    "http://localhost:9090/api/v1/orders/ord-1?market_id=BTC-USDX-PERP",
+    "http://localhost:9090/orders/ord-1?market_id=BTC-USDX-PERP",
   );
   assert.equal(new URL(c.url).searchParams.get("market_id"), "BTC-USDX-PERP");
-  assertSignedOver(
-    c,
-    "DELETE",
-    "/api/v1/orders/ord-1",
-    "market_id=BTC-USDX-PERP",
-  );
+  assertSignedOver(c, "DELETE", "/orders/ord-1", "market_id=BTC-USDX-PERP");
 });
 
 test("cancelOrder escapes the market id in the URL and the signed query alike", async () => {
@@ -445,11 +426,8 @@ test("cancelOrder escapes the market id in the URL and the signed query alike", 
   await client.cancelOrder("a/b", "X&Y");
 
   const c = calls[0]!;
-  assert.equal(
-    c.url,
-    "http://localhost:9090/api/v1/orders/a%2Fb?market_id=X%26Y",
-  );
-  assertSignedOver(c, "DELETE", "/api/v1/orders/a%2Fb", "market_id=X%26Y");
+  assert.equal(c.url, "http://localhost:9090/orders/a%2Fb?market_id=X%26Y");
+  assertSignedOver(c, "DELETE", "/orders/a%2Fb", "market_id=X%26Y");
 });
 
 test("cancelOrder rejects a missing or empty marketId without sending", async () => {
@@ -488,7 +466,7 @@ test("getOrder escapes both the order id and the market id", async () => {
 
 // ─── cancel-on-disconnect ────────────────────────────────────────────────────
 
-test("getCancelOnDisconnect reads the /api/v1 spelling", async () => {
+test("getCancelOnDisconnect reads the bare spelling", async () => {
   const { client, calls } = capture(
     {},
     () =>
@@ -506,13 +484,10 @@ test("getCancelOnDisconnect reads the /api/v1 spelling", async () => {
   assert.equal(out.grace_secs, null);
 
   const c = calls[0]!;
-  // Dual-mounted in the spec; this client targets the `/api/v1` form, like the
-  // other `/account/…` reads, and records the bare twin in uncovered-ops.txt.
-  assert.equal(
-    c.url,
-    "http://localhost:9090/api/v1/account/cancel-on-disconnect",
-  );
-  assertSignedOver(c, "GET", "/api/v1/account/cancel-on-disconnect");
+  // Dual-mounted in the spec; this client targets the bare form, like every
+  // other non-bridge route, and records the `/api/v1` twin in uncovered-ops.txt.
+  assert.equal(c.url, "http://localhost:9090/account/cancel-on-disconnect");
+  assertSignedOver(c, "GET", "/account/cancel-on-disconnect");
 });
 
 test("setCancelOnDisconnect PUTs the opt-in and signs the body", async () => {
@@ -531,13 +506,10 @@ test("setCancelOnDisconnect PUTs the opt-in and signs the body", async () => {
 
   const c = calls[0]!;
   assert.equal(c.method, "PUT");
-  assert.equal(
-    c.url,
-    "http://localhost:9090/api/v1/account/cancel-on-disconnect",
-  );
+  assert.equal(c.url, "http://localhost:9090/account/cancel-on-disconnect");
   assert.equal(c.headers.get("content-type"), "application/json");
   assert.equal(c.body!.toString("utf8"), '{"enabled":true}');
-  assertSignedOver(c, "PUT", "/api/v1/account/cancel-on-disconnect");
+  assertSignedOver(c, "PUT", "/account/cancel-on-disconnect");
 
   // `false` must be sent, not dropped as falsy — disabling is the whole point.
   await client.setCancelOnDisconnect(false);

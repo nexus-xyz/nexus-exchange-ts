@@ -172,7 +172,7 @@ test("signature recovers to x-agent over the UNPREFIXED keccak256", () => {
   const signer = AgentSigner.fromHex(VECTORS[1].private_key);
   const parts = {
     method: "POST",
-    path: "/api/v1/orders",
+    path: "/orders",
     query: "",
     body: "{}",
     timestampMs: 1_776_033_900_000,
@@ -427,7 +427,7 @@ test("mock server: an agent-signed client sends exactly the agentAuth headers", 
 
     assert.equal(received.length, 3);
     const [post, get, del] = received;
-    assert.equal(post.path, "/api/v1/orders");
+    assert.equal(post.path, "/orders");
     assert.equal(get.path, "/orders/ord-1");
     assert.equal(get.query, "market_id=BTC-USDX-PERP");
     assert.equal(del.method, "DELETE");
@@ -462,7 +462,7 @@ test("mock server: an agent-signed client sends exactly the agentAuth headers", 
       post.headers["x-signature"],
       signer.sign({
         method: "POST",
-        path: "/api/v1/orders",
+        path: "/orders",
         body: post.body,
         timestampMs: now,
         nonce: now,
@@ -477,14 +477,14 @@ test("mock server: a write whose nonce arrives out of order is refused (ENG-1701
   // the same opaque 401 as a bad signature.
   const now = 1_776_033_900_000;
   const signer = AgentSigner.fromHex(VECTORS[1].private_key);
-  const parts = { method: "DELETE", path: "/api/v1/orders", timestampMs: now };
+  const parts = { method: "DELETE", path: "/orders", timestampMs: now };
   const first = signer.authHeaders(parts);
   const second = signer.authHeaders(parts);
   assert.ok(Number(second["x-nonce"]) > Number(first["x-nonce"]));
 
   await withAgentVerifier(now, async (baseUrl) => {
     const send = (h: AgentAuthHeaders) =>
-      fetch(`${baseUrl}/api/v1/orders`, {
+      fetch(`${baseUrl}/orders`, {
         method: "DELETE",
         headers: { ...h },
       });
