@@ -26,8 +26,10 @@
 // replace, and its `subscribed` ack re-seeds the cursor and marks the
 // subscription live again. No backoff: a subscribe without `since` cannot be
 // answered with `out_of_sync`, and the lag that can repeat it is paced by the
-// server. The consumer's part is a REST refetch on the `outOfSync` frame. Same
-// rules as the Rust typed client (ENG-18685) and the Go client.
+// server. The consumer's part is one REST refetch after `health()` is `live`
+// again: a refetch before the resubscribe takes effect can miss events
+// published in between. Same rules as the Rust typed client (ENG-18685) and
+// the Go client.
 //
 // Channels
 // --------
@@ -111,7 +113,10 @@ export interface WsEvent {
    * True when this is a synthetic notice — not a real engine event — telling
    * the consumer the stream lost continuity (server ring overran, or the
    * local buffer dropped events under backpressure). The consumer should do
-   * a full REST refetch and rely on live events from here on.
+   * a full REST refetch and rely on live events from here on. After a server
+   * `out_of_sync` the client is already resubscribing: refetch once the
+   * subscription's `health()` is `live` again, not before, or the refetch can
+   * miss events published before the resubscribe takes effect.
    */
   outOfSync?: boolean;
 }
@@ -124,12 +129,19 @@ export interface WsEvent {
  *                   server's `subscribed` ack.
  *   • `resyncing` — the server ended it (`out_of_sync`) and the client has
  *                   already re-subscribed; `live` again on the next ack.
+ *
+ * Refetch REST state once health is `live` again, not on the `outOfSync`
+ * frame itself: a refetch that lands before the resubscribe takes effect can
+ * miss events published in between.
  */
 export type WsStreamHealth = "live" | "resyncing";
 
 export interface WsSubscription {
   events: AsyncIterable<WsEvent>;
-  /** Current delivery health of this subscription. */
+  /**
+   * Current delivery health of this subscription. After an `outOfSync` frame,
+   * wait for `live` before refetching over REST (see `WsStreamHealth`).
+   */
   health(): WsStreamHealth;
   /** Tear down this subscription. Idempotent. */
   unsubscribe(): void;

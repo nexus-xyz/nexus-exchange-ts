@@ -766,9 +766,19 @@ import { createWsClient } from "@nexus-xyz/exchange-ts";
 const client = createWsClient({ url: "wss://api.testnet.nexus.xyz/indexer" });
 const book = client.subscribe("book", { market: "BTC-PERP" });
 
+// Your REST re-read of the state this channel mirrors.
+async function refetchSnapshot() {}
+
+// Resolves once the subscription is delivering again.
+async function untilLive(sub: { health(): string }) {
+  while (sub.health() !== "live") await new Promise((r) => setTimeout(r, 50));
+}
+
 for await (const evt of book.events) {
   if (evt.outOfSync) {
-    // Stream lost continuity — refetch a REST snapshot, then keep going.
+    // Stream lost continuity. The client is already resubscribing: refetch a
+    // REST snapshot once it is live again, not before, then keep going.
+    void untilLive(book).then(refetchSnapshot);
     continue;
   }
   console.log(evt.seq, evt.data);
@@ -778,10 +788,13 @@ for await (const evt of book.events) {
 When the server ends one subscription (`out_of_sync`: the subscriber fell
 behind, or its cursor predates the server's buffer), the socket stays open, so
 `client.status()` still says `open`. The client delivers the `outOfSync` frame
-and re-subscribes that channel at once from the live edge; `book.health()` is
-`resyncing` until the server acknowledges it, then `live` again. Your part is
-the REST refetch on the `outOfSync` frame, as above; there is no need to
-resubscribe.
+and resubscribes that channel automatically from the live edge; there is no
+need to resubscribe yourself. `book.health()` is `resyncing` until the server
+acknowledges the new subscription (its next `subscribed` ack), then `live`
+again. Wait for `live` before the REST refetch: a refetch that lands before the
+resubscribe takes effect can miss events published in between. An `outOfSync`
+frame from the client's own full buffer leaves health `live`, so the same
+refetch runs at once.
 
 Public channels (`book`, `trades`, `candles`) need no authentication.
 Account-scoped channels (`orders`, `fills`, `positions`, `balances`,
