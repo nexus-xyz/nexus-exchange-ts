@@ -158,13 +158,17 @@ const DEFAULT_RETRY_MAX_MS = 8_000;
 const RETRY_AFTER_MAX_MS = 60_000;
 
 /**
- * HTTP methods that are safe to retry automatically. A transient failure on a
- * non-idempotent request (notably `POST /orders`) might have *already* taken
- * effect on the server before the error surfaced, so retrying it could double
- * the effect — place a second order, credit twice. We therefore never auto-retry
- * `POST`/`PATCH`; callers own the retry decision for those.
+ * HTTP methods retried automatically: reads only. A transient failure on any
+ * write might have *already* taken effect on the server before the error
+ * surfaced, and re-sending it is not safe even when the method is idempotent in
+ * HTTP terms. `DELETE /orders` cancels whatever is open when it runs, so a retry
+ * after a lost response can cancel orders placed since; a retried
+ * `DELETE /orders/{id}` answers 404 for an order the first attempt already
+ * cancelled. We therefore never auto-retry `POST`/`PUT`/`PATCH`/`DELETE`
+ * (matching the Python, Rust and Go SDKs); callers own the retry decision for
+ * writes (ENG-18682).
  */
-const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+const RETRYABLE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /** Sleep for `ms`, rejecting early (with a {@link TransportError}) if `signal` aborts. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -1387,10 +1391,11 @@ function wsUrlForOrigin(origin: string): string | null {
 }
 
 /**
- * Automatic retry policy for transient failures. Retries apply only to
- * idempotent requests (see {@link IDEMPOTENT_METHODS}) that fail transiently —
- * transport errors, `5xx`, `408`, and `429` — with exponential backoff plus
- * jitter, honoring a `Retry-After` header when present.
+ * Automatic retry policy for transient failures. Retries apply only to reads
+ * (`GET`/`HEAD`/`OPTIONS`, see {@link RETRYABLE_METHODS}) that fail
+ * transiently — transport errors, `5xx`, `408`, and `429` — with exponential
+ * backoff plus jitter, honoring a `Retry-After` header when present. Writes
+ * (`POST`/`PUT`/`PATCH`/`DELETE`) are never retried; the caller decides.
  */
 export interface RetryOptions {
   /**
@@ -1490,7 +1495,8 @@ export interface ClientOptions {
   /** Per-request timeout in milliseconds. Defaults to 30s. */
   timeoutMs?: number;
   /**
-   * Automatic-retry policy for transient failures on idempotent requests.
+   * Automatic-retry policy for transient failures on reads (writes are never
+   * retried).
    * Defaults to 2 retries with 250ms→8s exponential backoff. Pass
    * `{ maxRetries: 0 }` to disable.
    */
@@ -3675,7 +3681,7 @@ export class Client {
     path: string,
     options: RequestOptions = {},
   ): Promise<{ value: T; headers: Headers }> {
-    const retryable = IDEMPOTENT_METHODS.has(method.toUpperCase());
+    const retryable = RETRYABLE_METHODS.has(method.toUpperCase());
     let attempt = 0;
     for (;;) {
       try {

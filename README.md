@@ -64,6 +64,15 @@ Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 `transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
 `transient`), and `MissingCredentialsError`.
 
+The client retries **reads only** (`GET`, `HEAD`, `OPTIONS`) on a transient
+failure: transport errors, `5xx`, `408` and `429`, up to `retry.maxRetries`
+(default 2) with exponential backoff, honoring `Retry-After`. Writes (`POST`,
+`PUT`, `PATCH`, `DELETE`) are sent once and never retried, because a write whose
+response was lost may already have run: re-sending `cancelAllOrders` would also
+cancel orders placed since, and re-sending `cancelOrder` would answer `404` for an
+order the first attempt cancelled. On a transient error from a write, re-read
+state (for example `getOpenOrders`) before deciding whether to send it again.
+
 State-changing operations (orders, amends, deposits, margin moves, faucet) can
 answer `403` from a jurisdiction control: an `ApiError` whose `code` is
 `RESTRICTED_JURISDICTION`, `US_RESTRICTED`, or `GEO_UNRESOLVED` (the
