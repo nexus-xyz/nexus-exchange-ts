@@ -755,8 +755,8 @@ wallet-lifecycle follow-up.
 ## WebSocket streaming
 
 `createWsClient` multiplexes any number of channel subscriptions onto a single
-socket, tracks per-channel sequence numbers, and reconnects with replay-from-
-`lastSeq` on drop. Each subscription is an `AsyncIterable<WsEvent>`.
+socket, tracks per-channel sequence numbers, and reconnects with replay from
+the last seq seen on drop. Each subscription is an `AsyncIterable<WsEvent>`.
 
 ```ts
 import { createWsClient } from "@nexus-xyz/exchange-ts";
@@ -774,6 +774,14 @@ for await (const evt of book.events) {
   console.log(evt.seq, evt.data);
 }
 ```
+
+When the server ends one subscription (`out_of_sync`: the subscriber fell
+behind, or its cursor predates the server's buffer), the socket stays open, so
+`client.status()` still says `open`. The client delivers the `outOfSync` frame
+and re-subscribes that channel at once from the live edge; `book.health()` is
+`resyncing` until the server acknowledges it, then `live` again. Your part is
+the REST refetch on the `outOfSync` frame, as above; there is no need to
+resubscribe.
 
 Public channels (`book`, `trades`, `candles`) need no authentication.
 Account-scoped channels (`orders`, `fills`, `positions`, `balances`,
