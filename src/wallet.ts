@@ -381,7 +381,7 @@ export function signPrehash(
  * @example
  * ```ts
  * const signer = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
- * const { token } = await client.signIn(signer);
+ * const { token } = await client.login(signer);
  * ```
  */
 export class EthSigner {

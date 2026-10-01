@@ -25,7 +25,7 @@ import { Client } from "@nexus-xyz/exchange-ts";
 
 const client = new Client(); // defaults to the public testnet host, no credentials
 
-for (const market of await client.fetchMarketSummaries()) {
+for (const market of await client.fetchMarketsSummary()) {
   console.log(market.market_id);
 }
 
@@ -40,8 +40,8 @@ signs and assembles its own request, with no shared mutable state and no locks.
 
 ### Market-data methods
 
-`fetchMarketSummaries`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
-`fetchTrades`, `fetchCandles`, `fetchFundingHistory`, `fetchFundingSamples`,
+`fetchMarketsSummary`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
+`fetchTrades`, `fetchOHLCV`, `fetchFundingRateHistory`, `fetchFundingSamples`,
 `fetchMarkPrice`, `fetchMarketStatus`, `fetchMarketRiskParams`, `fetchStats`,
 `fetchStatsHistory`, and `fetchStatus` — covering the public market-data routes
 of the pinned spec. Each returns the corresponding
@@ -56,7 +56,7 @@ Two market reads are **authenticated** despite living in this family, because th
 spec gives them `hmacAuth`: `fetchMarkets` (full trading parameters — tick and
 lot size, order-size bounds, margin rates, max leverage) and `fetchAdlEvents` (a
 market's auto-deleveraging settlements). Without credentials they throw
-`MissingCredentialsError` before anything reaches the wire. `fetchMarketSummaries`
+`MissingCredentialsError` before anything reaches the wire. `fetchMarketsSummary`
 is the unauthenticated way to enumerate markets, and `fetchMarketRiskParams` the
 public read of one market's margin rates and leverage cap.
 
@@ -110,8 +110,8 @@ const client = new Client({
   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET, // 32-byte hex from POST /keys
 });
 
-const account = await client.getAccount();
-const { order } = await client.placeOrder({
+const account = await client.fetchBalance();
+const { order } = await client.createOrder({
   market_id: "BTC-USDX-PERP",
   side: "Buy",
   order_type: "Limit",
@@ -124,18 +124,18 @@ await client.cancelOrder(order.id, order.market_id);
 
 Credentials are optional — construct the client without them for public reads;
 any signed endpoint then throws `MissingCredentialsError`. Implemented
-authenticated endpoints: account (`getAccount`, `getAccountSummary`,
-`getAccountState`, `getAccountFees`, `getEquityHistory`,
-`getPortfolioHistory`, `getRateLimit`, `getAdlHistory`, `claimCredit`,
-`getCancelOnDisconnect`, `setCancelOnDisconnect`); funds (`deposit`,
-`createDeposit`, `getDeposits`, `getWithdrawals`, `getAccountFunding`,
-`claimFaucet`, `adjustMargin`);
-positions (`getPositions`, `getClosedPositions`); `getFills`; and orders —
-`placeOrder`, `placeOrderBatch`, `previewOrder`, `getOrder`, `getOpenOrders`,
-`getOrderHistory`, `amendOrder` (PATCH, cancel-replace), `cancelOrder`,
+authenticated endpoints: account (`fetchBalance`, `fetchAccountSummary`,
+`fetchAccountState`, `fetchTradingFees`, `fetchEquityHistory`,
+`fetchPortfolioHistory`, `fetchRateLimitStatus`, `fetchAdlHistory`, `claimCredit`,
+`fetchCancelOnDisconnect`, `setCancelOnDisconnect`); funds (`deposit`,
+`createDeposit`, `fetchDeposits`, `fetchWithdrawals`, `fetchFundingHistory`,
+`claimFaucet`, `addMargin`);
+positions (`fetchPositions`, `fetchPositionsHistory`); `fetchMyTrades`; and orders —
+`createOrder`, `createOrders`, `previewOrder`, `fetchOrder`, `fetchOpenOrders`,
+`fetchOrders`, `editOrder` (PATCH, cancel-replace), `cancelOrder`,
 `cancelAllOrders`.
 
-`getOrder(orderId, marketId)`, `amendOrder(orderId, marketId, amend)` and
+`fetchOrder(orderId, marketId)`, `editOrder(orderId, marketId, amend)` and
 `cancelOrder(orderId, marketId)` take the market as a second **required**
 argument, not an optional filter: the spec marks their `market_id` query
 parameter required because single-order operations are routed by market, so
@@ -164,13 +164,13 @@ the limit family, and accepted-but-not-applied by `previewOrder`.
 
 ### Portfolio
 
-`getAccountState` returns the whole account in one call — the summary aggregates
+`fetchAccountState` returns the whole account in one call — the summary aggregates
 plus every open position — built from a single coherent read, so
 `summary.open_positions_count` always matches `positions.length`. Prefer it over
-pairing `getAccountSummary` with `getPositions`.
+pairing `fetchAccountSummary` with `fetchPositions`.
 
 ```ts
-const { summary, positions } = await client.getAccountState();
+const { summary, positions } = await client.fetchAccountState();
 // `withdrawable` is free margin floored at zero: exactly what can leave the
 // account, already net of initial margin and open-order reservations.
 console.log(summary.withdrawable, positions.length);
@@ -195,7 +195,7 @@ paired `*_error`), or `undefined` (this server does not report the field at all)
 a missing `withdrawable` to `"0"` — "not reported" and "nothing withdrawable" are
 different answers and only one of them is safe to act on.
 
-`getPortfolioHistory` returns equity, cumulative trading PnL, and cumulative
+`fetchPortfolioHistory` returns equity, cumulative trading PnL, and cumulative
 traded volume over a `window`, oldest first. Omit `window` to take the server's
 `day` default, and read `window`/`cadence_ms` off the response rather than
 assuming what was served.
@@ -213,21 +213,21 @@ round trip on a guaranteed `400`. Within range the server clamps further to the
 window's capacity above, so asking for more points than a window holds is fine.
 
 ```ts
-const history = await client.getPortfolioHistory({ window: "week" });
+const history = await client.fetchPortfolioHistory({ window: "week" });
 for (const p of history.points) {
   // Decimal strings — parse with a decimal type, never a float. (Note
-  // `EquityPoint.equity` from `getEquityHistory` is a JSON number instead.)
+  // `EquityPoint.equity` from `fetchEquityHistory` is a JSON number instead.)
   console.log(p.timestamp_ms, p.equity, p.pnl, p.volume);
 }
 ```
 
-`getAccountFees` reports the effective fee schedule. `maker_fee_bps` may be
+`fetchTradingFees` reports the effective fee schedule. `maker_fee_bps` may be
 negative — that's a rebate, not an error — and `tier` / `schedule` are open
 strings that will gain values when the fee model lands, so don't switch
 exhaustively on them.
 
 ```ts
-const fees = await client.getAccountFees();
+const fees = await client.fetchTradingFees();
 console.log(fees.maker_fee_bps, fees.taker_fee_bps, fees.tier, fees.schedule);
 // True when the rolling window may undercount (source fill buffer was full).
 console.log(fees.volume_30d, fees.volume_30d_estimated);
@@ -546,8 +546,8 @@ L1 chain id: mainnet runs against Ethereum Mainnet via the USDX bridge.
 ## Pagination
 
 List endpoints have auto-paging `*Paginated` variants (`fetchTradesPaginated`,
-`getFillsPaginated`, `getOrderHistoryPaginated`, `getEquityHistoryPaginated`,
-`getClosedPositionsPaginated`) that return a `Paginator`, mirroring the Rust
+`fetchMyTradesPaginated`, `fetchOrdersPaginated`, `fetchEquityHistoryPaginated`,
+`fetchPositionsHistoryPaginated`) that return a `Paginator`, mirroring the Rust
 SDK. Collect everything with `.all()`, walk pages with `.nextPage()`, or stream
 item-by-item with `for await`. Set the per-page size with `.pageSize(n)` and cap
 total pages with `.maxPages(n)`; resume from a saved cursor with
@@ -555,7 +555,7 @@ total pages with `.maxPages(n)`; resume from a saved cursor with
 
 ```ts
 // Stream every account fill without holding them all in memory.
-for await (const fill of client.getFillsPaginated().pageSize(100)) {
+for await (const fill of client.fetchMyTradesPaginated().pageSize(100)) {
   console.log(fill.id, fill.price, fill.size);
 }
 
@@ -589,21 +589,21 @@ request is built, so an out-of-schema page size fails locally (as a terminal
 `InvalidRequestError`) instead of being signed and sent. The maxima are per
 endpoint and **not** interchangeable:
 
-| endpoint                      | method                        | `limit` max                                         |
-| ----------------------------- | ----------------------------- | --------------------------------------------------- |
-| `GET /markets/{id}/trades`    | `fetchTradesPaginated`        | `TRADES_LIMIT_MAX` = 1000                           |
-| `GET /fills`                  | `getFillsPaginated`           | `FILLS_LIMIT_MAX` = 1000                            |
-| `GET /orders/history`         | `getOrderHistoryPaginated`    | `ORDER_HISTORY_LIMIT_MAX` = 500                     |
-| `GET /positions/closed`       | `getClosedPositionsPaginated` | `CLOSED_POSITIONS_LIMIT_MAX` = 200                  |
-| `GET /account/equity-history` | `getEquityHistoryPaginated`   | `EQUITY_HISTORY_LIMIT_MAX` = 720 (also the default) |
+| endpoint                      | method                           | `limit` max                                         |
+| ----------------------------- | -------------------------------- | --------------------------------------------------- |
+| `GET /markets/{id}/trades`    | `fetchTradesPaginated`           | `TRADES_LIMIT_MAX` = 1000                           |
+| `GET /fills`                  | `fetchMyTradesPaginated`         | `FILLS_LIMIT_MAX` = 1000                            |
+| `GET /orders/history`         | `fetchOrdersPaginated`           | `ORDER_HISTORY_LIMIT_MAX` = 500                     |
+| `GET /positions/closed`       | `fetchPositionsHistoryPaginated` | `CLOSED_POSITIONS_LIMIT_MAX` = 200                  |
+| `GET /account/equity-history` | `fetchEquityHistoryPaginated`    | `EQUITY_HISTORY_LIMIT_MAX` = 720 (also the default) |
 
 The `366` that appears in the spec belongs to `/account/portfolio-history`, which
 has no `cursor` parameter and is not paginated — applying it here would reject
 valid requests, and on `/account/equity-history` it sits below that endpoint's own
 default of 720.
 
-The flat getters (`fetchTrades`, `getFills`, `getOrderHistory`,
-`getClosedPositions`, `getEquityHistory`) return the **first page only** and take
+The flat getters (`fetchTrades`, `fetchMyTrades`, `fetchOrders`,
+`fetchPositionsHistory`, `fetchEquityHistory`) return the **first page only** and take
 the same `limit` bound.
 
 ### Wallet sign-in, sessions & API-key management
@@ -621,16 +621,16 @@ const client = new Client({ network: Network.Testnet });
 const wallet = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
 
 // Exchange an EIP-191 signature for a 24h session token (stored on the client).
-await client.signIn(wallet);
+await client.login(wallet);
 
 // Manage HMAC API keys with that session token.
 const created = await client.createApiKey(); // { key_id, secret } — secret shown ONCE
-const keys = await client.listApiKeys(); // [{ key_id, tier }]
+const keys = await client.fetchApiKeys(); // [{ key_id, tier }]
 await client.deleteApiKey(created.key_id);
 ```
 
 Session tokens authenticate only the `/keys` endpoints and expire after 24h;
-call `signIn` again to renew, or `setSessionToken(...)` to supply/clear one.
+call `login` again to renew, or `setSessionToken(...)` to supply/clear one.
 
 Agent keys let a derived keypair sign trading requests without exposing the main
 wallet. Registration is authorized by the wallet's EIP-712 signature (no session
@@ -650,7 +650,7 @@ await client.registerAgent(
 );
 
 // With apiKey/apiSecret configured:
-const agents = await client.listAgents();
+const agents = await client.fetchAgents();
 await client.revokeAgent(agent.address);
 ```
 
@@ -666,7 +666,7 @@ import { AgentSigner, Client, Network } from "@nexus-xyz/exchange-ts";
 
 const agent = AgentSigner.fromHex(process.env.AGENT_PRIVATE_KEY!);
 const trader = new Client({ network: Network.Testnet, agentSigner: agent });
-await trader.placeOrder({ ... });
+await trader.createOrder({ ... });
 ```
 
 Every signed request then carries four headers — `x-agent`, `x-timestamp`,
@@ -685,7 +685,7 @@ writes (reads parse but do not enforce them). `agentCanonicalString` is exported
 for debugging, since every rejection is the same opaque `401`.
 
 - **Agent keys are trade-only and cannot withdraw.** Agent-signed withdrawals
-  are refused (`403 AGENT_CANNOT_WITHDRAW`), and `listAgents` / `revokeAgent`
+  are refused (`403 AGENT_CANNOT_WITHDRAW`), and `fetchAgents` / `revokeAgent`
   need an HMAC client — an agent-signed client refuses them locally.
 - **Concurrent writes from one agent key can be refused as replays**
   (ENG-17010). Nonces are issued in order but can _arrive_ out of order; if
@@ -696,17 +696,17 @@ for debugging, since every rejection is the same opaque `401`.
 
 ### Bridge (deposits & withdrawal wallets)
 
-`getBridgeAssets`, `createBridgeDepositAddress`, `listBridgeDepositAddresses`,
-`getBridgeDeposits`, and `getBridgeDeposit` wrap the `/bridge` Phase A surface
+`fetchBridgeAssets`, `createBridgeDepositAddress`, `listBridgeDepositAddresses`,
+`fetchBridgeDeposits`, and `fetchBridgeDeposit` wrap the `/bridge` Phase A surface
 (USDC/USDX). Get-or-create a per-chain deposit address (idempotent per account +
 chain), send funds to it, then poll a deposit until its `status` is `credited`:
 
 ```ts
-const { chains } = await client.getBridgeAssets();
+const { chains } = await client.fetchBridgeAssets();
 const addr = await client.createBridgeDepositAddress(chains[0].chain);
 console.log(`send USDC/USDX to ${addr.address} on ${addr.chain}`);
 
-const [deposit] = await client.getBridgeDeposits({
+const [deposit] = await client.fetchBridgeDeposits({
   limit: 1,
   chain: addr.chain,
 });

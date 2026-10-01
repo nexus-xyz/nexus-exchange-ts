@@ -11,9 +11,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-// @ts-expect-error — a .mjs script with no type declarations; this is a script
-// under test, not a typed module of the package.
-import { canonicalOp, operationsDrift } from "../scripts/check-spec-drift.mjs";
+import {
+  canonicalOp,
+  operationsDrift,
+  wrapperNameDrift,
+  // @ts-expect-error — a .mjs script with no type declarations; this is a
+  // script under test, not a typed module of the package.
+} from "../scripts/check-spec-drift.mjs";
 
 const BASE = "/api/v1";
 const line = (op: string, n = 1) => ({ op, line: n });
@@ -211,4 +215,38 @@ test("the summary reports the allowlist size so a green run asserts it is 0", ()
     run({ codeOnly: new Set(["POST /api/v1/parked"]) }).summary,
     /Off-contract allowlist: 1 entr\(ies\)/,
   );
+});
+
+// ─── Invariant I: wrapper name == operationId (R2.25) ────────────────────────
+
+const NAME_SPEC = {
+  paths: {
+    "/api/v1/widgets/{id}": { get: { operationId: "fetchWidgetV1" } },
+    "/gadgets": { get: { operationId: "listGadgets" } },
+  },
+};
+const site = (name: string, op: string) => ({ op, line: 1, name });
+
+test("invariant I passes a wrapper named for its operationId, V1 dropped", () => {
+  const findings = wrapperNameDrift({
+    sites: [site("fetchWidget", "GET /api/v1/widgets/{}")],
+    spec: NAME_SPEC,
+    ahead: new Map(),
+  });
+  assert.deepEqual(findings, []);
+});
+
+test("invariant I reads an ahead-of-pin id and flags one no wrapper sends", () => {
+  const findings = wrapperNameDrift({
+    sites: [site("fetchGadgets", "GET /gadgets")],
+    spec: NAME_SPEC,
+    ahead: new Map([
+      ["GET /gadgets", "fetchGadgets"],
+      ["GET /api/v1/widgets/{id}", "fetchThingV1"],
+    ]),
+  });
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0].items, [
+    "GET /api/v1/widgets/{id}: no wrapper sends it any more",
+  ]);
 });

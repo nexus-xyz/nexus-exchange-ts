@@ -101,13 +101,13 @@ test("fetchTradesPaginated follows X-Next-Cursor across pages", async () => {
   assert.equal(query(calls[1]!.url).get("limit"), "2");
 });
 
-test("getFillsPaginated pages and signs every request", async () => {
+test("fetchMyTradesPaginated pages and signs every request", async () => {
   const { impl, calls } = mockPagedFetch([
     { items: [{ id: "f1" }], nextCursor: "cur-b" },
     { items: [{ id: "f2" }] },
   ]);
 
-  const out = await authed(impl).getFillsPaginated().all();
+  const out = await authed(impl).fetchMyTradesPaginated().all();
 
   assert.deepEqual(
     out.map((f) => f.id),
@@ -125,9 +125,9 @@ test("getFillsPaginated pages and signs every request", async () => {
 
 test("order-history, closed-position and equity-history paginators page", async () => {
   for (const [name, walk] of [
-    ["orders/history", (c: Client) => c.getOrderHistoryPaginated()],
-    ["positions/closed", (c: Client) => c.getClosedPositionsPaginated()],
-    ["account/equity-history", (c: Client) => c.getEquityHistoryPaginated()],
+    ["orders/history", (c: Client) => c.fetchOrdersPaginated()],
+    ["positions/closed", (c: Client) => c.fetchPositionsHistoryPaginated()],
+    ["account/equity-history", (c: Client) => c.fetchEquityHistoryPaginated()],
   ] as const) {
     const { impl, calls } = mockPagedFetch([
       { items: [{ id: "a" }], nextCursor: "next" },
@@ -165,7 +165,7 @@ test("a cursor is sent back verbatim", async () => {
     { items: [] },
   ]);
 
-  await authed(impl).getFillsPaginated().all();
+  await authed(impl).fetchMyTradesPaginated().all();
 
   assert.equal(calls.length, 2);
   assert.equal(query(calls[1]!.url).get("cursor"), opaque);
@@ -178,7 +178,7 @@ test("nextPage exposes the cursor for manual paging", async () => {
     { items: [{ id: "o1" }], nextCursor: "cur-2" },
     { items: [{ id: "o2" }] },
   ]);
-  const pager = authed(impl).getOrderHistoryPaginated();
+  const pager = authed(impl).fetchOrdersPaginated();
 
   const first = await pager.nextPage();
   assert.equal(first?.isLast(), false);
@@ -193,7 +193,7 @@ test("nextPage exposes the cursor for manual paging", async () => {
 test("startingAfter sends the saved cursor on the first request", async () => {
   const { impl, calls } = mockPagedFetch([{ items: [{ id: "f9" }] }]);
 
-  await authed(impl).getFillsPaginated().startingAfter("saved").all();
+  await authed(impl).fetchMyTradesPaginated().startingAfter("saved").all();
 
   assert.equal(calls.length, 1);
   assert.equal(query(calls[0]!.url).get("cursor"), "saved");
@@ -222,7 +222,7 @@ test("an absent X-Next-Cursor ends the walk after one request", async () => {
 
 test("an empty first page terminates without error", async () => {
   const { impl, calls } = mockPagedFetch([{ items: [] }]);
-  assert.deepEqual(await authed(impl).getFillsPaginated().all(), []);
+  assert.deepEqual(await authed(impl).fetchMyTradesPaginated().all(), []);
   assert.equal(calls.length, 1);
 });
 
@@ -233,7 +233,7 @@ test("an empty page that still carries a cursor keeps paging", async () => {
     { items: [{ id: "f9" }] },
   ]);
 
-  const out = await authed(impl).getFillsPaginated().all();
+  const out = await authed(impl).fetchMyTradesPaginated().all();
   assert.equal(out.length, 1);
   assert.equal(calls.length, 2);
 });
@@ -245,7 +245,7 @@ test("a blank X-Next-Cursor header counts as absent", async () => {
     { items: [{ id: "f1" }], nextCursor: "   " },
   ]);
 
-  const out = await authed(impl).getFillsPaginated().all();
+  const out = await authed(impl).fetchMyTradesPaginated().all();
   assert.equal(out.length, 1);
   assert.equal(calls.length, 1);
 });
@@ -264,7 +264,7 @@ test("a repeated cursor stops the walk instead of spinning", async () => {
     });
   };
 
-  const out = await authed(impl).getFillsPaginated().all();
+  const out = await authed(impl).fetchMyTradesPaginated().all();
 
   // Page 1 (no cursor) advertises "stuck"; page 2 is requested with "stuck" and
   // hands "stuck" back, which cannot advance — so the walk ends there.
@@ -315,20 +315,20 @@ test("pageSize reaches the wire as limit on every paginated endpoint", async () 
       (c) => c.fetchTradesPaginated("BTC-USDX-PERP"),
       TRADES_LIMIT_MAX,
     ],
-    ["/fills", (c) => c.getFillsPaginated(), FILLS_LIMIT_MAX],
+    ["/fills", (c) => c.fetchMyTradesPaginated(), FILLS_LIMIT_MAX],
     [
       "/orders/history",
-      (c) => c.getOrderHistoryPaginated(),
+      (c) => c.fetchOrdersPaginated(),
       ORDER_HISTORY_LIMIT_MAX,
     ],
     [
       "/positions/closed",
-      (c) => c.getClosedPositionsPaginated(),
+      (c) => c.fetchPositionsHistoryPaginated(),
       CLOSED_POSITIONS_LIMIT_MAX,
     ],
     [
       "/account/equity-history",
-      (c) => c.getEquityHistoryPaginated(),
+      (c) => c.fetchEquityHistoryPaginated(),
       EQUITY_HISTORY_LIMIT_MAX,
     ],
   ];
@@ -361,19 +361,19 @@ test("a page size over the endpoint maximum throws before any request", async ()
       TRADES_LIMIT_MAX,
       "trades",
     ],
-    [(c) => c.getFillsPaginated(), FILLS_LIMIT_MAX, "fills"],
+    [(c) => c.fetchMyTradesPaginated(), FILLS_LIMIT_MAX, "fills"],
     [
-      (c) => c.getOrderHistoryPaginated(),
+      (c) => c.fetchOrdersPaginated(),
       ORDER_HISTORY_LIMIT_MAX,
       "orders/history",
     ],
     [
-      (c) => c.getClosedPositionsPaginated(),
+      (c) => c.fetchPositionsHistoryPaginated(),
       CLOSED_POSITIONS_LIMIT_MAX,
       "positions/closed",
     ],
     [
-      (c) => c.getEquityHistoryPaginated(),
+      (c) => c.fetchEquityHistoryPaginated(),
       EQUITY_HISTORY_LIMIT_MAX,
       "account/equity-history",
     ],
@@ -402,11 +402,11 @@ test("a limit valid on one endpoint is rejected on a stricter one", async () => 
   const { impl, calls } = mockPagedFetch([{ items: [] }]);
   const client = authed(impl);
 
-  await client.getOrderHistoryPaginated().pageSize(500).all();
+  await client.fetchOrdersPaginated().pageSize(500).all();
   assert.equal(query(calls[0]!.url).get("limit"), "500");
 
   await assert.rejects(
-    () => client.getClosedPositionsPaginated().pageSize(500).all(),
+    () => client.fetchPositionsHistoryPaginated().pageSize(500).all(),
     InvalidRequestError,
   );
   assert.equal(calls.length, 1);
@@ -417,7 +417,7 @@ test("an InvalidRequestError is terminal, not transient", async () => {
   // retrying caller would spin on an argument that can never succeed.
   const { impl } = mockPagedFetch([]);
   await assert.rejects(
-    () => authed(impl).getFillsPaginated().pageSize(99999).all(),
+    () => authed(impl).fetchMyTradesPaginated().pageSize(99999).all(),
     (err: unknown) =>
       err instanceof InvalidRequestError && err.transient === false,
   );
@@ -425,15 +425,15 @@ test("an InvalidRequestError is terminal, not transient", async () => {
 
 // -- the flat (first-page) getters -------------------------------------------
 
-test("getFills forwards limit, which it previously discarded", async () => {
+test("fetchMyTrades forwards limit, which it previously discarded", async () => {
   const { impl, calls } = mockFetch([{ id: "f1" }]);
-  await authed(impl).getFills({ limit: 500 });
+  await authed(impl).fetchMyTrades({ limit: 500 });
   assert.equal(query(calls[0]!.url).get("limit"), "500");
 });
 
-test("getClosedPositions forwards limit, which it previously discarded", async () => {
+test("fetchPositionsHistory forwards limit, which it previously discarded", async () => {
   const { impl, calls } = mockFetch([{ id: "p1" }]);
-  await authed(impl).getClosedPositions({ limit: 200 });
+  await authed(impl).fetchPositionsHistory({ limit: 200 });
   assert.equal(query(calls[0]!.url).get("limit"), "200");
 });
 
@@ -450,9 +450,9 @@ const CCXT_CLOSED_ROW = {
   lastUpdateTimestamp: 1776033900000,
 };
 
-test("getClosedPositions fills the v0.8.1 fields from a 0.9.74 row", async () => {
+test("fetchPositionsHistory fills the v0.8.1 fields from a 0.9.74 row", async () => {
   const { impl } = mockFetch([CCXT_CLOSED_ROW]);
-  const [p] = await authed(impl).getClosedPositions();
+  const [p] = await authed(impl).fetchPositionsHistory();
   assert.equal(p!.market_id, "BTC-USDX-PERP");
   assert.equal(p!.side, "Short");
   assert.equal(p!.size, "0.5");
@@ -463,7 +463,7 @@ test("getClosedPositions fills the v0.8.1 fields from a 0.9.74 row", async () =>
   assert.equal(p!.closed_at_ms, 1776033900000);
 });
 
-test("getClosedPositions leaves a v0.8.1 row exactly as served", async () => {
+test("fetchPositionsHistory leaves a v0.8.1 row exactly as served", async () => {
   const row = {
     market_id: "ETH-USDX-PERP",
     side: "Long",
@@ -474,24 +474,24 @@ test("getClosedPositions leaves a v0.8.1 row exactly as served", async () => {
     closed_at_ms: 1776033900000,
   };
   const { impl } = mockFetch([row]);
-  const [p] = await authed(impl).getClosedPositions();
+  const [p] = await authed(impl).fetchPositionsHistory();
   assert.deepEqual(p, row);
 });
 
-test("getClosedPositions does not invent a field neither spelling sent", async () => {
+test("fetchPositionsHistory does not invent a field neither spelling sent", async () => {
   const { impl } = mockFetch([{ symbol: "BTC-USDX-PERP" }]);
-  const [p] = await authed(impl).getClosedPositions();
+  const [p] = await authed(impl).fetchPositionsHistory();
   assert.equal(p!.market_id, "BTC-USDX-PERP");
   assert.equal("exit_price" in p!, false);
   assert.equal("closed_at_ms" in p!, false);
 });
 
-test("getClosedPositionsPaginated fills the v0.8.1 fields on every page", async () => {
+test("fetchPositionsHistoryPaginated fills the v0.8.1 fields on every page", async () => {
   const { impl } = mockPagedFetch([
     { items: [CCXT_CLOSED_ROW], nextCursor: "c1" },
     { items: [{ ...CCXT_CLOSED_ROW, lastPrice: "52000" }] },
   ]);
-  const all = await authed(impl).getClosedPositionsPaginated().all();
+  const all = await authed(impl).fetchPositionsHistoryPaginated().all();
   assert.deepEqual(
     all.map((p) => p.exit_price),
     ["51000.75", "52000"],
@@ -506,19 +506,19 @@ test("the flat getters reject an out-of-range limit (async, not a sync throw)", 
   const client = authed(impl);
 
   await assert.rejects(
-    () => client.getFills({ limit: FILLS_LIMIT_MAX + 1 }),
+    () => client.fetchMyTrades({ limit: FILLS_LIMIT_MAX + 1 }),
     InvalidRequestError,
   );
   await assert.rejects(
-    () => client.getClosedPositions({ limit: 201 }),
+    () => client.fetchPositionsHistory({ limit: 201 }),
     InvalidRequestError,
   );
   await assert.rejects(
-    () => client.getOrderHistory({ limit: 501 }),
+    () => client.fetchOrders({ limit: 501 }),
     InvalidRequestError,
   );
   await assert.rejects(
-    () => client.getEquityHistory({ limit: 721 }),
+    () => client.fetchEquityHistory({ limit: 721 }),
     InvalidRequestError,
   );
   await assert.rejects(
@@ -534,7 +534,7 @@ test("the flat getters return the first page only, cursor or not", async () => {
   const { impl, calls } = mockPagedFetch([
     { items: [{ id: "f1" }], nextCursor: "more" },
   ]);
-  const fills = await authed(impl).getFills();
+  const fills = await authed(impl).fetchMyTrades();
   assert.ok(Array.isArray(fills));
   assert.equal(fills.length, 1);
   assert.equal(calls.length, 1);
@@ -544,7 +544,7 @@ test("no limit and no cursor means no query string at all", async () => {
   // On a signed route the query is part of the canonical string, so an empty
   // `cursor=` would be a different request.
   const { impl, calls } = mockPagedFetch([{ items: [] }]);
-  await authed(impl).getFillsPaginated().all();
+  await authed(impl).fetchMyTradesPaginated().all();
   assert.equal(calls[0]!.url, "https://example.test/api/v1/fills");
 });
 
@@ -552,8 +552,8 @@ test("the paginated methods still return a Paginator", async () => {
   const { impl } = mockFetch([]);
   const client = authed(impl);
   assert.ok(client.fetchTradesPaginated("BTC-USDX-PERP") instanceof Paginator);
-  assert.ok(client.getFillsPaginated() instanceof Paginator);
-  assert.ok(client.getOrderHistoryPaginated() instanceof Paginator);
-  assert.ok(client.getEquityHistoryPaginated() instanceof Paginator);
-  assert.ok(client.getClosedPositionsPaginated() instanceof Paginator);
+  assert.ok(client.fetchMyTradesPaginated() instanceof Paginator);
+  assert.ok(client.fetchOrdersPaginated() instanceof Paginator);
+  assert.ok(client.fetchEquityHistoryPaginated() instanceof Paginator);
+  assert.ok(client.fetchPositionsHistoryPaginated() instanceof Paginator);
 });

@@ -78,7 +78,7 @@ PUT /account/cancel-on-disconnect
 # ── Deprecated / superseded — intentionally never targeted ─────────────────────
 #
 # POST /ws-tokens — the LEGACY token route, superseded by POST /ws/token, which
-#   the client uses (see Client.mintWsToken). Both still answer, but they are not
+#   the client uses (see Client.createWsToken). Both still answer, but they are not
 #   equivalents; the spec's prose settles which is canonical ("Legacy endpoint.
 #   Prefer POST /ws/token which supports both HMAC keys and registered agents").
 #   `/ws/token` accepts registered agent keys and mints a token bound to the

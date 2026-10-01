@@ -35,7 +35,7 @@ const client = new Client({ ...net, apiKey, apiSecret });
 
 // One coherent read: the summary aggregates and every open position together,
 // so open_positions_count can't disagree with positions.length.
-const { summary, positions } = await client.getAccountState();
+const { summary, positions } = await client.fetchAccountState();
 // `withdrawable` arrived in v0.7.2 and the schema guarantees no property, so an
 // older deployment omits it. Never coalesce that to "0" — "not reported" and
 // "nothing withdrawable" are different answers and only one is safe to act on.
@@ -80,7 +80,7 @@ for (const p of positions) {
 }
 
 // Effective fee schedule. maker_fee_bps may be negative — that's a rebate.
-const fees = await client.getAccountFees();
+const fees = await client.fetchTradingFees();
 const makerNote = fees.maker_fee_bps < 0 ? " (rebate)" : "";
 console.log(
   `\nfees: maker=${fees.maker_fee_bps}bps${makerNote}  ` +
@@ -94,7 +94,7 @@ console.log(
 
 // Time-series. Omitting `window` takes the server's `day` default; the response
 // echoes what was actually served, so read it back rather than assuming.
-const history = await client.getPortfolioHistory({ window });
+const history = await client.fetchPortfolioHistory({ window });
 console.log(
   `\nportfolio history: window=${history.window}  ` +
     `cadence=${history.cadence_ms}ms  points=${history.points.length}`,

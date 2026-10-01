@@ -123,7 +123,7 @@ export function agentCanonicalString(
  * ```ts
  * const agent = AgentSigner.fromHex(process.env.AGENT_PRIVATE_KEY!);
  * const client = new Client({ network: Network.Testnet, agentSigner: agent });
- * await client.placeOrder({ ... });
+ * await client.createOrder({ ... });
  * ```
  *
  * **Agent keys are trade-only and cannot withdraw.** The server refuses an

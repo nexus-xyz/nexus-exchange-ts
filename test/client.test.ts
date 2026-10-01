@@ -278,7 +278,7 @@ test("signing domains publish no chain id", () => {
   }
 });
 
-test("fetchMarketSummaries hits /markets/summary and decodes the body", async () => {
+test("fetchMarketsSummary hits /markets/summary and decodes the body", async () => {
   const summaries = [{ market_id: "BTC-USDX-PERP", volume_24h: 1 }];
   const { impl, calls } = mockFetch(summaries);
   const client = new Client({
@@ -286,7 +286,7 @@ test("fetchMarketSummaries hits /markets/summary and decodes the body", async ()
     baseUrl: "https://example.test",
   });
 
-  const out = await client.fetchMarketSummaries();
+  const out = await client.fetchMarketsSummary();
   assert.deepEqual(out, summaries);
   assert.equal(calls[0]!.url, "https://example.test/api/v1/markets/summary");
   assert.equal(calls[0]!.init.method, "GET");
@@ -299,7 +299,7 @@ test("query params are appended in order and only when present", async () => {
     baseUrl: "https://example.test",
   });
 
-  await client.fetchCandles("ETH-USDX-PERP", { timeframe: "1m", limit: 200 });
+  await client.fetchOHLCV("ETH-USDX-PERP", { timeframe: "1m", limit: 200 });
   assert.equal(
     calls[0]!.url,
     "https://example.test/api/v1/markets/ETH-USDX-PERP/candles?timeframe=1m&limit=200",
@@ -332,7 +332,7 @@ test("trailing slashes on baseUrl are trimmed", async () => {
     fetchImpl: impl,
     baseUrl: "https://example.test/api/",
   });
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   assert.equal(
     calls[0]!.url,
     "https://example.test/api/api/v1/markets/summary",
@@ -347,7 +347,7 @@ test("4xx is a terminal ApiError; 5xx is transient; code/message parsed", async 
     }).impl,
     baseUrl: "https://example.test",
   });
-  await assert.rejects(c4.fetchMarketSummaries(), (err) => {
+  await assert.rejects(c4.fetchMarketsSummary(), (err) => {
     assert.ok(err instanceof ApiError);
     assert.equal(err.status, 400);
     assert.equal(err.code, "bad_request");
@@ -361,7 +361,7 @@ test("4xx is a terminal ApiError; 5xx is transient; code/message parsed", async 
       .impl,
     baseUrl: "https://example.test",
   });
-  await assert.rejects(c5.fetchMarketSummaries(), (err) => {
+  await assert.rejects(c5.fetchMarketsSummary(), (err) => {
     assert.ok(err instanceof ApiError);
     assert.equal(err.transient, true);
     return true;
@@ -409,7 +409,7 @@ test("market-data calls never attach credentials; no auth headers leak", async (
     apiKey: "k",
     apiSecret: "abcd",
   });
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
   assert.equal(headers["x-signature"], undefined);
   assert.equal(calls[0]!.init.credentials, "omit");
@@ -480,7 +480,7 @@ test("signed GET sends valid x-api-key / x-timestamp / x-signature", async () =>
   const { client, calls } = signedClientWithCapture(
     () => new Response(JSON.stringify({ balance: "100" }), { status: 200 }),
   );
-  await client.getAccount();
+  await client.fetchBalance();
 
   assert.equal(calls.length, 1);
   const c = calls[0]!;
@@ -506,7 +506,7 @@ test("signed GET sends valid x-api-key / x-timestamp / x-signature", async () =>
 
 test("signed POST signs the exact JSON body bytes that are sent", async () => {
   const { client, calls } = signedClientWithCapture();
-  await client.placeOrder({
+  await client.createOrder({
     market_id: "BTC-USDX-PERP",
     side: "Buy",
     order_type: "Limit",
@@ -535,7 +535,7 @@ test("signed POST signs the exact JSON body bytes that are sent", async () => {
 
 test("post-only order serializes time_in_force as the exact wire value PostOnly", async () => {
   const { client, calls } = signedClientWithCapture();
-  await client.placeOrder({
+  await client.createOrder({
     market_id: "BTC-USDX-PERP",
     side: "Buy",
     order_type: "Limit",
@@ -596,7 +596,7 @@ test("the signed path excludes the base URL's own path prefix", async () => {
     apiSecret: SECRET,
     fetchImpl,
   });
-  await client.getAccount();
+  await client.fetchBalance();
 
   const c = calls[0]!;
   assert.equal(c.url, "https://proxy.internal/api/exchange/api/v1/account");
@@ -613,7 +613,7 @@ test("the signed path excludes the base URL's own path prefix", async () => {
 
 test("calling a signed endpoint without credentials throws MissingCredentialsError", async () => {
   const client = new Client({ network: Network.Local });
-  await assert.rejects(() => client.getAccount(), MissingCredentialsError);
+  await assert.rejects(() => client.fetchBalance(), MissingCredentialsError);
 });
 
 test("a non-2xx signed response throws ApiError with a sanitized body", async () => {
@@ -623,7 +623,7 @@ test("a non-2xx signed response throws ApiError with a sanitized body", async ()
         status: 400,
       }),
   );
-  await assert.rejects(client.getAccount(), (err: unknown) => {
+  await assert.rejects(client.fetchBalance(), (err: unknown) => {
     assert.ok(err instanceof ApiError);
     assert.equal(err.status, 400);
     // The credential-looking token must be redacted, never surfaced.
@@ -645,7 +645,7 @@ test("every request carries X-Nexus-Api-Version and User-Agent by default", asyn
     fetchImpl: impl,
     baseUrl: "https://example.test",
   });
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
   assert.equal(headers["x-nexus-api-version"], API_VERSION);
   assert.equal(headers["user-agent"], DEFAULT_USER_AGENT);
@@ -653,7 +653,7 @@ test("every request carries X-Nexus-Api-Version and User-Agent by default", asyn
 
 test("signed requests also carry the identity headers", async () => {
   const { client, calls } = signedClientWithCapture();
-  await client.getAccount();
+  await client.fetchBalance();
   const c = calls[0]!;
   assert.equal(c.headers.get("x-nexus-api-version"), API_VERSION);
   assert.equal(c.headers.get("user-agent"), DEFAULT_USER_AGENT);
@@ -667,7 +667,7 @@ test("identity headers can be overridden per client", async () => {
     userAgent: "nexus-exchange-mcp/1.2.3",
     apiVersion: "v9.9.9",
   });
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
   assert.equal(headers["user-agent"], "nexus-exchange-mcp/1.2.3");
   assert.equal(headers["x-nexus-api-version"], "v9.9.9");
@@ -681,7 +681,7 @@ test("an empty override omits that identity header entirely", async () => {
     userAgent: "",
     apiVersion: "",
   });
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   const headers = (calls[0]!.init.headers ?? {}) as Record<string, string>;
   assert.equal(headers["user-agent"], undefined);
   assert.equal(headers["x-nexus-api-version"], undefined);
@@ -700,7 +700,7 @@ test("a header override with control characters is rejected at construction", ()
 
 // ─── Portfolio parity (spec v0.7.2, ENG-6458) ────────────────────────────────
 
-test("getAccountState hits /account/state and decodes summary + positions", async () => {
+test("fetchAccountState hits /account/state and decodes summary + positions", async () => {
   const state = {
     summary: { total_equity: "1000.00", withdrawable: "250.00" },
     positions: [{ market_id: "BTC-USDX-PERP", funding_paid: "0" }],
@@ -708,7 +708,7 @@ test("getAccountState hits /account/state and decodes summary + positions", asyn
   const { client, calls } = signedClientWithCapture(
     () => new Response(JSON.stringify(state), { status: 200 }),
   );
-  const got = await client.getAccountState();
+  const got = await client.fetchAccountState();
 
   assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/state");
   assert.equal(calls[0]!.method, "GET");
@@ -718,7 +718,7 @@ test("getAccountState hits /account/state and decodes summary + positions", asyn
   assert.equal(got.positions.length, 1);
 });
 
-test("getAccountFees decodes a negative maker rebate and open tier/schedule", async () => {
+test("fetchTradingFees decodes a negative maker rebate and open tier/schedule", async () => {
   const fees = {
     maker_fee_bps: -2,
     taker_fee_bps: 5,
@@ -731,7 +731,7 @@ test("getAccountFees decodes a negative maker rebate and open tier/schedule", as
   const { client, calls } = signedClientWithCapture(
     () => new Response(JSON.stringify(fees), { status: 200 }),
   );
-  const got = await client.getAccountFees();
+  const got = await client.fetchTradingFees();
 
   assert.equal(calls[0]!.url, "http://localhost:9090/api/v1/account/fees");
   // A rebate is negative — it must survive decoding, not be clamped or dropped.
@@ -740,12 +740,12 @@ test("getAccountFees decodes a negative maker rebate and open tier/schedule", as
   assert.deepEqual(got.discounts, []);
 });
 
-test("getPortfolioHistory omits the window param entirely when not given", async () => {
+test("fetchPortfolioHistory omits the window param entirely when not given", async () => {
   const body = { window: "day", cadence_ms: 300000, points: [] };
   const { client, calls } = signedClientWithCapture(
     () => new Response(JSON.stringify(body), { status: 200 }),
   );
-  const got = await client.getPortfolioHistory();
+  const got = await client.fetchPortfolioHistory();
 
   // No `window=`/`limit=` — the server applies its documented `day` default,
   // rather than the SDK hard-coding a default that could drift from the spec.
@@ -758,7 +758,7 @@ test("getPortfolioHistory omits the window param entirely when not given", async
   assert.equal(got.cadence_ms, 300000);
 });
 
-test("getPortfolioHistory signs the exact query string it sends", async () => {
+test("fetchPortfolioHistory signs the exact query string it sends", async () => {
   const body = {
     window: "week",
     cadence_ms: 3600000,
@@ -774,7 +774,10 @@ test("getPortfolioHistory signs the exact query string it sends", async () => {
   const { client, calls } = signedClientWithCapture(
     () => new Response(JSON.stringify(body), { status: 200 }),
   );
-  const got = await client.getPortfolioHistory({ window: "week", limit: 168 });
+  const got = await client.fetchPortfolioHistory({
+    window: "week",
+    limit: 168,
+  });
 
   const c = calls[0]!;
   // Insertion order is preserved, so the canonical query and the wire query are
@@ -801,7 +804,7 @@ test("getPortfolioHistory signs the exact query string it sends", async () => {
 
 // -- documented error paths --------------------------------------------------
 
-test("getAccountState surfaces the fail-closed 502 with its machine-readable code", async () => {
+test("fetchAccountState surfaces the fail-closed 502 with its machine-readable code", async () => {
   // The whole point of `withdrawable` is that the server refuses to guess when
   // the authoritative margin view is down. A caller must be able to tell that
   // apart from an ordinary gateway blip, because the correct responses differ:
@@ -820,7 +823,7 @@ test("getAccountState surfaces the fail-closed 502 with its machine-readable cod
   );
 
   await assert.rejects(
-    () => client.getAccountState(),
+    () => client.fetchAccountState(),
     (err: unknown) => {
       assert.ok(err instanceof ApiError);
       assert.equal(err.status, 502);
@@ -835,7 +838,7 @@ test("getAccountState surfaces the fail-closed 502 with its machine-readable cod
   assert.equal(calls.length, 1, "maxRetries: 0 must mean exactly one attempt");
 });
 
-test("getPortfolioHistory surfaces 400 invalid_window as a non-transient ApiError", async () => {
+test("fetchPortfolioHistory surfaces 400 invalid_window as a non-transient ApiError", async () => {
   const { client } = signedClientWithCapture(
     () =>
       new Response(JSON.stringify({ code: "invalid_window" }), {
@@ -847,7 +850,7 @@ test("getPortfolioHistory surfaces 400 invalid_window as a non-transient ApiErro
   await assert.rejects(
     // A bad `window` can only originate from a caller bypassing the closed
     // union (plain JS, or a value widened through `any`).
-    () => client.getPortfolioHistory({ window: "decade" as PortfolioWindow }),
+    () => client.fetchPortfolioHistory({ window: "decade" as PortfolioWindow }),
     (err: unknown) => {
       assert.ok(err instanceof ApiError);
       assert.equal(err.status, 400);
@@ -861,14 +864,14 @@ test("getPortfolioHistory surfaces 400 invalid_window as a non-transient ApiErro
 
 // -- local `limit` validation -----------------------------------------------
 
-test("getPortfolioHistory rejects an out-of-schema limit before signing anything", async () => {
+test("fetchPortfolioHistory rejects an out-of-schema limit before signing anything", async () => {
   // The spec bounds `limit` to an integer in [1, 366]. Each of these can only
   // ever come back 400, and `String(v)` would forward the last two as the
   // literal query values `limit=NaN` / `limit=Infinity`.
   for (const limit of [0, -5, 367, 1.5, NaN, Infinity]) {
     const { client, calls } = signedClientWithCapture();
     await assert.rejects(
-      () => client.getPortfolioHistory({ limit }),
+      () => client.fetchPortfolioHistory({ limit }),
       RangeError,
       `limit=${limit} should have been rejected locally`,
     );
@@ -878,7 +881,7 @@ test("getPortfolioHistory rejects an out-of-schema limit before signing anything
   }
 });
 
-test("getPortfolioHistory accepts both ends of the documented limit range", async () => {
+test("fetchPortfolioHistory accepts both ends of the documented limit range", async () => {
   for (const limit of [1, 366]) {
     const { client, calls } = signedClientWithCapture(
       () =>
@@ -887,7 +890,7 @@ test("getPortfolioHistory accepts both ends of the documented limit range", asyn
           { status: 200, headers: { "content-type": "application/json" } },
         ),
     );
-    await client.getPortfolioHistory({ window: "all", limit });
+    await client.fetchPortfolioHistory({ window: "all", limit });
     assert.equal(
       calls[0]!.url,
       `http://localhost:9090/api/v1/account/portfolio-history?window=all&limit=${limit}`,
@@ -930,7 +933,7 @@ test("a pre-v0.7.2 payload leaves the new fields undefined, not zero", async () 
         headers: { "content-type": "application/json" },
       }),
   );
-  const got = await client.getAccountState();
+  const got = await client.fetchAccountState();
 
   // "not reported" must never be readable as "nothing withdrawable".
   assert.equal(got.summary.withdrawable, undefined);
@@ -977,7 +980,7 @@ test("a null-valued risk field arrives as null over the wire, with its reason", 
         headers: { "content-type": "application/json" },
       }),
   );
-  const got = await client.getAccountState();
+  const got = await client.fetchAccountState();
   const p = got.positions[0]!;
 
   assert.equal(p.notional_value, null);

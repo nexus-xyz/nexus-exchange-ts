@@ -138,7 +138,7 @@ GET /funding
 # in the spec with no `/api/v1` twin. `GET /orders/{order_id}` is the sharp one:
 # the PATCH and DELETE on that same path DO have `/api/v1` twins and are listed
 # in the orders block above, so the three verbs on one path do not share a
-# spelling — see Client.getOrder.
+# spelling — see Client.fetchOrder.
 GET /account/{address}/adl-history
 GET /orders/{order_id}
 

@@ -149,7 +149,7 @@ test("createDeposit hits POST /deposits and forwards asset when set", async () =
   assert.ok(body.includes('"asset":"USDX"'));
 });
 
-test("getDeposits hits GET /deposits and decodes the ledger", async () => {
+test("fetchDeposits hits GET /deposits and decodes the ledger", async () => {
   const entries = [
     {
       id: 1,
@@ -166,7 +166,7 @@ test("getDeposits hits GET /deposits and decodes the ledger", async () => {
     () => new Response(JSON.stringify(entries), { status: 200 }),
   );
 
-  const out = await client.getDeposits();
+  const out = await client.fetchDeposits();
   assert.deepEqual(out, entries);
 
   const c = calls[0]!;
@@ -185,7 +185,7 @@ test("getDeposits hits GET /deposits and decodes the ledger", async () => {
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
-test("getWithdrawals hits GET /withdrawals and decodes records", async () => {
+test("fetchWithdrawals hits GET /withdrawals and decodes records", async () => {
   const records = [
     { id: "w1", amount: "50", timestamp: 1_700_000_000_000, status: "pending" },
   ];
@@ -193,7 +193,7 @@ test("getWithdrawals hits GET /withdrawals and decodes records", async () => {
     () => new Response(JSON.stringify(records), { status: 200 }),
   );
 
-  const out = await client.getWithdrawals();
+  const out = await client.fetchWithdrawals();
   assert.deepEqual(out, records);
 
   const c = calls[0]!;
@@ -245,7 +245,7 @@ test("claimFaucet surfaces the 24h cooldown / cap as a 429 ApiError", async () =
   });
 });
 
-test("adjustMargin POSTs /account/margin with market_id, direction, amount", async () => {
+test("addMargin POSTs /account/margin with market_id, direction, amount", async () => {
   const { client, calls } = signedClientWithCapture(
     () =>
       new Response(
@@ -258,7 +258,7 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
       ),
   );
 
-  const out = await client.adjustMargin({
+  const out = await client.addMargin({
     market_id: "BTC-USDX-PERP",
     direction: "add",
     amount: "100",
@@ -286,7 +286,7 @@ test("adjustMargin POSTs /account/margin with market_id, direction, amount", asy
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
-test("getAccountFunding signs GET /funding and decodes the records", async () => {
+test("fetchFundingHistory signs GET /funding and decodes the records", async () => {
   const records = [
     {
       market_id: "BTC-USDX-PERP",
@@ -309,7 +309,7 @@ test("getAccountFunding signs GET /funding and decodes the records", async () =>
     () => new Response(JSON.stringify(records), { status: 200 }),
   );
 
-  const out = await client.getAccountFunding();
+  const out = await client.fetchFundingHistory();
   assert.equal(out.length, 2);
   // The signed amount is carried verbatim as a decimal string, sign included —
   // `paid` is the negative side and must not be normalized to a magnitude.
@@ -339,12 +339,12 @@ test("getAccountFunding signs GET /funding and decodes the records", async () =>
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
-test("getAccountFunding signs the exact limit query it sends", async () => {
+test("fetchFundingHistory signs the exact limit query it sends", async () => {
   const { client, calls } = signedClientWithCapture(
     () => new Response("[]", { status: 200 }),
   );
 
-  await client.getAccountFunding({ limit: 250 });
+  await client.fetchFundingHistory({ limit: 250 });
 
   const c = calls[0]!;
   assert.equal(c.url, "http://localhost:9090/funding?limit=250");
@@ -359,19 +359,19 @@ test("getAccountFunding signs the exact limit query it sends", async () => {
   assert.equal(c.headers.get("x-signature"), expected);
 });
 
-test("getAccountFunding rejects an out-of-range limit without signing anything", async () => {
+test("fetchFundingHistory rejects an out-of-range limit without signing anything", async () => {
   const { client, calls } = signedClientWithCapture();
 
   // The spec's parameter schema is `maximum: 1000`; 1001 is a guaranteed 400, so
   // it is refused locally instead of spending a signed round trip on it.
-  await assert.rejects(client.getAccountFunding({ limit: 1001 }), RangeError);
-  await assert.rejects(client.getAccountFunding({ limit: 0 }), RangeError);
-  await assert.rejects(client.getAccountFunding({ limit: 1.5 }), RangeError);
+  await assert.rejects(client.fetchFundingHistory({ limit: 1001 }), RangeError);
+  await assert.rejects(client.fetchFundingHistory({ limit: 0 }), RangeError);
+  await assert.rejects(client.fetchFundingHistory({ limit: 1.5 }), RangeError);
   assert.equal(calls.length, 0);
 
   // The boundaries are valid and do reach the wire.
-  await client.getAccountFunding({ limit: 1 });
-  await client.getAccountFunding({ limit: 1000 });
+  await client.fetchFundingHistory({ limit: 1 });
+  await client.fetchFundingHistory({ limit: 1000 });
   assert.deepEqual(
     calls.map((c) => c.url),
     [

@@ -10,7 +10,7 @@ const net = networkOptions();
 
 const client = new Client(net);
 
-const summaries = await client.fetchMarketSummaries();
+const summaries = await client.fetchMarketsSummary();
 console.log(`${summaries.length} markets`);
 if (summaries.length === 0) process.exit(0);
 

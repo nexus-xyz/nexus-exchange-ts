@@ -17,7 +17,7 @@ const positional = argv.find(
   (a, i) => !a.startsWith("--") && (netIdx < 0 || i !== netIdx + 1),
 );
 const marketId =
-  positional ?? (await client.fetchMarketSummaries())[0]?.market_id;
+  positional ?? (await client.fetchMarketsSummary())[0]?.market_id;
 if (!marketId) {
   console.error("no markets available");
   process.exit(1);

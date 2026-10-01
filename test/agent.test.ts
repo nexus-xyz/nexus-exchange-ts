@@ -323,7 +323,7 @@ test("agent-management routes are refused locally for an agent-signed client", a
       return new Response("[]");
     }) as unknown as typeof fetch,
   });
-  await assert.rejects(client.listAgents(), MissingCredentialsError);
+  await assert.rejects(client.fetchAgents(), MissingCredentialsError);
   await assert.rejects(client.revokeAgent("0xabc"), MissingCredentialsError);
   assert.equal(sent, 0, "nothing may be signed or sent");
 });
@@ -414,7 +414,7 @@ test("mock server: an agent-signed client sends exactly the agentAuth headers", 
       retry: { maxRetries: 0 },
     });
 
-    await client.placeOrder({
+    await client.createOrder({
       market_id: "BTC-USDX-PERP",
       side: "Buy",
       order_type: "Limit",
@@ -422,7 +422,7 @@ test("mock server: an agent-signed client sends exactly the agentAuth headers", 
       price: "50000",
       time_in_force: "GTC",
     });
-    await client.getOrder("ord-1", "BTC-USDX-PERP"); // root route + query
+    await client.fetchOrder("ord-1", "BTC-USDX-PERP"); // root route + query
     await client.cancelAllOrders();
 
     assert.equal(received.length, 3);
@@ -502,6 +502,6 @@ test("mock server: a stale timestamp is refused", async () => {
       nowMs: () => now - 30_001,
       retry: { maxRetries: 0 },
     });
-    await assert.rejects(client.getOpenOrders(), { status: 401 });
+    await assert.rejects(client.fetchOpenOrders(), { status: 401 });
   });
 });

@@ -183,7 +183,7 @@ test("listBridgeWallets reads the envelope under /api/v1", async () => {
 
   const out = await client.listBridgeWallets();
   // The spec's shape is an envelope, not a bare array — the wallets hang off
-  // `.wallets`, mirroring getBridgeAssets rather than listBridgeDepositAddresses.
+  // `.wallets`, mirroring fetchBridgeAssets rather than listBridgeDepositAddresses.
   assert.equal(out.wallets.length, 1);
   assert.equal(out.wallets[0]!.address, TEST_ADDR);
 

@@ -64,7 +64,7 @@ test("retries a transient 5xx on an idempotent GET, then succeeds", async () => 
     retry: { baseDelayMs: 10 },
   });
 
-  const out = await client.fetchMarketSummaries();
+  const out = await client.fetchMarketsSummary();
   assert.deepEqual(out, [{ market_id: "BTC-USDX-PERP" }]);
   assert.equal(calls.length, 3, "one initial + two retries");
   assert.equal(sleep.delays.length, 2, "slept once per retry");
@@ -79,7 +79,7 @@ test("retries a transport error (fetch throws) on a GET", async () => {
     retry: { baseDelayMs: 1 },
   });
 
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   assert.equal(calls.length, 2);
 });
 
@@ -96,7 +96,7 @@ test("does NOT retry a non-idempotent POST (order placement)", async () => {
 
   await assert.rejects(
     () =>
-      client.placeOrder({
+      client.createOrder({
         market_id: "BTC-USDX-PERP",
         side: "Buy",
         order_type: "limit",
@@ -117,7 +117,7 @@ test("does NOT retry a terminal 4xx", async () => {
   });
 
   await assert.rejects(
-    () => client.fetchMarketSummaries(),
+    () => client.fetchMarketsSummary(),
     (err) => err instanceof ApiError && err.status === 400,
   );
   assert.equal(calls.length, 1);
@@ -133,7 +133,7 @@ test("gives up after maxRetries and throws the last error", async () => {
   });
 
   await assert.rejects(
-    () => client.fetchMarketSummaries(),
+    () => client.fetchMarketsSummary(),
     (err) => err instanceof ApiError && err.status === 500,
   );
   assert.equal(calls.length, 3, "initial + 2 retries");
@@ -148,7 +148,7 @@ test("maxRetries: 0 disables retries entirely", async () => {
     retry: { maxRetries: 0 },
   });
 
-  await assert.rejects(() => client.fetchMarketSummaries());
+  await assert.rejects(() => client.fetchMarketsSummary());
   assert.equal(calls.length, 1);
 });
 
@@ -163,7 +163,7 @@ test("retries 429 and waits at least the Retry-After hint", async () => {
     retry: { baseDelayMs: 1, maxDelayMs: 5 },
   });
 
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   assert.equal(calls.length, 2);
   assert.ok(
     sleep.delays[0]! >= 2000,
@@ -182,7 +182,7 @@ test("clamps an oversized Retry-After so it can't stall a signal-less caller", a
     retry: { baseDelayMs: 1, maxDelayMs: 5 },
   });
 
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   assert.ok(
     sleep.delays[0]! <= 60_000,
     `expected clamped to <= 60000ms, got ${sleep.delays[0]}`,
@@ -199,7 +199,7 @@ test("429 ApiError carries the parsed retryAfterMs", async () => {
   });
 
   await assert.rejects(
-    () => client.fetchMarketSummaries(),
+    () => client.fetchMarketsSummary(),
     (err) => err instanceof ApiError && err.retryAfterMs === 3000,
   );
 });
@@ -217,7 +217,7 @@ test("each retry re-signs with a fresh timestamp", async () => {
     retry: { baseDelayMs: 1 },
   });
 
-  await client.getOpenOrders();
+  await client.fetchOpenOrders();
   assert.equal(calls.length, 2);
   assert.notEqual(
     header(calls[0]!, "x-timestamp"),
