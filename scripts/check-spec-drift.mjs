@@ -5,9 +5,9 @@
  * in lockstep. Mirrors the Rust SDK's scripts/check_spec_drift.py, adapted to a
  * *vendored* spec.
  *
- * Eight independent invariants are enforced (all must hold). A–E are
+ * Nine independent invariants are enforced (all must hold). A–E are
  * schema-level; F–H are the operations half (ENG-7963), mirroring B/C/D for the
- * REST surface the client actually implements:
+ * REST surface the client actually implements; I is the naming rule (R2.25):
  *
  *   A. .api-version <-> vendored spec version
  *      `.api-version` (validated to look like vX.Y.Z) must equal the vendored
@@ -74,6 +74,15 @@
  *      the pinned spec does not define must not be implemented at all, so
  *      "implemented but not in endpoints.txt" is always a finding — see
  *      CODE_ONLY_OPS below, which exists only to fail on any entry.
+ *
+ *   I. wrapper name == operationId                     (R2.25, ENG-17741)
+ *      Each method that holds a `this.#request(...)` call is named for the
+ *      operation it sends: its `operationId`, with the `V1` suffix the spec gives
+ *      the direct-service twin dropped (`fetchOHLCVV1` -> `fetchOHLCV`). The
+ *      pre-rename names live on as deprecated aliases that forward without a
+ *      REST call, so this never sees them. Where the canonical id has not
+ *      reached the pinned spec yet it is read from OPERATION_IDS_AHEAD_OF_PIN,
+ *      which is stale-checked and so can only shrink.
  *
  * Usage: check-spec-drift.mjs [path-to-openapi.json]
  *   Defaults to the vendored spec/openapi.json. CI also runs it against the
@@ -648,7 +657,7 @@ function literalPath(expr) {
  * `/api/v1/…` in full), so nothing is prefixed. Placeholders are normalized
  * to `{}`.
  */
-function implementedOps(src) {
+function implementedOps(src, sites = []) {
   const ops = new Set();
   let searched = 0;
   let count = 0;
@@ -694,7 +703,9 @@ function implementedOps(src) {
       );
     }
 
-    ops.add(`${method} ${normalizeOpPath(path)}`);
+    const op = `${method} ${normalizeOpPath(path)}`;
+    ops.add(op);
+    sites.push({ op, line, name: enclosingMethod(src, at, line) });
   }
 
   if (count === 0) {
@@ -703,6 +714,135 @@ function implementedOps(src) {
     );
   }
   return ops;
+}
+
+/**
+ * The class member a call site sits in: the nearest line above it that opens a
+ * member at the class body's two-space indent (`  name(` / `  async name(`,
+ * optionally generic). Invariant I compares that name with the operationId, so
+ * a call it cannot attribute aborts rather than being skipped.
+ */
+function enclosingMethod(src, at, line) {
+  const above = src.slice(0, at).split("\n");
+  for (let i = above.length - 1; i >= 0; i--) {
+    const m = /^ {2}(?:async\s+)?(#?[A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\(/.exec(
+      above[i],
+    );
+    if (m) return m[1];
+  }
+  fail(
+    `src/client.ts:${line}: no enclosing class member found for this \`${REQUEST_CALL}\` call; invariant I needs the wrapper's name`,
+  );
+}
+
+// ─── Invariant I: wrapper name == operationId (R2.25, ENG-17741) ─────────────
+
+/**
+ * R2.25 operationIds that lead the pinned spec, keyed by the operation as the
+ * spec spells it.
+ *
+ * ENG-17740 renamed these operationIds in the monorepo spec so each matches its
+ * `x-ccxt-method` and the verb grammar, but no published nexus-exchange-api tag
+ * carries the rename yet, so the pinned spec still spells them the old way. The
+ * wrappers are named for the canonical id now, and this map is where invariant I
+ * reads it from until the pin catches up. The same table exists in
+ * nexus-exchange-mcp (`OPERATION_IDS_AHEAD_OF_PIN`) and nexus-exchange-go
+ * (`renamedAhead`).
+ *
+ * A NAME table, not an operation carve-out: every key must be an operation the
+ * pinned spec already defines, so it does not reopen the CODE_ONLY_OPS door.
+ * Stale-checked: an entry fails until it is deleted once the pinned spec no
+ * longer defines the operation, once its pinned operationId equals the value
+ * (the pin caught up), or once no wrapper sends it. So the spec-autobump PR that
+ * carries ENG-17740 has to empty this map.
+ */
+const OPERATION_IDS_AHEAD_OF_PIN = new Map([
+  ["POST /account/credit", "claimCredit"],
+  ["GET /account/fees", "fetchTradingFees"],
+  ["POST /account/margin", "addMargin"],
+  ["GET /agents", "fetchAgents"],
+  ["GET /api/v1/bridge/assets", "fetchBridgeAssetsV1"],
+  ["GET /api/v1/bridge/deposits", "fetchBridgeDepositsV1"],
+  ["GET /api/v1/bridge/deposits/{id}", "fetchBridgeDepositV1"],
+  ["GET /fills", "fetchMyTrades"],
+  ["GET /funding", "fetchFundingHistory"],
+  ["GET /keys", "fetchApiKeys"],
+  ["GET /markets/{market_id}/funding", "fetchFundingRateHistory"],
+  ["POST /orders/batch", "createOrders"],
+  ["GET /orders/history", "fetchOrders"],
+  ["GET /positions/closed", "fetchPositionsHistory"],
+]);
+
+/** The name R2.25 gives a TS wrapper for `operationId`: drop the `V1` suffix. */
+function wrapperNameFor(operationId) {
+  return operationId.replace(/V1$/, "");
+}
+
+/**
+ * Invariant I. `sites` are the `{ op, line, name }` call sites implementedOps()
+ * collected; `spec` is the parsed spec. Returns `{ label, items }` findings like
+ * operationsDrift(). Pure, so the self-test can defeat it in isolation.
+ */
+function wrapperNameDrift({ sites, spec, ahead = OPERATION_IDS_AHEAD_OF_PIN }) {
+  const pinned = new Map(); // normalized op -> { op, operationId }
+  for (const [path, methods] of Object.entries(spec?.paths ?? {})) {
+    for (const [method, entry] of Object.entries(methods ?? {})) {
+      const upper = method.toUpperCase();
+      if (!HTTP_METHODS.has(upper)) continue;
+      pinned.set(`${upper} ${normalizeOpPath(path)}`, {
+        op: `${upper} ${path}`,
+        operationId: entry?.operationId,
+      });
+    }
+  }
+  const findings = [];
+  const add = (label, items) => {
+    if (items.length > 0) findings.push({ label, items });
+  };
+
+  const misnamed = [];
+  const unnamed = [];
+  const sent = new Set();
+  for (const site of sites) {
+    const entry = pinned.get(site.op);
+    if (!entry) continue; // invariants F/H report an op the spec lacks
+    sent.add(entry.op);
+    const operationId = ahead.get(entry.op) ?? entry.operationId;
+    if (!operationId) {
+      unnamed.push(
+        `${site.name} sends ${entry.op} (src/client.ts:${site.line})`,
+      );
+      continue;
+    }
+    const want = wrapperNameFor(operationId);
+    if (site.name !== want) {
+      misnamed.push(
+        `${site.name} sends ${entry.op} (operationId ${operationId}), so it must be named ${want} (src/client.ts:${site.line})`,
+      );
+    }
+  }
+  add(
+    "wrapper(s) not named for their operationId (R2.25): rename the method and keep the old name as a deprecated alias for one minor (see the deprecated-aliases block in src/client.ts):",
+    misnamed,
+  );
+  add(
+    "wrapper(s) whose operation has no operationId in the pinned spec to be named after:",
+    unnamed,
+  );
+
+  const stale = [];
+  for (const [op, operationId] of ahead) {
+    const entry = [...pinned.values()].find((e) => e.op === op);
+    if (!entry) stale.push(`${op}: the pinned spec does not define it`);
+    else if (entry.operationId === operationId)
+      stale.push(`${op}: the pinned spec now carries ${operationId}`);
+    else if (!sent.has(op)) stale.push(`${op}: no wrapper sends it any more`);
+  }
+  add(
+    "stale OPERATION_IDS_AHEAD_OF_PIN entr(ies) in scripts/check-spec-drift.mjs; delete them:",
+    stale,
+  );
+  return findings;
 }
 
 /**
@@ -877,6 +1017,7 @@ function main() {
 
   const clientSrc = read(join(REPO, "src", "client.ts"));
   const basePath = clientBasePath(clientSrc);
+  const sites = [];
   const ops = operationsDrift({
     specOps: specOperations(spec),
     targeted: parseOpsManifest(
@@ -887,9 +1028,10 @@ function main() {
       "spec/uncovered-ops.txt",
       read(join(REPO, "spec", "uncovered-ops.txt")),
     ),
-    implemented: implementedOps(clientSrc),
+    implemented: implementedOps(clientSrc, sites),
     basePath,
   });
+  const names = wrapperNameDrift({ sites, spec });
 
   console.log(`Pinned API version : ${pin}`);
   console.log(`Vendored spec      : ${specPath}`);
@@ -902,6 +1044,9 @@ function main() {
     `Checked ${enums.enumCount} spec enum(s) against models.ts (${allowlist.length} allowlisted member(s)).`,
   );
   console.log(ops.summary);
+  console.log(
+    `Checked ${sites.length} wrapper name(s) against their operationId (${OPERATION_IDS_AHEAD_OF_PIN.size} read from OPERATION_IDS_AHEAD_OF_PIN until the pin catches up).`,
+  );
 
   let failures = 0;
   const report = (label, items) => {
@@ -958,12 +1103,15 @@ function main() {
   // F/G/H. endpoints.txt <-> spec <-> src/client.ts (operations).
   for (const { label, items } of ops.findings) report(label, items);
 
+  // I. wrapper name == operationId (R2.25).
+  for (const { label, items } of names) report(label, items);
+
   if (failures > 0) {
     console.error(`\n${failures} drift error(s).`);
     process.exit(1);
   }
   console.log(
-    "\nOK: pin, vendored spec, schemas.txt, models.ts, enum members, and the operations manifest are all in sync.",
+    "\nOK: pin, vendored spec, schemas.txt, models.ts, enum members, the operations manifest, and wrapper names are all in sync.",
   );
 }
 
@@ -986,4 +1134,4 @@ const invokedAs = process.argv[1]
   : "";
 if (import.meta.url === invokedAs) main();
 
-export { canonicalOp, operationsDrift };
+export { canonicalOp, operationsDrift, wrapperNameDrift };

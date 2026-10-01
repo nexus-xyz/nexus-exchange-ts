@@ -26,7 +26,10 @@ if (!client.hasCredentials) {
 // the cursor for you, so nothing is held in memory beyond the current page.
 // `.pageSize(100)` bounds each request; `.maxPages(5)` caps the walk.
 let count = 0;
-for await (const fill of client.getFillsPaginated().pageSize(100).maxPages(5)) {
+for await (const fill of client
+  .fetchMyTradesPaginated()
+  .pageSize(100)
+  .maxPages(5)) {
   count += 1;
   console.log(
     `  ${fill.side.padEnd(4)} ${fill.size} @ ${fill.price}  (fee ${fill.fee})`,

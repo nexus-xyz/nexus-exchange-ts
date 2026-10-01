@@ -116,7 +116,7 @@ test("fetchMarkets signs the bare /markets path", async () => {
 
 test("fetchMarkets is authenticated, unlike the rest of market data", async () => {
   // The spec gives this operation `security: [{hmacAuth: []}]` and a documented
-  // 401 — the mirror image of the getBridgeAssets bug (a public route shipped
+  // 401 — the mirror image of the fetchBridgeAssets bug (a public route shipped
   // `signed: true`). The drift checker validates schemas and enums, not
   // per-route `security`, so this test is the guard in both directions.
   const { client, calls } = capture({ credentialed: false });
@@ -124,7 +124,7 @@ test("fetchMarkets is authenticated, unlike the rest of market data", async () =
   assert.equal(calls.length, 0);
 
   // Its public counterpart on the same client still works with no credentials.
-  await client.fetchMarketSummaries();
+  await client.fetchMarketsSummary();
   assert.equal(calls.length, 1);
 });
 
@@ -223,14 +223,14 @@ test("fetchAdlEvents signs the bare per-market ADL path", async () => {
   assertSignedOver(c, "GET", "/markets/BTC-USDX-PERP/adl-events");
 });
 
-test("getAdlHistory signs the bare per-account ADL path", async () => {
+test("fetchAdlHistory signs the bare per-account ADL path", async () => {
   const { client, calls } = capture(
     {},
     () => new Response(JSON.stringify([ADL_EVENT]), { status: 200 }),
   );
 
   const address = "0x7a1fb3c5d7e9a1b3c5d7e9a1b3c5d7e9a1b3c5d7";
-  await client.getAdlHistory(address, { limit: 25 });
+  await client.fetchAdlHistory(address, { limit: 25 });
 
   const c = calls[0]!;
   assert.equal(
@@ -253,7 +253,7 @@ test("both ADL reads refuse an out-of-range limit without signing anything", asy
       RangeError,
     );
     await assert.rejects(
-      client.getAdlHistory("0xabc", { limit: bad }),
+      client.fetchAdlHistory("0xabc", { limit: bad }),
       RangeError,
     );
   }
@@ -261,7 +261,7 @@ test("both ADL reads refuse an out-of-range limit without signing anything", asy
 
   // The boundaries are valid and do reach the wire.
   await client.fetchAdlEvents("BTC-USDX-PERP", { limit: 1 });
-  await client.getAdlHistory("0xabc", { limit: 1000 });
+  await client.fetchAdlHistory("0xabc", { limit: 1000 });
   assert.deepEqual(
     calls.map((c) => c.url),
     [
@@ -273,7 +273,7 @@ test("both ADL reads refuse an out-of-range limit without signing anything", asy
 
 // ─── GET /orders/{order_id} ──────────────────────────────────────────────────
 
-test("getOrder sends the required market_id and signs the bare path", async () => {
+test("fetchOrder sends the required market_id and signs the bare path", async () => {
   const { client, calls } = capture(
     {},
     () =>
@@ -285,7 +285,7 @@ test("getOrder sends the required market_id and signs the bare path", async () =
       ),
   );
 
-  const out = await client.getOrder("ord-1", "BTC-USDX-PERP");
+  const out = await client.fetchOrder("ord-1", "BTC-USDX-PERP");
   assert.equal(out.id, "ord-1");
 
   const c = calls[0]!;
@@ -304,8 +304,8 @@ test("GET, PATCH and DELETE on /orders/{id} all send and sign the bare path", as
   // `/api/v1`.
   const { client, calls } = capture({}, () => new Response("{}"));
 
-  await client.getOrder("ord-1", "BTC-USDX-PERP");
-  await client.amendOrder("ord-1", "BTC-USDX-PERP", { size: "1" });
+  await client.fetchOrder("ord-1", "BTC-USDX-PERP");
+  await client.editOrder("ord-1", "BTC-USDX-PERP", { size: "1" });
   await client.cancelOrder("ord-1", "BTC-USDX-PERP");
 
   assert.deepEqual(
@@ -326,12 +326,12 @@ test("GET, PATCH and DELETE on /orders/{id} all send and sign the bare path", as
   );
 });
 
-test("getOrder rejects a missing or empty marketId without sending", async () => {
+test("fetchOrder rejects a missing or empty marketId without sending", async () => {
   const { client, calls } = capture({}, () => new Response("{}"));
 
-  await assert.rejects(client.getOrder("ord-1", ""), InvalidRequestError);
+  await assert.rejects(client.fetchOrder("ord-1", ""), InvalidRequestError);
   await assert.rejects(
-    client.getOrder("ord-1", undefined as unknown as string),
+    client.fetchOrder("ord-1", undefined as unknown as string),
     InvalidRequestError,
   );
   assert.equal(calls.length, 0, "nothing reaches the wire");
@@ -339,7 +339,7 @@ test("getOrder rejects a missing or empty marketId without sending", async () =>
 
 // ─── PATCH /orders/{order_id} ────────────────────────────────────────────────
 
-test("amendOrder sends the required market_id on the wire and signs over it", async () => {
+test("editOrder sends the required market_id on the wire and signs over it", async () => {
   // ENG-17118: the engine's `amend_order` takes the same non-optional
   // `Query<OrderRoutingQuery>` as cancel (ENG-3123), and the spec marks
   // `market_id` required on this PATCH. Asserted on the outgoing request — the
@@ -347,7 +347,7 @@ test("amendOrder sends the required market_id on the wire and signs over it", as
   // the body still signed alongside it.
   const { client, calls } = capture({}, () => new Response("{}"));
 
-  await client.amendOrder("ord-1", "BTC-USDX-PERP", { price: "65000" });
+  await client.editOrder("ord-1", "BTC-USDX-PERP", { price: "65000" });
 
   assert.equal(calls.length, 1);
   const c = calls[0]!;
@@ -361,27 +361,27 @@ test("amendOrder sends the required market_id on the wire and signs over it", as
   assertSignedOver(c, "PATCH", "/orders/ord-1", "market_id=BTC-USDX-PERP");
 });
 
-test("amendOrder escapes the market id in the URL and the signed query alike", async () => {
+test("editOrder escapes the market id in the URL and the signed query alike", async () => {
   const { client, calls } = capture({}, () => new Response("{}"));
 
-  await client.amendOrder("a/b", "X&Y", { size: "1" });
+  await client.editOrder("a/b", "X&Y", { size: "1" });
 
   const c = calls[0]!;
   assert.equal(c.url, "http://localhost:9090/orders/a%2Fb?market_id=X%26Y");
   assertSignedOver(c, "PATCH", "/orders/a%2Fb", "market_id=X%26Y");
 });
 
-test("amendOrder rejects a missing or empty marketId without sending", async () => {
+test("editOrder rejects a missing or empty marketId without sending", async () => {
   const { client, calls } = capture({}, () => new Response("{}"));
 
   await assert.rejects(
-    client.amendOrder("ord-1", "", { size: "1" }),
+    client.editOrder("ord-1", "", { size: "1" }),
     InvalidRequestError,
   );
-  // The old `amendOrder(id, amend)` shape puts the amend body where the market
+  // The old `editOrder(id, amend)` shape puts the amend body where the market
   // now goes.
   await assert.rejects(
-    client.amendOrder(
+    client.editOrder(
       "ord-1",
       { size: "1" } as unknown as string,
       undefined as unknown as { size: string },
@@ -452,10 +452,10 @@ test("cancelOrder rejects a missing or empty marketId without sending", async ()
   assert.equal(calls.length, 0, "nothing reaches the wire");
 });
 
-test("getOrder escapes both the order id and the market id", async () => {
+test("fetchOrder escapes both the order id and the market id", async () => {
   const { client, calls } = capture({}, () => new Response("{}"));
 
-  await client.getOrder("a/b", "X&Y");
+  await client.fetchOrder("a/b", "X&Y");
 
   const c = calls[0]!;
   assert.equal(c.url, "http://localhost:9090/orders/a%2Fb?market_id=X%26Y");
@@ -466,7 +466,7 @@ test("getOrder escapes both the order id and the market id", async () => {
 
 // ─── cancel-on-disconnect ────────────────────────────────────────────────────
 
-test("getCancelOnDisconnect reads the bare spelling", async () => {
+test("fetchCancelOnDisconnect reads the bare spelling", async () => {
   const { client, calls } = capture(
     {},
     () =>
@@ -476,7 +476,7 @@ test("getCancelOnDisconnect reads the bare spelling", async () => {
       ),
   );
 
-  const out = await client.getCancelOnDisconnect();
+  const out = await client.fetchCancelOnDisconnect();
   // `enabled && !active` is the trap the model documents: armed on paper, but
   // the exchange-side switch is off, so no cancel fires.
   assert.equal(out.enabled, true);
@@ -518,7 +518,10 @@ test("setCancelOnDisconnect PUTs the opt-in and signs the body", async () => {
 
 test("the cancel-on-disconnect pair requires credentials", async () => {
   const { client, calls } = capture({ credentialed: false });
-  await assert.rejects(client.getCancelOnDisconnect(), MissingCredentialsError);
+  await assert.rejects(
+    client.fetchCancelOnDisconnect(),
+    MissingCredentialsError,
+  );
   await assert.rejects(
     client.setCancelOnDisconnect(true),
     MissingCredentialsError,

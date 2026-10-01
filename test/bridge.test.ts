@@ -44,7 +44,7 @@ function capture(
 }
 
 /**
- * The regression test for the bug this PR's review caught: `getBridgeAssets`
+ * The regression test for the bug this PR's review caught: `fetchBridgeAssets`
  * shipped `signed: true`, so a credential-less client — the public-read mode the
  * README documents — threw `MissingCredentialsError` out of `#sendOnce` before
  * anything reached the wire.
@@ -54,13 +54,13 @@ function capture(
  * repeat — it validates schemas and enums, not per-route `security` — so this
  * test is the guard.
  */
-test("getBridgeAssets succeeds with no credentials at all", async () => {
+test("fetchBridgeAssets succeeds with no credentials at all", async () => {
   const { client, calls } = capture(
     { credentialed: false },
     () => new Response(JSON.stringify({ chains: [] }), { status: 200 }),
   );
 
-  await client.getBridgeAssets();
+  await client.fetchBridgeAssets();
 
   assert.equal(calls.length, 1, "the request must actually reach the wire");
   assert.equal(calls[0].method, "GET");
@@ -75,13 +75,13 @@ test("getBridgeAssets succeeds with no credentials at all", async () => {
  * reaches this method as a caller-controlled string, so a hostile one must be
  * percent-encoded rather than allowed to add path segments or a query.
  */
-test("getBridgeDeposit path-encodes a hostile id", async () => {
+test("fetchBridgeDeposit path-encodes a hostile id", async () => {
   const { client, calls } = capture(
     { credentialed: true },
     () => new Response("{}", { status: 200 }),
   );
 
-  await client.getBridgeDeposit("../../admin/tiers?x=1");
+  await client.fetchBridgeDeposit("../../admin/tiers?x=1");
 
   const url = calls[0].url;
   // The traversal must not survive as structure.
@@ -99,13 +99,13 @@ test("getBridgeDeposit path-encodes a hostile id", async () => {
  * differently from the signing input, every filtered call would 401 against a
  * real server while passing any test that only checked the URL.
  */
-test("getBridgeDeposits signs the exact query it sends", async () => {
+test("fetchBridgeDeposits signs the exact query it sends", async () => {
   const { client, calls } = capture(
     { credentialed: true },
     () => new Response("[]", { status: 200 }),
   );
 
-  await client.getBridgeDeposits({
+  await client.fetchBridgeDeposits({
     chain: "ethereum",
     asset: "USDC",
     status: "credited",

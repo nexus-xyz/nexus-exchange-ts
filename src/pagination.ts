@@ -10,8 +10,8 @@
  * (the idiomatic TS analog of the Rust SDK's `into_stream`).
  *
  * The `Client` methods that return one are `fetchTradesPaginated`,
- * `getFillsPaginated`, `getOrderHistoryPaginated`, `getClosedPositionsPaginated`
- * and `getEquityHistoryPaginated` — the five cursor-paginated GETs.
+ * `fetchMyTradesPaginated`, `fetchOrdersPaginated`, `fetchPositionsHistoryPaginated`
+ * and `fetchEquityHistoryPaginated` — the five cursor-paginated GETs.
  *
  * Termination: an **absent** `X-Next-Cursor` means the last page (not an error,
  * and not a reason to retry); an **empty page that still carries a cursor is not

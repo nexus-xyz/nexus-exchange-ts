@@ -20,7 +20,7 @@ function mockFetch(body: unknown, init: { status?: number } = {}) {
 const creds = { apiKey: "key", apiSecret: "abcd" };
 const BASE = "https://example.test";
 
-test("mintWsToken POSTs /ws/token relative to the base, without /api/v1", async () => {
+test("createWsToken POSTs /ws/token relative to the base, without /api/v1", async () => {
   const { impl, calls } = mockFetch({ token: "wst_abc123" });
   // A gateway base: the WS-token route has no /api/v1 variant, so it drops that
   // prefix — but it stays *under the base*, because the routes without a v1
@@ -32,7 +32,7 @@ test("mintWsToken POSTs /ws/token relative to the base, without /api/v1", async 
     ...creds,
   });
 
-  const token = await client.mintWsToken();
+  const token = await client.createWsToken();
   assert.equal(token, "wst_abc123");
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.url, "https://example.test/api/exchange/ws/token");
@@ -48,7 +48,7 @@ test("mintWsToken POSTs /ws/token relative to the base, without /api/v1", async 
 // is an HMAC pair like any other from this client's side, so what is pinned here
 // is that the credential is carried to the canonical path — the part that would
 // regress if the route were swapped back.
-test("mintWsToken signs with a registered agent key against the canonical route", async () => {
+test("createWsToken signs with a registered agent key against the canonical route", async () => {
   const { impl, calls } = mockFetch({ token: "wst_agent" });
   const client = new Client({
     fetchImpl: impl,
@@ -57,7 +57,7 @@ test("mintWsToken signs with a registered agent key against the canonical route"
     apiSecret: "00112233445566778899aabbccddeeff",
   });
 
-  assert.equal(await client.mintWsToken(), "wst_agent");
+  assert.equal(await client.createWsToken(), "wst_agent");
   assert.equal(calls[0]!.url, "https://example.test/api/exchange/ws/token");
   const headers = calls[0]!.init.headers as Record<string, string>;
   assert.equal(headers["x-api-key"], "nx_agent_key");
@@ -67,11 +67,11 @@ test("mintWsToken signs with a registered agent key against the canonical route"
 // The legacy route mints for the public `/stream` endpoint, whose protocol and
 // channel set differ, so a token from it is not what `GET /ws` wants. Pinned so
 // the path cannot drift back without a failing test.
-test("mintWsToken never calls the legacy /ws-tokens route", async () => {
+test("createWsToken never calls the legacy /ws-tokens route", async () => {
   const { impl, calls } = mockFetch({ token: "t" });
   const client = new Client({ fetchImpl: impl, baseUrl: BASE, ...creds });
 
-  await client.mintWsToken();
+  await client.createWsToken();
   await client.wsTokenProvider()();
 
   for (const call of calls) {
@@ -82,20 +82,20 @@ test("mintWsToken never calls the legacy /ws-tokens route", async () => {
   }
 });
 
-test("mintWsToken throws when the response has no token", async () => {
+test("createWsToken throws when the response has no token", async () => {
   const { impl } = mockFetch({});
   const client = new Client({ fetchImpl: impl, baseUrl: BASE, ...creds });
   await assert.rejects(
-    () => client.mintWsToken(),
+    () => client.createWsToken(),
     (err) => err instanceof TransportError,
   );
 });
 
-test("mintWsToken requires credentials", async () => {
+test("createWsToken requires credentials", async () => {
   const { impl } = mockFetch({ token: "x" });
   const client = new Client({ fetchImpl: impl, baseUrl: BASE });
   await assert.rejects(
-    () => client.mintWsToken(),
+    () => client.createWsToken(),
     (err) => err instanceof MissingCredentialsError,
   );
 });

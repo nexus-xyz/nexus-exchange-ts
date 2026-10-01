@@ -438,7 +438,7 @@ export interface FundingSample {
  * settled funding *window*, not of an intra-window sample, and the event these
  * are folded from never carried them — so v0.8.0 gave the endpoint its own
  * schema rather than keep serving three fields that were never populated here.
- * Read `GET /markets/{market_id}/funding` ({@link Client.fetchFundingHistory})
+ * Read `GET /markets/{market_id}/funding` ({@link Client.fetchFundingRateHistory})
  * for a settled window's rate and prices.
  */
 export interface FundingPremiumSample {

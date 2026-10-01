@@ -55,9 +55,9 @@ test("every request opts out of following redirects", async () => {
   const { client: c, calls } = client(
     () => new Response("{}", { status: 200 }),
   );
-  await c.fetchMarketSummaries(); // unsigned, base path
-  await c.getAccountSummary(); // signed, base path
-  await c.listAgents(); // signed, host root (`root: true`)
+  await c.fetchMarketsSummary(); // unsigned, base path
+  await c.fetchAccountSummary(); // signed, base path
+  await c.fetchAgents(); // signed, host root (`root: true`)
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.init.redirect, "manual");
@@ -85,15 +85,15 @@ test("a redirect on a signed money-moving POST is a terminal ApiError, not a fol
 
 test("a redirect on an idempotent GET is not retried", async () => {
   const { client: c, calls } = client(redirect(302));
-  await assert.rejects(c.fetchMarketSummaries(), ApiError);
+  await assert.rejects(c.fetchMarketsSummary(), ApiError);
   // Default maxRetries is 2; a transient classification would make this 3.
   assert.equal(calls.length, 1);
 });
 
-test("adjustMargin surfaces the redirect too, and never re-sends", async () => {
+test("addMargin surfaces the redirect too, and never re-sends", async () => {
   const { client: c, calls } = client(redirect(308));
   const err = await c
-    .adjustMargin({ market_id: "BTC-USDX-PERP", direction: "add", amount: "5" })
+    .addMargin({ market_id: "BTC-USDX-PERP", direction: "add", amount: "5" })
     .then(
       () => null,
       (e: unknown) => e,
@@ -107,7 +107,7 @@ test("adjustMargin surfaces the redirect too, and never re-sends", async () => {
 // that, rather than the runtime-withheld wording the opaque case below gets.
 test("a 3xx with no Location still fails loudly", async () => {
   const { client: c } = client(redirect(303, null));
-  const err = await c.getAccountSummary().then(
+  const err = await c.fetchAccountSummary().then(
     () => null,
     (e: unknown) => e,
   );
@@ -144,7 +144,7 @@ test("a credential-looking Location is redacted in the error message", async () 
   const { client: c } = client(
     redirect(301, "https://evil.test/cb?token=SUPERSECRETVALUE"),
   );
-  const err = await c.getAccountSummary().then(
+  const err = await c.fetchAccountSummary().then(
     () => null,
     (e: unknown) => e,
   );
@@ -157,7 +157,7 @@ test("a long Location cannot flood the error message", async () => {
   const { client: c } = client(
     redirect(301, `https://evil.test/${"a".repeat(5000)}`),
   );
-  const err = await c.getAccountSummary().then(
+  const err = await c.fetchAccountSummary().then(
     () => null,
     (e: unknown) => e,
   );

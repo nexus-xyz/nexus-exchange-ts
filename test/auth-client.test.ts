@@ -61,7 +61,7 @@ function referenceSignature(
 
 // -- sign-in / sessions -------------------------------------------------------
 
-test("signIn posts the EIP-191 body to the host-root /auth/login and stores the token", async () => {
+test("login posts the EIP-191 body to the host-root /auth/login and stores the token", async () => {
   const { client, calls } = clientWithCapture(
     { network: Network.Local },
     () =>
@@ -72,7 +72,7 @@ test("signIn posts the EIP-191 body to the host-root /auth/login and stores the 
   const signer = EthSigner.fromHex(TEST_KEY);
 
   assert.equal(client.hasSession, false);
-  const res = await client.signIn(signer);
+  const res = await client.login(signer);
   assert.equal(res.token, "sess-abc");
   assert.equal(client.hasSession, true);
 
@@ -89,13 +89,13 @@ test("signIn posts the EIP-191 body to the host-root /auth/login and stores the 
   assert.match(body.signature, /^0x[0-9a-f]{130}$/);
 });
 
-test("signIn throws when the response carries no token", async () => {
+test("login throws when the response carries no token", async () => {
   const { client } = clientWithCapture(
     { network: Network.Local },
     () => new Response(JSON.stringify({ address: "0x" }), { status: 200 }),
   );
   await assert.rejects(
-    () => client.signIn(EthSigner.fromHex(TEST_KEY)),
+    () => client.login(EthSigner.fromHex(TEST_KEY)),
     TransportError,
   );
 });
@@ -138,14 +138,14 @@ test("createApiKey posts to host-root /keys with the bearer token", async () => 
   assert.equal(c.headers.get("x-signature"), null);
 });
 
-test("listApiKeys GETs host-root /keys with the bearer token", async () => {
+test("fetchApiKeys GETs host-root /keys with the bearer token", async () => {
   const keys = [{ key_id: "nx_1", tier: "Pro" }];
   const { client, calls } = clientWithCapture(
     { network: Network.Local, sessionToken: "sess-xyz" },
     () => new Response(JSON.stringify(keys), { status: 200 }),
   );
 
-  const out = await client.listApiKeys();
+  const out = await client.fetchApiKeys();
   assert.deepEqual(out, keys);
   const c = calls[0]!;
   assert.equal(c.url, "http://localhost:9090/keys");
@@ -169,7 +169,7 @@ test("deleteApiKey DELETEs host-root /keys/{id} url-encoded with the bearer toke
 test("session-authed endpoints throw MissingCredentialsError without a token", async () => {
   const { client } = clientWithCapture({ network: Network.Local });
   await assert.rejects(() => client.createApiKey(), MissingCredentialsError);
-  await assert.rejects(() => client.listApiKeys(), MissingCredentialsError);
+  await assert.rejects(() => client.fetchApiKeys(), MissingCredentialsError);
   await assert.rejects(
     () => client.deleteApiKey("nx_1"),
     MissingCredentialsError,
@@ -206,7 +206,7 @@ test("registerAgent posts the EIP-712 body to host-root /agents/register unauthe
   assert.equal(body.agent, "0x1234567890abcdef1234567890abcdef12345678");
 });
 
-test("listAgents GETs host-root /agents signed with HMAC over the bare path", async () => {
+test("fetchAgents GETs host-root /agents signed with HMAC over the bare path", async () => {
   const agents = [
     { address: "0x12", expiresAt: 1, registeredAt: 1, label: null },
   ];
@@ -215,7 +215,7 @@ test("listAgents GETs host-root /agents signed with HMAC over the bare path", as
     () => new Response(JSON.stringify(agents), { status: 200 }),
   );
 
-  const out = await client.listAgents();
+  const out = await client.fetchAgents();
   assert.deepEqual(out, agents);
   const c = calls[0]!;
   assert.equal(c.url, "http://localhost:9090/agents");
@@ -248,7 +248,7 @@ test("revokeAgent DELETEs host-root /agents/{address} signed with HMAC", async (
 
 test("agent management throws MissingCredentialsError without API-key creds", async () => {
   const { client } = clientWithCapture({ network: Network.Local });
-  await assert.rejects(() => client.listAgents(), MissingCredentialsError);
+  await assert.rejects(() => client.fetchAgents(), MissingCredentialsError);
   await assert.rejects(
     () => client.revokeAgent("0x12"),
     MissingCredentialsError,

@@ -1416,7 +1416,7 @@ export interface ClientOptions {
    * Mutually exclusive with `apiKey` / `apiSecret` — a client has one request
    * credential, as in the Rust SDK, so which one signed a request is never a
    * guess. Agent keys are trade-only: they **cannot withdraw**, and the
-   * agent-management calls ({@link Client.listAgents},
+   * agent-management calls ({@link Client.fetchAgents},
    * {@link Client.revokeAgent}) need an HMAC client, so they are refused
    * locally here.
    *
@@ -1425,7 +1425,7 @@ export interface ClientOptions {
    */
   agentSigner?: AgentSigner;
   /**
-   * Session bearer token from {@link Client.signIn} (`POST /auth/login`), used
+   * Session bearer token from {@link Client.login} (`POST /auth/login`), used
    * to authenticate the API-key management endpoints (`/keys`). Can be supplied
    * up front or set later with {@link Client.setSessionToken} after signing in.
    */
@@ -1542,7 +1542,7 @@ function checkPageSize(
  *
  * Also catches a non-string, which is what a caller still on a pre-`marketId`
  * signature passes (`cancelOrder(id)` → `undefined`, `cancelOrder(id, { signal })`
- * or `amendOrder(id, { size })` → an object); without this, the object would be
+ * or `editOrder(id, { size })` → an object); without this, the object would be
  * stringified into the query.
  */
 function requireNonEmpty(value: unknown, what: string): void {
@@ -1608,7 +1608,7 @@ function basePathOf(baseUrl: string): string {
  * would then:
  *
  *   * rewrite the `POST` to a `GET` and drop the body, per the redirect rules for
- *     301/302 — so a money-moving call (`deposit()`, `adjustMargin()`) silently
+ *     301/302 — so a money-moving call (`deposit()`, `addMargin()`) silently
  *     becomes a read of an unrelated page instead of failing;
  *   * strip `Authorization` across the origin change but **forward** the custom
  *     `X-Nexus-Key-Id` / `X-Nexus-Signature` headers, handing a valid HMAC
@@ -1749,7 +1749,7 @@ export class Client {
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
   readonly #agentSigner?: AgentSigner;
-  // Mutable: {@link setSessionToken} / {@link signIn} update it after login.
+  // Mutable: {@link setSessionToken} / {@link login} update it after login.
   #sessionToken?: string;
   readonly #timeoutMs: number;
   // Advisory request headers, resolved once at construction. Empty string means
@@ -1817,7 +1817,7 @@ export class Client {
           "signs with one request credential, and silently preferring one of " +
           "them would leave which key authorized a trade to a rule nobody " +
           "reads. Use two clients if you need both (e.g. an HMAC client for " +
-          "listAgents/revokeAgent).",
+          "fetchAgents/revokeAgent).",
       );
     }
     this.#apiKey = options.apiKey;
@@ -2101,7 +2101,7 @@ export class Client {
   }
 
   /** `GET /markets/summary` — per-market 24h volume and halt state. */
-  fetchMarketSummaries(opts?: {
+  fetchMarketsSummary(opts?: {
     signal?: AbortSignal;
   }): Promise<MarketSummary[]> {
     return this.#request<MarketSummary[]>("GET", "/markets/summary", opts);
@@ -2153,7 +2153,7 @@ export class Client {
   }
 
   /** `GET /markets/{market_id}/candles` — OHLCV candles. */
-  fetchCandles(
+  fetchOHLCV(
     marketId: string,
     opts: { timeframe?: string; limit?: number; signal?: AbortSignal } = {},
   ): Promise<Candle[]> {
@@ -2165,7 +2165,7 @@ export class Client {
   }
 
   /** `GET /markets/{market_id}/funding` — intra-hour funding-rate history. */
-  fetchFundingHistory(
+  fetchFundingRateHistory(
     marketId: string,
     opts: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<FundingSample[]> {
@@ -2186,7 +2186,7 @@ export class Client {
    * {@link FundingSample}, whose `funding_rate`, `mark_price` and `oracle_price`
    * describe a settled funding *window* rather than an intra-window sample and
    * were never populated here; v0.8.0 gave it its own schema. Read
-   * {@link fetchFundingHistory} for a window's settled rate and prices.
+   * {@link fetchFundingRateHistory} for a window's settled rate and prices.
    */
   fetchFundingSamples(
     marketId: string,
@@ -2262,7 +2262,7 @@ export class Client {
    * An out-of-range `limit` **rejects** the returned promise with `RangeError`
    * rather than throwing synchronously; `async` is load-bearing for that.
    *
-   * @see {@link getAdlHistory} for the same events filtered to one account.
+   * @see {@link fetchAdlHistory} for the same events filtered to one account.
    */
   async fetchAdlEvents(
     marketId: string,
@@ -2320,7 +2320,7 @@ export class Client {
    * Note the drift checker cannot catch a repeat of this: it validates schemas
    * and enums, not per-route `security`. The regression test is the guard.
    */
-  getBridgeAssets(opts?: {
+  fetchBridgeAssets(opts?: {
     signal?: AbortSignal;
   }): Promise<BridgeAssetsResponse> {
     return this.#request<BridgeAssetsResponse>(
@@ -2333,7 +2333,7 @@ export class Client {
   // -- authenticated: account -----------------------------------------------
 
   /** `GET /account` — balances, equity, and open positions. */
-  getAccount(opts?: { signal?: AbortSignal }): Promise<AccountSummary> {
+  fetchBalance(opts?: { signal?: AbortSignal }): Promise<AccountSummary> {
     return this.#request<AccountSummary>("GET", "/account", {
       signed: true,
       signal: opts?.signal,
@@ -2341,7 +2341,7 @@ export class Client {
   }
 
   /** `GET /account/summary` — aggregate portfolio summary. */
-  getAccountSummary(opts?: {
+  fetchAccountSummary(opts?: {
     signal?: AbortSignal;
   }): Promise<AccountPortfolioSummary> {
     return this.#request<AccountPortfolioSummary>("GET", "/account/summary", {
@@ -2354,14 +2354,14 @@ export class Client {
    * `GET /account/state` — consolidated account state in one call: the portfolio
    * summary aggregates plus all open positions.
    *
-   * Prefer this over pairing {@link getAccountSummary} with {@link getPositions}:
+   * Prefer this over pairing {@link fetchAccountSummary} with {@link fetchPositions}:
    * both halves come from a single coherent read, so
    * `summary.open_positions_count` always matches `positions.length` and the two
    * can't disagree the way two separate round-trips can. Fails closed with a
    * `502` {@link ApiError} when the engine-authoritative margin view is
    * unavailable, rather than reporting a local estimate.
    */
-  getAccountState(opts?: { signal?: AbortSignal }): Promise<AccountState> {
+  fetchAccountState(opts?: { signal?: AbortSignal }): Promise<AccountState> {
     return this.#request<AccountState>("GET", "/account/state", {
       signed: true,
       signal: opts?.signal,
@@ -2376,7 +2376,7 @@ export class Client {
    * average, and its scope is given by the response's `schedule` field. Note
    * `maker_fee_bps` may be negative (a rebate).
    */
-  getAccountFees(opts?: { signal?: AbortSignal }): Promise<AccountFees> {
+  fetchTradingFees(opts?: { signal?: AbortSignal }): Promise<AccountFees> {
     return this.#request<AccountFees>("GET", "/account/fees", {
       signed: true,
       signal: opts?.signal,
@@ -2384,7 +2384,7 @@ export class Client {
   }
 
   /** `GET /account/equity-history` — equity samples for the account. */
-  async getEquityHistory(
+  async fetchEquityHistory(
     opts: {
       limit?: number;
       signal?: AbortSignal;
@@ -2409,7 +2409,7 @@ export class Client {
    * cumulative traded volume for the account, downsampled over `window` and
    * returned **oldest first**.
    *
-   * The richer superset of {@link getEquityHistory} (equity only, ~1h window);
+   * The richer superset of {@link fetchEquityHistory} (equity only, ~1h window);
    * both derive equity from the same source, so the series never disagree.
    *
    * Omit `window` to take the server's `day` default — always read
@@ -2426,10 +2426,10 @@ export class Client {
    * synchronously. `async` here is load-bearing for that: every other failure
    * mode of every method on this client (including `MissingCredentialsError`,
    * likewise a caller bug) arrives as a rejection, so a caller who writes
-   * `client.getPortfolioHistory(…).catch(…)` without `await` must not get an
+   * `client.fetchPortfolioHistory(…).catch(…)` without `await` must not get an
    * exception through a second channel that the `.catch` cannot see.
    */
-  async getPortfolioHistory(
+  async fetchPortfolioHistory(
     opts: {
       window?: PortfolioWindow;
       limit?: number;
@@ -2457,7 +2457,7 @@ export class Client {
    * newest first (both the operation and 200-response descriptions say so); this
    * client does not re-sort, it passes the server's order through as-is.
    *
-   * Distinct from {@link fetchFundingHistory} (`GET /markets/{market_id}/funding`),
+   * Distinct from {@link fetchFundingRateHistory} (`GET /markets/{market_id}/funding`),
    * which is a market's funding *rate* history and needs no credentials. This is
    * the account's realized funding cash flow.
    *
@@ -2472,15 +2472,25 @@ export class Client {
    * `limit` of 0 is not a useful request. The operation takes no
    * `cursor`, so this is a single capped read and not a paginated one — hence no
    * `…_LIMIT_MAX` constant for it (those are the cursor-paginated endpoints'
-   * ceilings) and no `getAccountFundingPaginated`.
+   * ceilings) and no `fetchFundingHistoryPaginated`.
    *
    * An out-of-range `limit` **rejects** the returned promise with `RangeError`
    * rather than throwing synchronously; `async` is load-bearing for that, for
-   * the reason spelled out on {@link getPortfolioHistory}.
+   * the reason spelled out on {@link fetchPortfolioHistory}.
+   *
+   * Before ENG-17741 this name read `GET /markets/{market_id}/funding` and took
+   * a market id first; that reader is now {@link fetchFundingRateHistory}. A
+   * string first argument is the old call shape, so it rejects with `TypeError`
+   * instead of quietly returning this account's payments.
    */
-  async getAccountFunding(
+  async fetchFundingHistory(
     opts: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<AccountFunding[]> {
+    if (typeof (opts as unknown) === "string") {
+      throw new TypeError(
+        "fetchFundingHistory() reads the account's funding payments (GET /funding) and takes no market id; for a market's funding-rate history call fetchFundingRateHistory(marketId)",
+      );
+    }
     assertLimitInRange(opts.limit, 1, 1000);
     const query = buildQuery({ limit: opts.limit });
     return this.#request<AccountFunding[]>("GET", "/funding", {
@@ -2491,7 +2501,7 @@ export class Client {
   }
 
   /** `GET /positions` — open positions for the authenticated account. */
-  getPositions(opts?: { signal?: AbortSignal }): Promise<Position[]> {
+  fetchPositions(opts?: { signal?: AbortSignal }): Promise<Position[]> {
     return this.#request<Position[]>("GET", "/positions", {
       signed: true,
       signal: opts?.signal,
@@ -2501,12 +2511,12 @@ export class Client {
   /**
    * `GET /positions/closed` — closed-position records for the account.
    *
-   * Returns the first page only; use {@link getClosedPositionsPaginated} to walk
+   * Returns the first page only; use {@link fetchPositionsHistoryPaginated} to walk
    * the whole history. `limit` bounds the page and must be in
    * `1..`{@link CLOSED_POSITIONS_LIMIT_MAX}; omit it for the server's default of
    * 100.
    */
-  async getClosedPositions(
+  async fetchPositionsHistory(
     opts: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<ClosedPosition[]> {
     const query = buildQuery({
@@ -2527,13 +2537,13 @@ export class Client {
   /**
    * `GET /fills` — trade executions for the authenticated account.
    *
-   * Returns the first page only; use {@link getFillsPaginated} to walk the whole
+   * Returns the first page only; use {@link fetchMyTradesPaginated} to walk the whole
    * fill history. `limit` bounds the page and must be in
    * `1..`{@link FILLS_LIMIT_MAX}; omit it for the server's default of 100. (The
    * spec has documented `limit` on this route since v0.7.1 and the SDK was
    * sending none at all, so a caller could not even ask for a bigger first page.)
    */
-  async getFills(
+  async fetchMyTrades(
     opts: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<Fill[]> {
     const query = buildQuery({
@@ -2559,7 +2569,7 @@ export class Client {
    * `limit` is bounded to an integer in `[1, 1000]` on the same terms as
    * {@link fetchAdlEvents}, including the `RangeError` rejection.
    */
-  async getAdlHistory(
+  async fetchAdlHistory(
     address: string,
     opts: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<AdlEventRecord[]> {
@@ -2591,7 +2601,7 @@ export class Client {
    * spelling; this sends the `/api/v1` one, like the other `/account/…` reads,
    * and spec/uncovered-ops.txt records the bare twin as the same operation.
    */
-  getCancelOnDisconnect(opts?: {
+  fetchCancelOnDisconnect(opts?: {
     signal?: AbortSignal;
   }): Promise<CancelOnDisconnectStatus> {
     return this.#request<CancelOnDisconnectStatus>(
@@ -2604,7 +2614,7 @@ export class Client {
   /**
    * `PUT /account/cancel-on-disconnect` — enable or disable
    * cancel-on-disconnect, returning the resulting status (same shape as
-   * {@link getCancelOnDisconnect}).
+   * {@link fetchCancelOnDisconnect}).
    *
    * Off by default and per account: someone who deliberately leaves a passive
    * order resting while offline should not have a brief blip cancel it. Enable
@@ -2628,7 +2638,9 @@ export class Client {
   }
 
   /** `GET /account/rate-limit` — the caller's current rate-limit status. */
-  getRateLimit(opts?: { signal?: AbortSignal }): Promise<RateLimitStatus> {
+  fetchRateLimitStatus(opts?: {
+    signal?: AbortSignal;
+  }): Promise<RateLimitStatus> {
     return this.#request<RateLimitStatus>("GET", "/account/rate-limit", {
       signed: true,
       signal: opts?.signal,
@@ -2659,7 +2671,7 @@ export class Client {
 
   // -- authenticated: funds -------------------------------------------------
   //
-  // Every route in this section, and {@link adjustMargin} (which sits with the
+  // Every route in this section, and {@link addMargin} (which sits with the
   // bridge routes below), is sent and signed at the path the spec documents:
   // `/account/deposit`, `/deposits`, `/withdrawals`, `/faucet` and
   // `/account/margin`. An operation absent from the pinned spec must not be
@@ -2700,7 +2712,7 @@ export class Client {
   }
 
   /** `GET /deposits` — deposit/withdrawal/faucet ledger for the account. */
-  getDeposits(opts?: { signal?: AbortSignal }): Promise<FundsEntry[]> {
+  fetchDeposits(opts?: { signal?: AbortSignal }): Promise<FundsEntry[]> {
     return this.#request<FundsEntry[]>("GET", "/deposits", {
       signed: true,
       signal: opts?.signal,
@@ -2708,7 +2720,7 @@ export class Client {
   }
 
   /** `GET /withdrawals` — withdrawal history for the authenticated account. */
-  getWithdrawals(opts?: { signal?: AbortSignal }): Promise<Withdrawal[]> {
+  fetchWithdrawals(opts?: { signal?: AbortSignal }): Promise<Withdrawal[]> {
     return this.#request<Withdrawal[]>("GET", "/withdrawals", {
       signed: true,
       signal: opts?.signal,
@@ -2788,9 +2800,9 @@ export class Client {
   /**
    * `GET /bridge/deposits` — the account's bridge deposits. All filters are
    * optional; omit them to list every deposit. Poll a deposit (or
-   * {@link getBridgeDeposit}) until its `status` reaches `credited`.
+   * {@link fetchBridgeDeposit}) until its `status` reaches `credited`.
    */
-  getBridgeDeposits(
+  fetchBridgeDeposits(
     opts: {
       limit?: number;
       chain?: string;
@@ -2813,7 +2825,7 @@ export class Client {
   }
 
   /** `GET /bridge/deposits/{id}` — a single bridge deposit by id. */
-  getBridgeDeposit(
+  fetchBridgeDeposit(
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<BridgeDeposit> {
@@ -2932,7 +2944,7 @@ export class Client {
    * Sent and signed at the path the spec documents, like the rest of the funds
    * surface; see the note above {@link deposit}.
    */
-  adjustMargin(
+  addMargin(
     request: MarginAdjustRequest,
     opts?: { signal?: AbortSignal },
   ): Promise<MarginAdjustResponse> {
@@ -2946,7 +2958,7 @@ export class Client {
   // -- authenticated: orders ------------------------------------------------
 
   /** `POST /orders` — place a single order. */
-  placeOrder(
+  createOrder(
     order: OrderRequest,
     opts?: { signal?: AbortSignal },
   ): Promise<OrderResponse> {
@@ -2963,7 +2975,7 @@ export class Client {
    * a placed order (`outcome: "ok"`) or a per-order rejection (`outcome: "err"`),
    * in request order. Narrow on `outcome` to handle each.
    */
-  placeOrderBatch(
+  createOrders(
     orders: OrderRequest[],
     opts?: { signal?: AbortSignal },
   ): Promise<OrderResult[]> {
@@ -2987,7 +2999,7 @@ export class Client {
   }
 
   /** `GET /orders` — open orders for the authenticated account. */
-  getOpenOrders(opts?: { signal?: AbortSignal }): Promise<Order[]> {
+  fetchOpenOrders(opts?: { signal?: AbortSignal }): Promise<Order[]> {
     return this.#request<Order[]>("GET", "/orders", {
       signed: true,
       signal: opts?.signal,
@@ -3003,12 +3015,12 @@ export class Client {
    * no such order. Pass the same `market_id` the order was placed with. An
    * empty `marketId` throws {@link InvalidRequestError} without sending.
    */
-  async getOrder(
+  async fetchOrder(
     orderId: string,
     marketId: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Order> {
-    requireNonEmpty(marketId, "getOrder marketId");
+    requireNonEmpty(marketId, "fetchOrder marketId");
     const query = buildQuery({ market_id: marketId });
     return this.#request<Order>("GET", `/orders/${seg(orderId)}`, {
       query,
@@ -3018,7 +3030,7 @@ export class Client {
   }
 
   /** `GET /orders/history` — terminal-status (filled/cancelled/rejected/expired) orders. */
-  async getOrderHistory(
+  async fetchOrders(
     opts: {
       limit?: number;
       signal?: AbortSignal;
@@ -3042,19 +3054,19 @@ export class Client {
    * `PATCH /orders/{order_id}` — atomic cancel-replace of a resting order.
    * At least one of `price` or `size` must be set. Returns the amended order.
    *
-   * `marketId` is **required**, as on {@link getOrder} and {@link cancelOrder}:
+   * `marketId` is **required**, as on {@link fetchOrder} and {@link cancelOrder}:
    * the engine's `amend_order` handler takes the same non-optional
    * `?market_id=` routing query (ENG-3123) and the spec marks it
    * `required: true`, so an amend without it is rejected before any handler
    * runs. An empty `marketId` throws {@link InvalidRequestError} locally.
    */
-  async amendOrder(
+  async editOrder(
     orderId: string,
     marketId: string,
     amend: AmendOrderRequest,
     opts?: { signal?: AbortSignal },
   ): Promise<Order> {
-    requireNonEmpty(marketId, "amendOrder marketId");
+    requireNonEmpty(marketId, "editOrder marketId");
     const query = buildQuery({ market_id: marketId });
     return this.#request<Order>("PATCH", `/orders/${seg(orderId)}`, {
       query,
@@ -3067,7 +3079,7 @@ export class Client {
   /**
    * `DELETE /orders/{order_id}` — cancel one order by exchange id.
    *
-   * `marketId` is **required**, as it is on {@link getOrder}: the engine routes a
+   * `marketId` is **required**, as it is on {@link fetchOrder}: the engine routes a
    * single-order cancel by market (ENG-3123), the extractor's `market_id` is not
    * optional, and the spec marks the query parameter `required: true`. A cancel
    * without it is rejected before any handler runs, so an empty `marketId`
@@ -3196,7 +3208,7 @@ export class Client {
    * `GET /fills` as an auto-paging {@link Paginator} of account trade
    * executions. `.pageSize(n)` must be in `1..`{@link FILLS_LIMIT_MAX}.
    */
-  getFillsPaginated(opts: { signal?: AbortSignal } = {}): Paginator<Fill> {
+  fetchMyTradesPaginated(opts: { signal?: AbortSignal } = {}): Paginator<Fill> {
     return new Paginator(
       this.#pageFetcher<Fill>("/fills", {
         endpoint: "fills",
@@ -3213,7 +3225,7 @@ export class Client {
    * `1..`{@link ORDER_HISTORY_LIMIT_MAX} — lower than the 1000 fills and trades
    * allow.
    */
-  getOrderHistoryPaginated(
+  fetchOrdersPaginated(
     opts: { signal?: AbortSignal } = {},
   ): Paginator<OrderHistoryEntry> {
     return new Paginator(
@@ -3232,7 +3244,7 @@ export class Client {
    * which is also the endpoint's default — one page usually spans the whole
    * window.
    */
-  getEquityHistoryPaginated(
+  fetchEquityHistoryPaginated(
     opts: { signal?: AbortSignal } = {},
   ): Paginator<EquityPoint> {
     return new Paginator(
@@ -3251,7 +3263,7 @@ export class Client {
    * `1..`{@link CLOSED_POSITIONS_LIMIT_MAX} — the smallest of the five maxima,
    * so a long history takes proportionally more pages.
    */
-  getClosedPositionsPaginated(
+  fetchPositionsHistoryPaginated(
     opts: { signal?: AbortSignal } = {},
   ): Paginator<ClosedPosition> {
     return new Paginator(
@@ -3314,7 +3326,7 @@ export class Client {
    * The signed path is `/ws/token`, while the URL is the base plus that same
    * path.
    */
-  async mintWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
+  async createWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
     const res = await this.#request<{ token?: string }>("POST", "/ws/token", {
       signed: true,
       signal: opts?.signal,
@@ -3327,16 +3339,16 @@ export class Client {
 
   /**
    * A bound token provider that mints a fresh WS token per call via
-   * {@link mintWsToken}. Hand straight to `createWsClient({ tokenProvider })`.
+   * {@link createWsToken}. Hand straight to `createWsClient({ tokenProvider })`.
    */
   wsTokenProvider(): () => Promise<string> {
-    return () => this.mintWsToken();
+    return () => this.createWsToken();
   }
 
   // -- authenticated: wallet sign-in & sessions -----------------------------
 
   /**
-   * Whether this client currently holds a session token (from {@link signIn}
+   * Whether this client currently holds a session token (from {@link login}
    * or the `sessionToken` constructor option).
    */
   get hasSession(): boolean {
@@ -3347,7 +3359,7 @@ export class Client {
    * Set (or replace) the session bearer token used by the `/keys` management
    * endpoints. Pass `undefined` to clear it (a local logout — the API has no
    * server-side session-revocation endpoint; tokens expire after 24h). Normally
-   * {@link signIn} sets this for you.
+   * {@link login} sets this for you.
    */
   setSessionToken(token: string | undefined): void {
     this.#sessionToken = token;
@@ -3360,15 +3372,15 @@ export class Client {
    * full {@link LoginResponse} (token + recovered address) is returned.
    *
    * The `signer` produces the signed body locally — no private key ever leaves
-   * the process. Session tokens expire after 24h; call `signIn` again to renew.
+   * the process. Session tokens expire after 24h; call `login` again to renew.
    *
    * ```ts
    * const signer = EthSigner.fromHex(process.env.WALLET_PRIVATE_KEY!);
-   * await client.signIn(signer);
+   * await client.login(signer);
    * const created = await client.createApiKey();
    * ```
    */
-  async signIn(
+  async login(
     signer: EthSigner,
     opts?: { signal?: AbortSignal },
   ): Promise<LoginResponse> {
@@ -3387,7 +3399,7 @@ export class Client {
 
   /**
    * `POST /keys` — create a new HMAC API key for the authenticated wallet.
-   * Requires a session token (see {@link signIn}). The `secret` is returned
+   * Requires a session token (see {@link login}). The `secret` is returned
    * exactly once in the result and never again — persist it immediately, then
    * pair it with `key_id` as `apiKey`/`apiSecret` to sign trading requests.
    */
@@ -3401,9 +3413,9 @@ export class Client {
   /**
    * `GET /keys` — list the API keys owned by the authenticated wallet (key ids
    * and tiers; secrets are never returned). Requires a session token (see
-   * {@link signIn}).
+   * {@link login}).
    */
-  listApiKeys(opts?: { signal?: AbortSignal }): Promise<ApiKeyInfo[]> {
+  fetchApiKeys(opts?: { signal?: AbortSignal }): Promise<ApiKeyInfo[]> {
     return this.#request<ApiKeyInfo[]>("GET", "/keys", {
       session: true,
       signal: opts?.signal,
@@ -3412,7 +3424,7 @@ export class Client {
 
   /**
    * `DELETE /keys/{key_id}` — revoke an API key you own. Requires a session
-   * token (see {@link signIn}). Revoking a key you don't own fails with
+   * token (see {@link login}). Revoking a key you don't own fails with
    * not-found rather than touching another wallet's key.
    */
   deleteApiKey(keyId: string, opts?: { signal?: AbortSignal }): Promise<void> {
@@ -3458,7 +3470,7 @@ export class Client {
    * authenticated wallet. Requires HMAC API-key credentials (`apiKey` /
    * `apiSecret`); an agent-signed client is refused locally.
    */
-  listAgents(opts?: { signal?: AbortSignal }): Promise<AgentInfo[]> {
+  fetchAgents(opts?: { signal?: AbortSignal }): Promise<AgentInfo[]> {
     return this.#request<AgentInfo[]>("GET", "/agents", {
       signed: true,
       hmacOnly: true,
@@ -3478,6 +3490,259 @@ export class Client {
       hmacOnly: true,
       signal: opts?.signal,
     });
+  }
+
+  // -- deprecated aliases (ENG-17741) ---------------------------------------
+  //
+  // Every method above is named for its operation's `operationId` (R2.25),
+  // which scripts/check-spec-drift.mjs enforces. These are the names they had
+  // before, kept for one minor release and then removed; each forwards its
+  // arguments to the replacement unchanged. One old name is missing on purpose:
+  // `fetchFundingHistory` used to read `GET /markets/{market_id}/funding` and is
+  // now the canonical name of `GET /funding`, so that reader is
+  // `fetchFundingRateHistory` and the old spelling cannot also be its alias.
+
+  /** @deprecated Use {@link Client.fetchMarketsSummary}. Removed in the next minor release. */
+  fetchMarketSummaries(
+    ...args: Parameters<Client["fetchMarketsSummary"]>
+  ): ReturnType<Client["fetchMarketsSummary"]> {
+    return this.fetchMarketsSummary(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchOHLCV}. Removed in the next minor release. */
+  fetchCandles(
+    ...args: Parameters<Client["fetchOHLCV"]>
+  ): ReturnType<Client["fetchOHLCV"]> {
+    return this.fetchOHLCV(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchBridgeAssets}. Removed in the next minor release. */
+  getBridgeAssets(
+    ...args: Parameters<Client["fetchBridgeAssets"]>
+  ): ReturnType<Client["fetchBridgeAssets"]> {
+    return this.fetchBridgeAssets(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchBalance}. Removed in the next minor release. */
+  getAccount(
+    ...args: Parameters<Client["fetchBalance"]>
+  ): ReturnType<Client["fetchBalance"]> {
+    return this.fetchBalance(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchAccountSummary}. Removed in the next minor release. */
+  getAccountSummary(
+    ...args: Parameters<Client["fetchAccountSummary"]>
+  ): ReturnType<Client["fetchAccountSummary"]> {
+    return this.fetchAccountSummary(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchAccountState}. Removed in the next minor release. */
+  getAccountState(
+    ...args: Parameters<Client["fetchAccountState"]>
+  ): ReturnType<Client["fetchAccountState"]> {
+    return this.fetchAccountState(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchTradingFees}. Removed in the next minor release. */
+  getAccountFees(
+    ...args: Parameters<Client["fetchTradingFees"]>
+  ): ReturnType<Client["fetchTradingFees"]> {
+    return this.fetchTradingFees(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchEquityHistory}. Removed in the next minor release. */
+  getEquityHistory(
+    ...args: Parameters<Client["fetchEquityHistory"]>
+  ): ReturnType<Client["fetchEquityHistory"]> {
+    return this.fetchEquityHistory(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchPortfolioHistory}. Removed in the next minor release. */
+  getPortfolioHistory(
+    ...args: Parameters<Client["fetchPortfolioHistory"]>
+  ): ReturnType<Client["fetchPortfolioHistory"]> {
+    return this.fetchPortfolioHistory(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchFundingHistory}. Removed in the next minor release. */
+  getAccountFunding(
+    ...args: Parameters<Client["fetchFundingHistory"]>
+  ): ReturnType<Client["fetchFundingHistory"]> {
+    return this.fetchFundingHistory(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchPositions}. Removed in the next minor release. */
+  getPositions(
+    ...args: Parameters<Client["fetchPositions"]>
+  ): ReturnType<Client["fetchPositions"]> {
+    return this.fetchPositions(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchPositionsHistory}. Removed in the next minor release. */
+  getClosedPositions(
+    ...args: Parameters<Client["fetchPositionsHistory"]>
+  ): ReturnType<Client["fetchPositionsHistory"]> {
+    return this.fetchPositionsHistory(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchMyTrades}. Removed in the next minor release. */
+  getFills(
+    ...args: Parameters<Client["fetchMyTrades"]>
+  ): ReturnType<Client["fetchMyTrades"]> {
+    return this.fetchMyTrades(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchAdlHistory}. Removed in the next minor release. */
+  getAdlHistory(
+    ...args: Parameters<Client["fetchAdlHistory"]>
+  ): ReturnType<Client["fetchAdlHistory"]> {
+    return this.fetchAdlHistory(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchCancelOnDisconnect}. Removed in the next minor release. */
+  getCancelOnDisconnect(
+    ...args: Parameters<Client["fetchCancelOnDisconnect"]>
+  ): ReturnType<Client["fetchCancelOnDisconnect"]> {
+    return this.fetchCancelOnDisconnect(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchRateLimitStatus}. Removed in the next minor release. */
+  getRateLimit(
+    ...args: Parameters<Client["fetchRateLimitStatus"]>
+  ): ReturnType<Client["fetchRateLimitStatus"]> {
+    return this.fetchRateLimitStatus(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchDeposits}. Removed in the next minor release. */
+  getDeposits(
+    ...args: Parameters<Client["fetchDeposits"]>
+  ): ReturnType<Client["fetchDeposits"]> {
+    return this.fetchDeposits(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchWithdrawals}. Removed in the next minor release. */
+  getWithdrawals(
+    ...args: Parameters<Client["fetchWithdrawals"]>
+  ): ReturnType<Client["fetchWithdrawals"]> {
+    return this.fetchWithdrawals(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchBridgeDeposits}. Removed in the next minor release. */
+  getBridgeDeposits(
+    ...args: Parameters<Client["fetchBridgeDeposits"]>
+  ): ReturnType<Client["fetchBridgeDeposits"]> {
+    return this.fetchBridgeDeposits(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchBridgeDeposit}. Removed in the next minor release. */
+  getBridgeDeposit(
+    ...args: Parameters<Client["fetchBridgeDeposit"]>
+  ): ReturnType<Client["fetchBridgeDeposit"]> {
+    return this.fetchBridgeDeposit(...args);
+  }
+
+  /** @deprecated Use {@link Client.addMargin}. Removed in the next minor release. */
+  adjustMargin(
+    ...args: Parameters<Client["addMargin"]>
+  ): ReturnType<Client["addMargin"]> {
+    return this.addMargin(...args);
+  }
+
+  /** @deprecated Use {@link Client.createOrder}. Removed in the next minor release. */
+  placeOrder(
+    ...args: Parameters<Client["createOrder"]>
+  ): ReturnType<Client["createOrder"]> {
+    return this.createOrder(...args);
+  }
+
+  /** @deprecated Use {@link Client.createOrders}. Removed in the next minor release. */
+  placeOrderBatch(
+    ...args: Parameters<Client["createOrders"]>
+  ): ReturnType<Client["createOrders"]> {
+    return this.createOrders(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchOpenOrders}. Removed in the next minor release. */
+  getOpenOrders(
+    ...args: Parameters<Client["fetchOpenOrders"]>
+  ): ReturnType<Client["fetchOpenOrders"]> {
+    return this.fetchOpenOrders(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchOrder}. Removed in the next minor release. */
+  getOrder(
+    ...args: Parameters<Client["fetchOrder"]>
+  ): ReturnType<Client["fetchOrder"]> {
+    return this.fetchOrder(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchOrders}. Removed in the next minor release. */
+  getOrderHistory(
+    ...args: Parameters<Client["fetchOrders"]>
+  ): ReturnType<Client["fetchOrders"]> {
+    return this.fetchOrders(...args);
+  }
+
+  /** @deprecated Use {@link Client.editOrder}. Removed in the next minor release. */
+  amendOrder(
+    ...args: Parameters<Client["editOrder"]>
+  ): ReturnType<Client["editOrder"]> {
+    return this.editOrder(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchMyTradesPaginated}. Removed in the next minor release. */
+  getFillsPaginated(
+    ...args: Parameters<Client["fetchMyTradesPaginated"]>
+  ): ReturnType<Client["fetchMyTradesPaginated"]> {
+    return this.fetchMyTradesPaginated(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchOrdersPaginated}. Removed in the next minor release. */
+  getOrderHistoryPaginated(
+    ...args: Parameters<Client["fetchOrdersPaginated"]>
+  ): ReturnType<Client["fetchOrdersPaginated"]> {
+    return this.fetchOrdersPaginated(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchEquityHistoryPaginated}. Removed in the next minor release. */
+  getEquityHistoryPaginated(
+    ...args: Parameters<Client["fetchEquityHistoryPaginated"]>
+  ): ReturnType<Client["fetchEquityHistoryPaginated"]> {
+    return this.fetchEquityHistoryPaginated(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchPositionsHistoryPaginated}. Removed in the next minor release. */
+  getClosedPositionsPaginated(
+    ...args: Parameters<Client["fetchPositionsHistoryPaginated"]>
+  ): ReturnType<Client["fetchPositionsHistoryPaginated"]> {
+    return this.fetchPositionsHistoryPaginated(...args);
+  }
+
+  /** @deprecated Use {@link Client.createWsToken}. Removed in the next minor release. */
+  mintWsToken(
+    ...args: Parameters<Client["createWsToken"]>
+  ): ReturnType<Client["createWsToken"]> {
+    return this.createWsToken(...args);
+  }
+
+  /** @deprecated Use {@link Client.login}. Removed in the next minor release. */
+  signIn(...args: Parameters<Client["login"]>): ReturnType<Client["login"]> {
+    return this.login(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchApiKeys}. Removed in the next minor release. */
+  listApiKeys(
+    ...args: Parameters<Client["fetchApiKeys"]>
+  ): ReturnType<Client["fetchApiKeys"]> {
+    return this.fetchApiKeys(...args);
+  }
+
+  /** @deprecated Use {@link Client.fetchAgents}. Removed in the next minor release. */
+  listAgents(
+    ...args: Parameters<Client["fetchAgents"]>
+  ): ReturnType<Client["fetchAgents"]> {
+    return this.fetchAgents(...args);
   }
 
   // -- request plumbing -----------------------------------------------------
@@ -3571,7 +3836,7 @@ export class Client {
     if (session) {
       if (!this.#sessionToken) {
         throw new MissingCredentialsError(
-          "this request requires a session token; call signIn() first or pass " +
+          "this request requires a session token; call login() first or pass " +
             "sessionToken to the Client constructor",
         );
       }

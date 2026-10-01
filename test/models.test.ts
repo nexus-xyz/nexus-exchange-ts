@@ -932,6 +932,52 @@ test("ops drift: FAILS when endpoints.txt lists an operation no wrapper implemen
   assert.match(r.stderr, /GET \/stream/);
 });
 
+// ─── Wrapper names (invariant I, R2.25 / ENG-17741) ──────────────────────────
+
+test("name drift: FAILS when a wrapper is not named for its operationId", () => {
+  const r = runDriftSandbox({
+    mutateClient: (src) =>
+      src.replace("\n  createOrder(\n", "\n  placeOrder(\n"),
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not named for their operationId/);
+  assert.match(
+    r.stderr,
+    /placeOrder sends POST \/orders \(operationId createOrder\), so it must be named createOrder/,
+  );
+});
+
+test("name drift: FAILS when an ahead-of-pin entry is removed early", () => {
+  // Without the entry the checker falls back to the pinned id, `listApiKeys`.
+  const r = runDriftSandbox({
+    mutateScript: (src) =>
+      src.replace('  ["GET /keys", "fetchApiKeys"],\n', ""),
+  });
+  assert.equal(r.status, 1);
+  assert.match(
+    r.stderr,
+    /fetchApiKeys sends GET \/keys .*must be named listApiKeys/,
+  );
+});
+
+test("name drift: FAILS on an ahead-of-pin entry once the pin catches up", () => {
+  const r = runDriftSandbox({
+    mutateSpec: (spec) => {
+      const paths = spec.paths as Record<
+        string,
+        Record<string, { operationId: string }>
+      >;
+      paths["/keys"]!.get!.operationId = "fetchApiKeys";
+    },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /stale OPERATION_IDS_AHEAD_OF_PIN/);
+  assert.match(
+    r.stderr,
+    /GET \/keys: the pinned spec now carries fetchApiKeys/,
+  );
+});
+
 test("ops drift: FAILS on ANY CODE_ONLY_OPS entry, however well attributed", () => {
   // The policy (ENG-8616 / ENG-8620): an operation the pinned spec does not
   // define must not be implemented, so the allowlist has to be empty and the

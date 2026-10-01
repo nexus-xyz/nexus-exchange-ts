@@ -107,8 +107,8 @@ test("a request is sent to the custom base, bare path appended", async () => {
     fetchImpl,
   });
 
-  await client.fetchMarketSummaries();
-  await client.mintWsToken();
+  await client.fetchMarketsSummary();
+  await client.createWsToken();
 
   assert.equal(
     urls[0],

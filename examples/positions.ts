@@ -18,7 +18,7 @@ if (!apiKey || !apiSecret) {
 
 const client = new Client({ ...net, apiKey, apiSecret });
 
-const positions = await client.getPositions();
+const positions = await client.fetchPositions();
 if (positions.length === 0) {
   console.log("no open positions");
   process.exit(0);

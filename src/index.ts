@@ -23,8 +23,8 @@
  *   apiSecret: process.env.NEXUS_EXCHANGE_API_SECRET,
  * });
  *
- * const account = await client.getAccount();
- * const { order } = await client.placeOrder({
+ * const account = await client.fetchBalance();
+ * const { order } = await client.createOrder({
  *   market_id: "BTC-USDX-PERP",
  *   side: "Buy",
  *   order_type: "Limit",

@@ -18,7 +18,7 @@ if (!apiKey || !apiSecret) {
 
 const client = new Client({ ...net, apiKey, apiSecret });
 
-const account = await client.getAccount();
+const account = await client.fetchBalance();
 console.log(`balance:          ${account.balance}`);
 console.log(`collateral:       ${account.collateral}`);
 console.log(`equity:           ${account.equity}`);

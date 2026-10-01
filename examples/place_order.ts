@@ -30,7 +30,7 @@ if (!apiKey || !apiSecret) {
 const client = new Client({ ...net, apiKey, apiSecret });
 
 const marketId =
-  opt("--market") ?? (await client.fetchMarketSummaries())[0]?.market_id;
+  opt("--market") ?? (await client.fetchMarketsSummary())[0]?.market_id;
 if (!marketId) {
   console.error("no markets available");
   process.exit(1);
@@ -57,7 +57,7 @@ const order: OrderRequest = {
   time_in_force: "PostOnly",
 };
 
-const res = await client.placeOrder(order);
+const res = await client.createOrder(order);
 console.log(
   `placed ${res.order.id}: ${res.order.side} ${res.order.quantity} @ ` +
     `${res.order.price} [${res.order.status}]`,
