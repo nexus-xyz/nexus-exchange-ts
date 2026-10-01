@@ -158,13 +158,17 @@ const DEFAULT_RETRY_MAX_MS = 8_000;
 const RETRY_AFTER_MAX_MS = 60_000;
 
 /**
- * HTTP methods that are safe to retry automatically. A transient failure on a
- * non-idempotent request (notably `POST /orders`) might have *already* taken
- * effect on the server before the error surfaced, so retrying it could double
- * the effect — place a second order, credit twice. We therefore never auto-retry
- * `POST`/`PATCH`; callers own the retry decision for those.
+ * HTTP methods retried automatically: reads only. A transient failure on any
+ * write might have *already* taken effect on the server before the error
+ * surfaced, and re-sending it is not safe even when the method is idempotent in
+ * HTTP terms. `DELETE /orders` cancels whatever is open when it runs, so a retry
+ * after a lost response can cancel orders placed since; a retried
+ * `DELETE /orders/{id}` answers 404 for an order the first attempt already
+ * cancelled. We therefore never auto-retry `POST`/`PUT`/`PATCH`/`DELETE`
+ * (matching the Python, Rust and Go SDKs); callers own the retry decision for
+ * writes (ENG-18682).
  */
-const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+const RETRYABLE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /** Sleep for `ms`, rejecting early (with a {@link TransportError}) if `signal` aborts. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -283,28 +287,19 @@ const FUNDS_VALUES: readonly Funds[] = Object.freeze([
 export type NetworkSelector = Network | NetworkConfig;
 
 /**
- * Path prefix every non-`root` request is sent under, and the single source of
- * truth for it. `scripts/check-spec-drift.mjs` reads this constant to derive
- * the spec paths the client targets (invariant H), so it must stay a plain
+ * The legacy `/api/v1` path prefix. Requests no longer compose it: every route
+ * is the spec's bare path, sent under the network's `/v1` base and signed bare
+ * (EDR-006, ENG-18321). Two things still use it:
+ *
+ * - The bridge methods spell their paths `/api/v1/bridge/…` in full, because
+ *   the pinned spec (`.api-version`) declares no bare twin for any bridge
+ *   operation yet. They move to the bare spelling once a released spec does.
+ * - A `baseUrl` or `wsUrl` ending in it is refused (see `assertNotVersionedBase`):
+ *   it is the old pre-0.3 layout, and under it the bridge paths would double.
+ *
+ * `scripts/check-spec-drift.mjs` reads this constant to fold the two spellings
+ * of an operation together when it reports coverage, so it must stay a plain
  * string literal.
- *
- * This prefix lives in the **path**, never in {@link NetworkConfig.baseUrl}. A
- * base names a deployment (`https://api.testnet.nexus.xyz/indexer`); the path
- * names a surface (`/api/v1/orders`), and `#sendOnce` composes the two. Keeping
- * them separate is what lets the signed path differ from the sent URL, which it
- * must: the deployment strips its own route prefix before the indexer verifies
- * the HMAC, so a request sent to `…/indexer/api/v1/orders` is verified as
- * `/api/v1/orders`. The signature therefore covers the *logical* path —
- * `/api/v1` included, the base's own path excluded — and is independent of
- * which deployment the base points at. The retired `…/api/exchange` gateway had
- * the same topology, which is why swapping testnet onto the durable host
- * (ENG-8867) was a hostname change and nothing more.
- *
- * Folding the prefix into the base instead (the pre-0.3 layout) forced those two
- * to be equal, and no single base could satisfy both: a host-root
- * `…/api.testnet.nexus.xyz/api/v1` base signs correctly but 404s (measured),
- * while a prefixed base reaches the API but would sign the un-stripped
- * `/indexer/api/v1/orders` — a path the indexer never sees.
  */
 export const API_BASE_PATH = "/api/v1";
 
@@ -387,7 +382,7 @@ export interface NetworkConfig {
   /**
    * REST base the SDK sends to, or `null` when no host is live yet — in which
    * case constructing a `Client` for this network requires an explicit
-   * `baseUrl`. Includes {@link API_BASE_PATH}.
+   * `baseUrl`. On a live network this is the spec's `/v1` REST base.
    */
   readonly baseUrl: string | null;
   /**
@@ -452,17 +447,8 @@ function namedSigningDomain(network: Network): NetworkSigningDomain {
  * ## Why `Mainnet` has a `null` base
  *
  * Its durable base is `https://api.nexus.xyz/v1` and its WS base
- * `wss://api.nexus.xyz/v1`, but neither is usable from this SDK yet, for two
- * independent reasons — and both fail *only* on real funds:
- *
- * 1. **DNS/TLS is not live** (ENG-8155), so the host does not resolve.
- * 2. **The path composition differs.** Those hosts carry the version in the
- *    *base* (`/v1`) and pair it with the spec's root paths (`/v1` + `/orders`),
- *    whereas this client puts the version in the path
- *    ({@link API_BASE_PATH} + `/orders`) and signs it. Pointing this client at
- *    `…/v1` would send `/v1/api/v1/orders` while signing `/api/v1/orders` — a
- *    404 whose signature is over a path the server never sees. Switching the
- *    client to root paths is its own change.
+ * `wss://api.nexus.xyz/v1`, the same shape as testnet's, but DNS/TLS is not
+ * live yet (ENG-15183), so the host does not resolve.
  *
  * So mainnet is declared (the axis and the types are stable, and callers can
  * write network-generic code today) but refuses to construct rather than
@@ -478,30 +464,17 @@ function namedSigningDomain(network: Network): NetworkSigningDomain {
  * Run indexer and answers `500` on every route (ENG-14039), so the base this
  * SDK shipped was dead and the replacement is live.
  *
- * **The base is the host plus `/indexer`, not the host root.** The indexer's
- * `HTTPRoute` mounts it under a `/indexer` path prefix on the shared per-env
- * hostname and strips the prefix before forwarding, so the app still sees bare
- * spec paths (nexus monorepo,
- * `indexer/helmchart/values/apps-prod-testnet.yaml`:
- * `hostnames: [api.testnet.nexus.xyz]`, `pathPrefix: "/indexer"`). Measured
- * 2026-09-09:
+ * **The base is the spec's REST base, `https://api.testnet.nexus.xyz/v1`**
+ * (EDR-006). The host routes three prefixes and strips each before the
+ * indexer sees the path: `/v1`, `/indexer` (kept for existing consumers) and
+ * `/api/v1` (only while a kill switch is on). So a request sent to
+ * `…/v1/orders` reaches the indexer as `/orders`, which is the path this client
+ * signs. The bare host root answers 404.
  *
- * ```text
- * https://api.testnet.nexus.xyz/indexer/markets/summary         200 JSON
- * https://api.testnet.nexus.xyz/indexer/api/v1/markets/summary  200 JSON
- * https://api.testnet.nexus.xyz/markets/summary                 404
- * https://api.testnet.nexus.xyz/api/v1/markets/summary          404
- * wss://api.testnet.nexus.xyz/indexer/{stream,ws}               upgrade handled
- * wss://api.testnet.nexus.xyz/{stream,ws}                       404
- * ```
+ * ## The WS base is `/v1` too (ENG-17132)
  *
- * ## The WS base is `/v1` (ENG-17132)
- *
- * The host routes three prefixes and strips each before the indexer sees the
- * path: `/indexer` (kept for existing consumers), `/api/v1` (only while a kill
- * switch is on) and `/v1` — the spec's REST base (EDR-006) and the prefix its
- * `x-nexus-networks` WS URLs publish. The stream uses `/v1`, so the socket URL
- * is the spec's REST base with the scheme swapped. The host is what a
+ * The stream uses the same `/v1` prefix the spec's `x-nexus-networks` WS URLs
+ * publish, so the socket URL is the REST base with the scheme swapped. The host is what a
  * `/ws/token` token is bound to, and it is the same host as this entry's REST
  * base. `/v1` and `/indexer` are both stripped to `/`, so the prefix does not
  * change any signed path. Measured 2026-09-23 (RFC 6455 handshake, HTTP/1.1):
@@ -513,19 +486,6 @@ function namedSigningDomain(network: Network): NetworkSigningDomain {
  * wss://api.testnet.nexus.xyz/stream           404
  * ```
  *
- * The REST `baseUrl` here is still `/indexer`. Moving it to `/v1` is a
- * separate change.
- *
- * Both surfaces answer under that one prefix, exactly as they did under the
- * gateway prefix, so **nothing about path composition or signing changes**: the
- * HMAC still covers the logical path (`/api/v1/orders`) and still excludes
- * whatever prefix the base carries. See {@link API_BASE_PATH}.
- *
- * Mainnet's entry is deliberately untouched by that swap. Testnet turning out
- * to be `/indexer`-prefixed means host-root is no longer the obvious correction
- * for its stale `/v1`-in-base note either, and there is no host to measure
- * against — `api.nexus.xyz` has no DNS record at all (NODATA, 2026-09-09). It
- * waits for ENG-8155's mainnet half rather than being improved on a guess.
  */
 export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
   {
@@ -533,11 +493,9 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = Object.freeze(
       label: "Testnet",
       funds: "play",
       faucet: true,
-      baseUrl: "https://api.testnet.nexus.xyz/indexer",
-      // The spec's REST base (`https://api.testnet.nexus.xyz/v1`, EDR-006)
-      // with the scheme swapped — see "The WS base is `/v1`" above. Not this
-      // entry's `baseUrl` scheme-swapped: that is still `/indexer`, which also
-      // routes, but `/v1` is the prefix the spec publishes.
+      // The spec's REST base (EDR-006); see "The base is the spec's REST base"
+      // above.
+      baseUrl: "https://api.testnet.nexus.xyz/v1",
       wsUrl: "wss://api.testnet.nexus.xyz/v1",
       signingDomain: namedSigningDomain(Network.Testnet),
     }) as NetworkConfig,
@@ -648,9 +606,7 @@ function unavailableNetworkMessage(config: NetworkConfig): string {
     // one.
     (config.funds === "real"
       ? `This is the REAL-FUNDS network, so it fails closed rather than ` +
-        `guessing a host: DNS/TLS is still pending (ENG-8155), and the ` +
-        `per-network hosts also pair a "/v1" base with root paths, while this ` +
-        `client signs "${API_BASE_PATH}" paths against a host-root base. `
+        `guessing a host: DNS/TLS is still pending (ENG-15183). `
       : ``) +
     `Pass an explicit \`baseUrl\` to target it deliberately, or use ` +
     `\`Network.Testnet\` for play funds.`
@@ -708,12 +664,12 @@ export interface CustomNetworkOptions {
    */
   label: string;
   /**
-   * REST base for the deployment — scheme, host, and whatever prefix it mounts
-   * the API under (`https://exchange.example.com/api/exchange`, or a bare
-   * origin for a direct-service host). **Without** {@link API_BASE_PATH}: that
-   * comes from the route. Every route is appended to this, including the legacy
-   * ones; {@link Client.wsUrl} is derived from its origin. Trailing slashes are
-   * trimmed.
+   * REST base for the deployment: scheme, host, and whatever prefix it mounts
+   * the API under (`https://api.testnet.nexus.xyz/v1`, or a bare origin for a
+   * locally run indexer). Every route's bare spec path is appended to this and
+   * signed as that bare path, so the deployment must strip its own prefix
+   * before the indexer verifies. {@link Client.wsUrl} is derived from it.
+   * Trailing slashes are trimmed.
    *
    * Validated as an absolute `http(s)` URL with no userinfo, query or fragment,
    * and no whitespace or control characters — each of those would otherwise
@@ -723,11 +679,9 @@ export interface CustomNetworkOptions {
    * obvious bad URL. Userinfo is refused rather than stripped, because it would
    * leak into every log and error that prints the base.
    *
-   * Give the deployment base **without** {@link API_BASE_PATH}: the version
-   * prefix is supplied by the route, not the base, and a base carrying it is
-   * refused (it would send `/api/v1/api/v1/…`). An `/api/exchange` gateway
-   * prefix is expected rather than refused — that is where the public
-   * deployment mounts the surface.
+   * A base ending in {@link API_BASE_PATH} is refused: that is the pre-0.3
+   * layout, and the bridge routes (still spelled `/api/v1/bridge/…`) would
+   * double it.
    */
   baseUrl: string;
   /**
@@ -762,11 +716,9 @@ export interface CustomNetworkOptions {
    *   rejection is kept, narrowed from "any path" to "the appended segment",
    *   because a deployment prefix is not the doubling this was guarding
    *   against (ENG-14963).
-   * - **ending in {@link API_BASE_PATH}** — the version prefix belongs to the
-   *   path, never to a base. Same rule `assertNotVersionedBase` applies to
-   *   `baseUrl`, and the `/v1`-in-base layout it exists to stop is the one
-   *   ENG-9134 rejected; relaxing the path check must not let it back in
-   *   through the WS door.
+   * - **ending in {@link API_BASE_PATH}**: the same pre-0.3 layout
+   *   `assertNotVersionedBase` refuses for `baseUrl`, kept out of the WS door
+   *   too.
    *
    * A `ws://` stream alongside an `https://` REST base is refused: that is a
    * TLS downgrade for the socket the ws token is spent on.
@@ -1307,32 +1259,23 @@ function assertAbsoluteHttpUrl(baseUrl: string): void {
 /**
  * Reject a base URL that already carries {@link API_BASE_PATH}.
  *
- * The version prefix belongs to the path, and this client appends it to every
- * non-`root` request. A base that ends in `/api/v1` therefore sends
- * `/api/v1/api/v1/orders` — a 404 — while signing the correct
- * `/api/v1/orders`, so it surfaces as a routing error whose signature looks
- * fine, which is a confusing pair to debug.
- *
- * Worth failing loudly rather than trusting the type, because this exact base
- * was this SDK's own default before 0.3 and is still pasted from older docs and
- * from `Network.Testnet`'s previous value. Both siblings agree with the layout
- * enforced here: the Python SDK's `base_url` and the Rust SDK's
- * `Network::Testnet.base_url()` carry the deployment base and nothing more,
- * with `/api/v1` supplied by the route. See the README's "What `baseUrl` is"
- * for the correspondence.
+ * That is the pre-0.3 layout, and this exact base was still pasted from older
+ * docs. Under it the bridge routes, which spell `/api/v1/bridge/…` in full,
+ * would send `/api/v1/api/v1/bridge/…`, and every other route would reach the
+ * indexer only while the host's `/api/v1` kill switch stays on. The base is the
+ * spec's `/v1` REST base, the same value the Python SDK's `base_url` and the
+ * Rust SDK's `Network::Testnet.base_url()` carry.
  */
 function assertNotVersionedBase(parsed: URL): void {
   const path = parsed.pathname.replace(/\/+$/, "");
   if (!path.endsWith(API_BASE_PATH)) return;
   throw new NexusExchangeError(
     `baseUrl must not include "${API_BASE_PATH}", got ` +
-      `${JSON.stringify(parsed.toString())}. This client appends ` +
-      `"${API_BASE_PATH}" to every route, so that base would send ` +
-      `"${API_BASE_PATH}${API_BASE_PATH}/…" while signing "${API_BASE_PATH}/…". ` +
-      `Pass the deployment base without it, e.g. ` +
-      `${JSON.stringify(`${parsed.origin}${path.slice(0, -API_BASE_PATH.length)}`)}. ` +
+      `${JSON.stringify(parsed.toString())}. That is the pre-0.3 layout; routes ` +
+      `are appended to the deployment's REST base, e.g. ` +
+      `${JSON.stringify(`${parsed.origin}${path.slice(0, -API_BASE_PATH.length)}/v1`)}. ` +
       `(On testnet that is ` +
-      `"https://api.testnet.nexus.xyz/indexer" — the same value the Python ` +
+      `"https://api.testnet.nexus.xyz/v1", the same value the Python ` +
       `and Rust SDKs use.)`,
   );
 }
@@ -1354,8 +1297,7 @@ function assertNotVersionedBase(parsed: URL): void {
  * The prefix is the difference from {@link wsUrlForOrigin}, and it is the fix
  * for ENG-14963. A deployment that mounts its REST surface under a route
  * prefix mounts the streams under the same one — this SDK already relies on
- * that co-mounting for the `/ws/token` and `/api/v1` split (see
- * {@link RequestOptions.root}) — so scheme-swapping the origin alone produces a
+ * that co-mounting for every REST route — so scheme-swapping the origin alone produces a
  * URL that `404`s:
  *
  * ```text
@@ -1387,10 +1329,11 @@ function wsUrlForOrigin(origin: string): string | null {
 }
 
 /**
- * Automatic retry policy for transient failures. Retries apply only to
- * idempotent requests (see {@link IDEMPOTENT_METHODS}) that fail transiently —
- * transport errors, `5xx`, `408`, and `429` — with exponential backoff plus
- * jitter, honoring a `Retry-After` header when present.
+ * Automatic retry policy for transient failures. Retries apply only to reads
+ * (`GET`/`HEAD`/`OPTIONS`, see {@link RETRYABLE_METHODS}) that fail
+ * transiently — transport errors, `5xx`, `408`, and `429` — with exponential
+ * backoff plus jitter, honoring a `Retry-After` header when present. Writes
+ * (`POST`/`PUT`/`PATCH`/`DELETE`) are never retried; the caller decides.
  */
 export interface RetryOptions {
   /**
@@ -1490,7 +1433,8 @@ export interface ClientOptions {
   /** Per-request timeout in milliseconds. Defaults to 30s. */
   timeoutMs?: number;
   /**
-   * Automatic-retry policy for transient failures on idempotent requests.
+   * Automatic-retry policy for transient failures on reads (writes are never
+   * retried).
    * Defaults to 2 retries with 250ms→8s exponential backoff. Pass
    * `{ maxRetries: 0 }` to disable.
    */
@@ -1540,60 +1484,6 @@ interface RequestOptions {
    */
   hmacOnly?: boolean;
   signal?: AbortSignal;
-  /**
-   * Target a route the pinned spec declares at the deployment root, with no
-   * {@link API_BASE_PATH} variant — `POST /ws/token`, `POST /auth/login`, the
-   * key and agent routes, the funds surface, `GET /markets`, `GET /status`, the
-   * two ADL reads, `…/risk-params`, and `GET /orders/{order_id}`. The path is
-   * sent and signed bare, but still relative to `baseUrl` — these routes are
-   * gateway-relative, not host-root.
-   *
-   * Set this off the operation's OWN spelling in the spec, never off its
-   * neighbours': `/orders/{order_id}` is declared bare for `GET` and both ways
-   * for `PATCH`/`DELETE`, so the three verbs on that one path do not agree.
-   *
-   * ## Why one base covers them, and when it would stop
-   *
-   * This is a deliberate simplification over the Python SDK, which carries a
-   * *second* base for exactly these routes (`base_url` and `direct_base_url`).
-   * One field is enough here because on the hosted deployment both surfaces are
-   * co-mounted under the same route prefix — measured, with negative controls,
-   * so a permissive catch-all is ruled out. On the retired gateway:
-   *
-   * ```text
-   * POST /api/exchange/ws/token         401  (exists, wants credentials)
-   * POST /api/exchange/auth/login       422  (exists, parsed and rejected `{}`)
-   * POST /api/exchange/ws/token-zzz     404
-   * POST /ws/token          (host root) 301  -> marketing site
-   * ```
-   *
-   * and the durable host has the same shape (measured 2026-09-09, ENG-8867):
-   *
-   * ```text
-   * GET /indexer/markets/summary          200
-   * GET /indexer/api/v1/markets/summary   200
-   * GET /markets/summary     (host root)  404
-   * GET /api/v1/markets/summary   (root)  404
-   * ```
-   *
-   * Two caveats, because this is an assumption about a deployment rather than a
-   * property of the protocol:
-   *
-   * 1. It is measured on the hosted testnet deployment only. Python's split can
-   *    express a deployment where these routes are *not* co-mounted; this SDK
-   *    cannot. Simpler, not strictly more general.
-   * 2. There is no escape hatch today — the Rust SDK's `with_direct_base_url`
-   *    exists for that case. If a deployment ever separates the two surfaces,
-   *    {@link CustomNetworkOptions} needs a matching field; it is not that
-   *    Python's is vestigial.
-   *
-   * Beware one trap when re-measuring: a bodyless `POST` answers `411` on every
-   * path, which masks the 404 and makes any route look real. Send a body. And
-   * under `/api/exchange/account/*` auth runs *before* routing, so a 401 there
-   * proves nothing about whether a route exists — that behaviour is scoped to
-   * that prefix, which is what the 404s above establish.
-   */
-  root?: boolean;
 }
 
 /** Append a `?query` to `path` only when `query` is non-empty. */
@@ -2138,7 +2028,7 @@ export class Client {
     return chainId;
   }
 
-  /** The REST base URL this client sends to, including {@link API_BASE_PATH}. */
+  /** The REST base URL this client sends to (the spec's `/v1` base on testnet). */
   get baseUrl(): string {
     return this.#baseUrl;
   }
@@ -2202,13 +2092,10 @@ export class Client {
    * markets, and {@link fetchMarketRiskParams} is the public read of the margin
    * rates and leverage cap for one of them.
    *
-   * `root: true`: the spec declares this at the deployment root and no
-   * `/api/v1` twin of it, unlike the `/markets/{market_id}/…` reads below.
    */
   fetchMarkets(opts?: { signal?: AbortSignal }): Promise<Market[]> {
     return this.#request<Market[]>("GET", "/markets", {
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2343,8 +2230,7 @@ export class Client {
    *
    * Public (`security: []`), so no credentials are needed — this is the
    * unauthenticated read of the risk fields {@link fetchMarkets} also carries.
-   * `root: true`: the spec declares no `/api/v1` twin of it, unlike the sibling
-   * `/markets/{market_id}/…` reads. Answers `404` for an unknown market.
+   * Answers `404` for an unknown market.
    */
   fetchMarketRiskParams(
     marketId: string,
@@ -2353,7 +2239,7 @@ export class Client {
     return this.#request<MarketRiskParams>(
       "GET",
       `/markets/${seg(marketId)}/risk-params`,
-      { root: true, signal: opts?.signal },
+      { signal: opts?.signal },
     );
   }
 
@@ -2365,7 +2251,7 @@ export class Client {
    * engine closes opposite-side positions to absorb a bankrupt account's bad
    * debt; each record names the target account, the bankruptcy price, and every
    * counterparty closure. Authenticated (`hmacAuth`) even though the data is
-   * market-wide, and `root: true` — the spec declares it bare.
+   * market-wide.
    *
    * `limit` is bounded to an integer in `[1, 1000]`; omit it for the server's
    * default of 100. Only the maximum is spec-derived (`maximum: 1000` on the
@@ -2387,7 +2273,7 @@ export class Client {
     return this.#request<AdlEventRecord[]>(
       "GET",
       `/markets/${seg(marketId)}/adl-events`,
-      { query, signed: true, root: true, signal: opts.signal },
+      { query, signed: true, signal: opts.signal },
     );
   }
 
@@ -2407,8 +2293,7 @@ export class Client {
    * `GET /status` — aggregate health of the indexer, engine, oracle and bots,
    * as the public status page consumes it.
    *
-   * Public (`security: []`) and `root: true` — the spec declares it bare, with
-   * no `/api/v1` twin. Branch on the top-level `status` (`"ok"` | `"degraded"` |
+   * Public (`security: []`). Branch on the top-level `status` (`"ok"` | `"degraded"` |
    * `"down"` | `"starting"`, worst-of across components); the per-component
    * `services` map is explicitly informational and free to evolve, which is why
    * it is typed as `Record<string, unknown>` rather than a fixed shape.
@@ -2418,7 +2303,6 @@ export class Client {
    */
   fetchStatus(opts?: { signal?: AbortSignal }): Promise<ServiceHealth> {
     return this.#request<ServiceHealth>("GET", "/status", {
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2439,7 +2323,11 @@ export class Client {
   fetchBridgeAssets(opts?: {
     signal?: AbortSignal;
   }): Promise<BridgeAssetsResponse> {
-    return this.#request<BridgeAssetsResponse>("GET", "/bridge/assets", opts);
+    return this.#request<BridgeAssetsResponse>(
+      "GET",
+      "/api/v1/bridge/assets",
+      opts,
+    );
   }
 
   // -- authenticated: account -----------------------------------------------
@@ -2573,15 +2461,9 @@ export class Client {
    * which is a market's funding *rate* history and needs no credentials. This is
    * the account's realized funding cash flow.
    *
-   * `root: true`, so this is sent root-relative to `/funding` and signed over
-   * that bare path — the spelling the contract carries. The indexer does mount
-   * an `/api/v1` sibling (`funds_extra_v1_routes`, ENG-4737), but no released
-   * spec has ever declared it, and per the fleet policy in ENG-8616 an operation
-   * is targeted at the path the spec documents: an undocumented `/api/v1` twin
-   * is a phantom target, and the allowlist that used to park one is being
-   * emptied and enforced empty (ENG-8620). Its router siblings
-   * ({@link fetchDeposits}, {@link fetchWithdrawals}, {@link claimFaucet}) move to
-   * their bare paths for the same reason.
+   * Sent and signed at `/funding`, the spelling the contract carries. The
+   * indexer also mounts an `/api/v1` sibling (`funds_extra_v1_routes`,
+   * ENG-4737) that no released spec declares, so it is not targeted (ENG-8616).
    *
    * `limit` is bounded to an integer in `[1, 1000]`; omit it for the server's
    * default of 100. Only the maximum is spec-derived (`maximum: 1000` on this
@@ -2614,7 +2496,6 @@ export class Client {
     return this.#request<AccountFunding[]>("GET", "/funding", {
       query,
       signed: true,
-      root: true,
       signal: opts.signal,
     });
   }
@@ -2683,8 +2564,7 @@ export class Client {
    * `address` is a 0x-prefixed account address. The route names it in the path
    * rather than deriving it from the credentials, so it is a required argument;
    * the request is still signed, and the server decides which accounts the
-   * caller may read. `root: true` — the spec declares it bare, with no `/api/v1`
-   * twin, unlike the other `/account/…` reads in this section.
+   * caller may read.
    *
    * `limit` is bounded to an integer in `[1, 1000]` on the same terms as
    * {@link fetchAdlEvents}, including the `RangeError` rejection.
@@ -2698,7 +2578,7 @@ export class Client {
     return this.#request<AdlEventRecord[]>(
       "GET",
       `/account/${seg(address)}/adl-history`,
-      { query, signed: true, root: true, signal: opts.signal },
+      { query, signed: true, signal: opts.signal },
     );
   }
 
@@ -2791,41 +2671,12 @@ export class Client {
 
   // -- authenticated: funds -------------------------------------------------
   //
-  // Every route in this section — and {@link addMargin}, which sits with
-  // the bridge routes below — passes `root: true`, so the path is sent and
-  // signed bare rather than under {@link API_BASE_PATH}. That is what the spec
-  // documents: it declares `/account/deposit`, `/deposits`, `/withdrawals`,
-  // `/faucet` and `/account/margin` at the deployment root, and no `/api/v1`
-  // twin of any of them. The server does mount `/api/v1` siblings for four of the five
-  // (`funds_extra_v1_routes`, ENG-4737), but an undocumented route is not a
-  // contract this SDK may target: an operation absent from the pinned spec must
-  // not be implemented (ENG-8616), and the drift check now fails on any grant
-  // that says otherwise.
-  //
-  // For `/account/{deposit,margin}` this is also the difference between reaching
-  // the engine and not: they never had an `/api/v1` sibling. Measured against
-  // `exchange.nexus.xyz` while verifying ENG-8463 —
-  //
-  //   POST /api/v1/account/{deposit,margin}   404  (frontend HTML)
-  //   POST /api/exchange/account/{deposit,…}  401  (the live API)
-  //   POST /account/{deposit,margin}          301  https://nexus.xyz/exchange/…
-  //
-  // — where the third line is the HOST ROOT, not this composition. `root: true`
-  // drops `API_BASE_PATH`, not the base's own prefix, so with the testnet base
-  // (`…/api/exchange`) these send the second line, which is the live API. A
-  // caller who points `baseUrl` at the bare host gets the third: refused as a
-  // terminal error rather than followed, see {@link isRedirectResponse}.
-  //
-  // Read that second line as "not measurably broken", NOT as proof the route is
-  // there: under `/api/exchange/account/*` auth runs *before* routing, so a path
-  // that does not exist answers 401 just the same — `/account/depositt` does.
-  // Only the 404 on the first line is decisive, and it is decisive against the
-  // `/api/v1` form. What settles the choice is the contract, not the probe: the
-  // spec declares `/account/deposit` and `/account/margin` with no `/api/v1`
-  // twin, and ENG-8616 says the documented path is the only one this SDK may
-  // target. So re-probe before relying on the 401 — the `root` request option
-  // carries the same caveat, next to the bodyless-`POST` 411 trap that makes
-  // every path look real.
+  // Every route in this section, and {@link addMargin} (which sits with the
+  // bridge routes below), is sent and signed at the path the spec documents:
+  // `/account/deposit`, `/deposits`, `/withdrawals`, `/faucet` and
+  // `/account/margin`. An operation absent from the pinned spec must not be
+  // implemented (ENG-8616), and the drift check fails on any grant that says
+  // otherwise.
 
   /**
    * `POST /account/deposit` — deposit **real** USDX collateral. Moves real
@@ -2840,7 +2691,6 @@ export class Client {
     return this.#request<DepositResponse>("POST", "/account/deposit", {
       body: { amount },
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2857,7 +2707,6 @@ export class Client {
     return this.#request<DepositResponse>("POST", "/deposits", {
       body: request,
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2866,7 +2715,6 @@ export class Client {
   fetchDeposits(opts?: { signal?: AbortSignal }): Promise<FundsEntry[]> {
     return this.#request<FundsEntry[]>("GET", "/deposits", {
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2875,7 +2723,6 @@ export class Client {
   fetchWithdrawals(opts?: { signal?: AbortSignal }): Promise<Withdrawal[]> {
     return this.#request<Withdrawal[]>("GET", "/withdrawals", {
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2906,7 +2753,6 @@ export class Client {
     this.#requireClaimableFaucet("claimFaucet");
     return this.#request<FaucetResponse>("POST", "/faucet", {
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -2917,6 +2763,10 @@ export class Client {
    * `POST /bridge/deposit-addresses` — get or create the account's deposit
    * address on `chain`. Idempotent per `(account, chain)`: repeated calls
    * return the same address.
+   *
+   * @deprecated No server implements this route: it left the contract with
+   * ENG-10373 and its design was cancelled with ENG-11460, so every call
+   * fails. It will be removed in a later minor.
    */
   createBridgeDepositAddress(
     chain: string,
@@ -2925,18 +2775,24 @@ export class Client {
     const body: CreateBridgeDepositAddressRequest = { chain };
     return this.#request<BridgeDepositAddress>(
       "POST",
-      "/bridge/deposit-addresses",
+      "/api/v1/bridge/deposit-addresses",
       { body, signed: true, signal: opts?.signal },
     );
   }
 
-  /** `GET /bridge/deposit-addresses` — the account's deposit addresses. */
+  /**
+   * `GET /bridge/deposit-addresses` — the account's deposit addresses.
+   *
+   * @deprecated No server implements this route: it left the contract with
+   * ENG-10373 and its design was cancelled with ENG-11460, so every call
+   * fails. It will be removed in a later minor.
+   */
   listBridgeDepositAddresses(opts?: {
     signal?: AbortSignal;
   }): Promise<BridgeDepositAddress[]> {
     return this.#request<BridgeDepositAddress[]>(
       "GET",
-      "/bridge/deposit-addresses",
+      "/api/v1/bridge/deposit-addresses",
       { signed: true, signal: opts?.signal },
     );
   }
@@ -2961,7 +2817,7 @@ export class Client {
       asset: opts.asset,
       status: opts.status,
     });
-    return this.#request<BridgeDeposit[]>("GET", "/bridge/deposits", {
+    return this.#request<BridgeDeposit[]>("GET", "/api/v1/bridge/deposits", {
       query,
       signed: true,
       signal: opts.signal,
@@ -2973,10 +2829,14 @@ export class Client {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<BridgeDeposit> {
-    return this.#request<BridgeDeposit>("GET", `/bridge/deposits/${seg(id)}`, {
-      signed: true,
-      signal: opts?.signal,
-    });
+    return this.#request<BridgeDeposit>(
+      "GET",
+      `/api/v1/bridge/deposits/${seg(id)}`,
+      {
+        signed: true,
+        signal: opts?.signal,
+      },
+    );
   }
 
   // -- authenticated: bridge (withdrawal wallets) ---------------------------
@@ -3014,7 +2874,7 @@ export class Client {
     const body: CreateBridgeWalletChallengeRequest = { address };
     return this.#request<BridgeWalletChallenge>(
       "POST",
-      "/bridge/wallets/challenge",
+      "/api/v1/bridge/wallets/challenge",
       { body, signed: true, signal: opts?.signal },
     );
   }
@@ -3044,7 +2904,7 @@ export class Client {
     request: RegisterBridgeWalletRequest,
     opts?: { signal?: AbortSignal },
   ): Promise<BridgeWallet> {
-    return this.#request<BridgeWallet>("POST", "/bridge/wallets", {
+    return this.#request<BridgeWallet>("POST", "/api/v1/bridge/wallets", {
       body: request,
       signed: true,
       signal: opts?.signal,
@@ -3063,10 +2923,14 @@ export class Client {
   listBridgeWallets(opts?: {
     signal?: AbortSignal;
   }): Promise<BridgeWalletsResponse> {
-    return this.#request<BridgeWalletsResponse>("GET", "/bridge/wallets", {
-      signed: true,
-      signal: opts?.signal,
-    });
+    return this.#request<BridgeWalletsResponse>(
+      "GET",
+      "/api/v1/bridge/wallets",
+      {
+        signed: true,
+        signal: opts?.signal,
+      },
+    );
   }
 
   /**
@@ -3077,8 +2941,8 @@ export class Client {
    * floor or exceeds collateral (`InsufficientMargin` / `InsufficientBalance`).
    * `amount` is a positive decimal string.
    *
-   * Sent and signed bare (`root: true`) like the rest of the funds surface — see
-   * the note above {@link deposit} for why the `/api/v1` form is not targeted.
+   * Sent and signed at the path the spec documents, like the rest of the funds
+   * surface; see the note above {@link deposit}.
    */
   addMargin(
     request: MarginAdjustRequest,
@@ -3087,7 +2951,6 @@ export class Client {
     return this.#request<MarginAdjustResponse>("POST", "/account/margin", {
       body: request,
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3151,13 +3014,6 @@ export class Client {
    * omitting it can only ever answer `400`. Answers `404` when the market holds
    * no such order. Pass the same `market_id` the order was placed with. An
    * empty `marketId` throws {@link InvalidRequestError} without sending.
-   *
-   * `root: true`, and note this is the one verb on `/orders/{order_id}` that is:
-   * the spec declares the `GET` only at the deployment root, while the `PATCH`
-   * and `DELETE` on the same path also have `/api/v1` twins, which is why
-   * {@link editOrder} and {@link cancelOrder} — further down this section —
-   * send the prefixed form and this does not. The spelling is the spec's, so it must be
-   * read off the operation rather than off its neighbours.
    */
   async fetchOrder(
     orderId: string,
@@ -3169,7 +3025,6 @@ export class Client {
     return this.#request<Order>("GET", `/orders/${seg(orderId)}`, {
       query,
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3468,15 +3323,12 @@ export class Client {
    * **swapped** them to match the prose. The descriptions have said the same
    * thing throughout, so this choice never depended on the ids.
    *
-   * `root: true` because the WebSocket endpoints (`/ws`, `/ws/token`) have no
-   * `/api/v1` variant yet — so the URL and the signed path both drop that
-   * prefix. The request still hangs off `baseUrl`: the signed path is
-   * `/ws/token`, while the URL is the base plus that same path.
+   * The signed path is `/ws/token`, while the URL is the base plus that same
+   * path.
    */
   async createWsToken(opts?: { signal?: AbortSignal }): Promise<string> {
     const res = await this.#request<{ token?: string }>("POST", "/ws/token", {
       signed: true,
-      root: true,
       signal: opts?.signal,
     });
     if (!res || typeof res.token !== "string" || res.token.length === 0) {
@@ -3534,7 +3386,6 @@ export class Client {
   ): Promise<LoginResponse> {
     const res = await this.#request<LoginResponse>("POST", "/auth/login", {
       body: signer.signIn(),
-      root: true,
       signal: opts?.signal,
     });
     if (!res || typeof res.token !== "string" || res.token.length === 0) {
@@ -3555,7 +3406,6 @@ export class Client {
   createApiKey(opts?: { signal?: AbortSignal }): Promise<CreatedApiKey> {
     return this.#request<CreatedApiKey>("POST", "/keys", {
       session: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3568,7 +3418,6 @@ export class Client {
   fetchApiKeys(opts?: { signal?: AbortSignal }): Promise<ApiKeyInfo[]> {
     return this.#request<ApiKeyInfo[]>("GET", "/keys", {
       session: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3581,7 +3430,6 @@ export class Client {
   deleteApiKey(keyId: string, opts?: { signal?: AbortSignal }): Promise<void> {
     return this.#request<void>("DELETE", `/keys/${seg(keyId)}`, {
       session: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3613,7 +3461,6 @@ export class Client {
   ): Promise<unknown> {
     return this.#request<unknown>("POST", "/agents/register", {
       body: registration,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3627,7 +3474,6 @@ export class Client {
     return this.#request<AgentInfo[]>("GET", "/agents", {
       signed: true,
       hmacOnly: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3642,7 +3488,6 @@ export class Client {
     return this.#request<void>("DELETE", `/agents/${seg(address)}`, {
       signed: true,
       hmacOnly: true,
-      root: true,
       signal: opts?.signal,
     });
   }
@@ -3930,7 +3775,7 @@ export class Client {
     path: string,
     options: RequestOptions = {},
   ): Promise<{ value: T; headers: Headers }> {
-    const retryable = IDEMPOTENT_METHODS.has(method.toUpperCase());
+    const retryable = RETRYABLE_METHODS.has(method.toUpperCase());
     let attempt = 0;
     for (;;) {
       try {
@@ -3964,7 +3809,6 @@ export class Client {
       session = false,
       hmacOnly = false,
       signal,
-      root = false,
     } = options;
 
     const bodyBytes =
@@ -3972,13 +3816,11 @@ export class Client {
         ? new Uint8Array(0)
         : new TextEncoder().encode(JSON.stringify(body));
 
-    // The path as the indexer sees it: `/api/v1` + the method-relative path for
-    // the migrated surface, or the bare path for the `root` routes the spec
-    // declares without that prefix. This is both the value signed below and
-    // the value appended to the base, so the two can never drift apart — and
-    // it is chosen off the route, not off the base, so retargeting `baseUrl` at
-    // another deployment needs no signing change.
-    const logicalPath = root ? path : `${API_BASE_PATH}${path}`;
+    // The path as the indexer sees it: the spec's bare path, which is both the
+    // value signed below and the value appended to the base, so the two can
+    // never drift apart. The base's own prefix (`/v1` on testnet) is stripped by
+    // the edge before the indexer verifies, so it is never signed (EDR-006).
+    const logicalPath = path;
 
     // Advisory identity headers on every request (both empty-string-omittable).
     // `X-Nexus-Api-Version` reports the pinned spec tag for edge attribution;
@@ -4032,13 +3874,10 @@ export class Client {
           this.#apiKey,
           this.#apiSecret,
           method,
-          // Sign the LOGICAL path the indexer verifies (e.g. `/api/v1/orders`),
-          // never the base's own path. The gateway strips its `/api/exchange`
-          // prefix before verification, so the signature must exclude it —
-          // signing the sent pathname would cover bytes the server never sees.
-          // Routes the spec declares without an `/api/v1` variant (`/ws/token`,
-          // `/auth/login`, the funds surface) sign the bare path, which is what
-          // reaches the indexer for them.
+          // Sign the LOGICAL path the indexer verifies (e.g. `/orders`), never
+          // the base's own path. The edge strips the base's `/v1` prefix before
+          // verification, so the signature must exclude it: signing the sent
+          // pathname would cover bytes the server never sees.
           logicalPath,
           query,
           bodyBytes,
@@ -4049,9 +3888,7 @@ export class Client {
 
     // Assemble the URL by hand so the query bytes signed above match the bytes
     // sent (no client-side re-encoding of the already-encoded query). Every
-    // route — root or not — hangs off `#baseUrl`: the legacy routes are
-    // gateway-relative too (`…/api/exchange/ws/token` answers, while the bare
-    // origin 301s to the marketing site), so there is no host-root case left.
+    // route hangs off `#baseUrl`.
     const url = `${this.#baseUrl}${withQuery(logicalPath, query)}`;
 
     const init: RequestInit = {

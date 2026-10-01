@@ -89,7 +89,7 @@ test("the descriptor is frozen, so a target cannot be retargeted after the fact"
   assert.equal(client.baseUrl, "https://exchange.example.com/api/exchange");
 });
 
-test("a request is sent to the custom base, and host-root routes to its origin", async () => {
+test("a request is sent to the custom base, bare path appended", async () => {
   const urls: string[] = [];
   const fetchImpl: typeof fetch = async (url) => {
     urls.push(String(url));
@@ -112,11 +112,11 @@ test("a request is sent to the custom base, and host-root routes to its origin",
 
   assert.equal(
     urls[0],
-    "https://exchange.example.com/gateway/api/exchange/api/v1/markets/summary",
+    "https://exchange.example.com/gateway/api/exchange/markets/summary",
   );
-  // Legacy routes drop the /api/v1 prefix but stay under the base. Anchoring
-  // them to the bare origin instead is what sent them off the deployment
-  // entirely — on the public host, straight into a marketing-site redirect.
+  // Every route stays under the base. Anchoring one to the bare origin
+  // instead is what sent it off the deployment entirely: on the public host,
+  // straight into a marketing-site redirect.
   assert.equal(
     urls[1],
     "https://exchange.example.com/gateway/api/exchange/ws/token",

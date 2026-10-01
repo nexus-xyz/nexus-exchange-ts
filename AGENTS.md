@@ -33,7 +33,8 @@ The TypeScript SDK for the Nexus Exchange API.
 - Don't implement an operation the pinned spec doesn't define. There is no
   allowlist for it — `CODE_ONLY_OPS` is empty and the check fails on any entry
   (ENG-8616) — so wait for the released tag, bump the pin, then add the method at
-  the path the spec spells. `root: true` means "the spec declares this route
-  without the `/api/v1` prefix", not "this one routes better".
+  the path the spec spells. Paths are the spec's bare spelling, sent under the
+  `/v1` base and signed bare (EDR-006); only the bridge routes keep
+  `/api/v1/bridge/…`, because the pinned spec has no bare twin for them yet.
 - Pre-1.0 versioning (release-please): the SDK stays in `0.x` until a deliberate
   1.0 — minor on breaking changes, patch on features and fixes.

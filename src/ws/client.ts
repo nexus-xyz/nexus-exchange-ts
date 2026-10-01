@@ -7,12 +7,27 @@
 //
 //   1. Opens a single WebSocket and fans any number of `subscribe(channel,
 //      {market, since})` calls onto it.
-//   2. Tracks the highest `seq` per (channel, market). On disconnect it
-//      reconnects (with jittered exponential backoff), optionally mints a
-//      fresh auth token, and re-subscribes from `lastSeq` so the server can
-//      replay anything missed from its ring buffer.
+//   2. Tracks a cursor per (channel, market): the highest `seq` delivered, or
+//      the `seq_at_join` of the server's `subscribed` ack before any event
+//      arrives. On disconnect it reconnects (with jittered exponential
+//      backoff), optionally mints a fresh auth token, and re-subscribes with
+//      `since: cursor` so the server can replay anything missed from its ring.
 //   3. Surfaces every subscription as an `AsyncIterable<WsEvent>` with
-//      bounded buffering, and the connection state via `status()`.
+//      bounded buffering, the connection state via `status()`, and the
+//      per-subscription delivery state via `WsSubscription.health()`.
+//
+// Per-subscription recovery (ENG-10674)
+// -------------------------------------
+// A lagged subscriber does not lose the socket, it loses ONE subscription: the
+// indexer sends `out_of_sync` and stops forwarding that (channel, market) while
+// the connection stays open. So on `out_of_sync` the client surfaces the frame,
+// drops the cursor (the ring has outrun it) and immediately re-sends
+// `subscribe` without `since` on the same socket; the server treats it as a
+// replace, and its `subscribed` ack re-seeds the cursor and marks the
+// subscription live again. No backoff: a subscribe without `since` cannot be
+// answered with `out_of_sync`, and the lag that can repeat it is paced by the
+// server. The consumer's part is a REST refetch on the `outOfSync` frame. Same
+// rules as the Rust typed client (ENG-18685) and the Go client.
 //
 // Channels
 // --------
@@ -101,8 +116,21 @@ export interface WsEvent {
   outOfSync?: boolean;
 }
 
+/**
+ * Delivery health of ONE subscription, independent of the socket's `WsStatus`
+ * (the socket can be `open` while a subscription is not delivering).
+ *
+ *   • `live`      — delivering. The initial state, and set again by the
+ *                   server's `subscribed` ack.
+ *   • `resyncing` — the server ended it (`out_of_sync`) and the client has
+ *                   already re-subscribed; `live` again on the next ack.
+ */
+export type WsStreamHealth = "live" | "resyncing";
+
 export interface WsSubscription {
   events: AsyncIterable<WsEvent>;
+  /** Current delivery health of this subscription. */
+  health(): WsStreamHealth;
   /** Tear down this subscription. Idempotent. */
   unsubscribe(): void;
 }
@@ -185,6 +213,13 @@ interface ServerEvent {
   seq: number | string;
   payload: unknown;
 }
+interface ServerSubscribed {
+  op: "subscribed";
+  channel: string;
+  market: string | null;
+  /** The channel's seq when the subscription attached. */
+  seq_at_join: number | string;
+}
 interface ServerOutOfSync {
   op: "out_of_sync";
   channel: string;
@@ -199,10 +234,15 @@ interface Sub {
   key: string;
   channel: Channel;
   market?: string;
-  /** Last seq delivered to the consumer for this (channel, market). */
-  lastSeq: bigint;
-  /** Original `since` from the consumer; used only on the first subscribe. */
-  initialSince?: bigint;
+  /**
+   * Resume cursor for this (channel, market), sent as `since` on the next
+   * subscribe; null means "no cursor, subscribe from the live edge". Starts as
+   * the consumer's `since`, then follows the highest seq delivered or the
+   * `seq_at_join` of a `subscribed` ack. Cleared by `out_of_sync`. 0 is a real
+   * cursor (nothing published yet when we joined), not "none".
+   */
+  cursor: bigint | null;
+  health: WsStreamHealth;
   /** Bounded queue of events awaiting the AsyncIterable consumer. */
   queue: WsEvent[];
   /** Pending iterator-resume waiters (consumer awaiting `next()`). */
@@ -304,8 +344,8 @@ class WsClientImpl implements WsClient {
       key,
       channel,
       market: opts.market,
-      lastSeq: 0n,
-      initialSince: opts.since,
+      cursor: opts.since ?? null,
+      health: "live",
       queue: [],
       waiters: [],
       closed: false,
@@ -320,6 +360,7 @@ class WsClientImpl implements WsClient {
 
     return {
       events: this.iterateSub(sub),
+      health: () => sub.health,
       unsubscribe: () => this.teardownSub(sub),
     };
   }
@@ -402,7 +443,9 @@ class WsClientImpl implements WsClient {
         return;
       }
       this.state = "open";
-      this.reconnectAttempts = 0;
+      // `reconnectAttempts` is NOT reset here: a server that upgrades and then
+      // drops would otherwise be retried at the base delay forever. The first
+      // frame (below) is the proof the connection works.
       for (const sub of this.subs.values()) this.sendSubscribe(sub);
     };
 
@@ -414,6 +457,7 @@ class WsClientImpl implements WsClient {
       } catch {
         return; // non-JSON / binary frame — ignore
       }
+      this.reconnectAttempts = 0;
       try {
         this.handleServerOp(parsed);
       } catch {
@@ -466,10 +510,8 @@ class WsClientImpl implements WsClient {
   private sendSubscribe(sub: Sub): void {
     if (!this.ws || this.ws.readyState !== this.WebSocketCtor.OPEN) return;
     if (this.sentOnSocket.has(sub.key)) return;
-    // On reconnect, ask the server to replay from `lastSeq`. On a first-ever
-    // subscribe use the consumer's `since` if given, else live-from-now.
-    const since =
-      sub.lastSeq > 0n ? sub.lastSeq : (sub.initialSince ?? undefined);
+    // Ask the server to replay from the cursor; no cursor means live-from-now.
+    const since = sub.cursor;
     const msg: {
       op: "subscribe";
       channel: string;
@@ -477,7 +519,7 @@ class WsClientImpl implements WsClient {
       since?: number;
     } = { op: "subscribe", channel: sub.channel };
     if (sub.market !== undefined) msg.market = sub.market;
-    if (since !== undefined && since <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    if (since !== null && since <= BigInt(Number.MAX_SAFE_INTEGER)) {
       msg.since = Number(since);
     }
     try {
@@ -505,6 +547,24 @@ class WsClientImpl implements WsClient {
   private handleServerOp(op: unknown): void {
     if (!op || typeof op !== "object") return;
     const tag = (op as { op?: unknown }).op;
+    if (tag === "subscribed") {
+      const e = op as ServerSubscribed;
+      const channel = e.channel;
+      if (!isChannel(channel)) return;
+      const market = typeof e.market === "string" ? e.market : undefined;
+      const sub = this.subs.get(subKey(channel, market));
+      if (!sub || sub.closed) return;
+      // The server sends backfill before the ack, so everything at or below
+      // `seq_at_join` has already been delivered: it is a safe cursor. Without
+      // it, a drop before the first event would resume live-from-now and lose
+      // whatever was published in between.
+      const join = toSeq(e.seq_at_join);
+      if (join !== null && (sub.cursor === null || join > sub.cursor)) {
+        sub.cursor = join;
+      }
+      sub.health = "live";
+      return;
+    }
     if (tag === "event") {
       const e = op as ServerEvent;
       const channel = e.channel;
@@ -516,8 +576,8 @@ class WsClientImpl implements WsClient {
       if (!sub || sub.closed) return;
       // Drop duplicates / out-of-order seqs (e.g. a replay overlapping events
       // we already delivered before a reconnect).
-      if (seq <= sub.lastSeq) return;
-      sub.lastSeq = seq;
+      if (sub.cursor !== null && seq <= sub.cursor) return;
+      sub.cursor = seq;
       this.deliverEvent(sub, { channel, market, seq, data: e.payload });
       return;
     }
@@ -525,23 +585,31 @@ class WsClientImpl implements WsClient {
       const e = op as ServerOutOfSync;
       const channel = e.channel;
       if (!isChannel(channel)) return;
-      const market = typeof e.market === "string" ? e.market : undefined;
-      const sub = this.subs.get(subKey(channel, market));
-      if (!sub || sub.closed) return;
-      // Reset our cursor to the server's oldest replayable seq so the next
-      // subscribe asks for the right window. null => ring empty: reset to 0
-      // (next subscribe is live-from-now) and let the consumer REST-refetch.
-      sub.lastSeq = e.oldest_seq == null ? 0n : (toSeq(e.oldest_seq) ?? 0n);
-      this.deliverEvent(sub, {
-        channel,
-        market,
-        seq: sub.lastSeq,
-        data: null,
-        outOfSync: true,
-      });
+      // A null market names every market of the channel.
+      const market = typeof e.market === "string" ? e.market : null;
+      const oldest = toSeq(e.oldest_seq) ?? 0n;
+      for (const sub of [...this.subs.values()]) {
+        if (sub.closed || sub.channel !== channel) continue;
+        if (market !== null && sub.market !== market) continue;
+        this.deliverEvent(sub, {
+          channel,
+          market: sub.market,
+          seq: oldest, // diagnostics only: the oldest seq the ring still holds
+          data: null,
+          outOfSync: true,
+        });
+        // The ring has outrun our cursor: drop it and re-subscribe from the
+        // live edge now. Replaying from `oldest_seq` instead would re-deliver
+        // events the consumer's REST refetch already covers. A failed send is
+        // left to the reconnect, whose `onopen` re-sends every subscription.
+        sub.cursor = null;
+        sub.health = "resyncing";
+        this.sentOnSocket.delete(sub.key);
+        this.sendSubscribe(sub);
+      }
       return;
     }
-    // `subscribed` / `unsubscribed` / `error` / unknown: nothing to route.
+    // `unsubscribed` / `error` / unknown: nothing to route.
   }
 
   private deliverEvent(sub: Sub, evt: WsEvent): void {
@@ -559,7 +627,7 @@ class WsClientImpl implements WsClient {
       const sentinel: WsEvent = {
         channel: sub.channel,
         market: sub.market,
-        seq: sub.lastSeq,
+        seq: sub.cursor ?? 0n,
         data: null,
         outOfSync: true,
       };

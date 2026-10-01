@@ -532,19 +532,11 @@ function parseOpsManifest(label, text) {
 }
 
 /**
- * The base path every non-`root` request is sent under, read out of
- * `API_BASE_PATH` in src/client.ts rather than hardcoded here — the prefix is
- * what turns a method-relative path into the spec path, so a checker that
- * hardcoded it would go on comparing the old paths after a base-URL change and
- * report green over every one of them.
- *
- * Reads the one exported constant rather than reconciling the per-network base
- * URLs (ENG-6453). Agreement across that table used to be the invariant, and it
- * is no longer the right one: the networks deliberately do NOT all share a
- * prefix now — mainnet's durable base is `/v1`-shaped and has no live host at
- * all — so requiring agreement would fail on a correct map. `API_BASE_PATH` is
- * what every non-root request actually composes, in one place, and every live
- * network base is built from it (pinned by a unit test in test/client.test.ts).
+ * The legacy `/api/v1` prefix, read out of `API_BASE_PATH` in src/client.ts
+ * rather than hardcoded here. Requests no longer compose it (EDR-006); it is
+ * used only to fold an operation's two spec spellings together for the
+ * coverage summary (canonicalOp), so a change to it moves the summary, not
+ * the implemented set.
  */
 function clientBasePath(src) {
   const found = /export\s+const\s+API_BASE_PATH\s*=\s*"([^"]*)"/.exec(src);
@@ -556,14 +548,14 @@ function clientBasePath(src) {
   const base = found[1];
   if (!base) {
     fail(
-      "`API_BASE_PATH` in src/client.ts is empty; if the SDK moved to host-root requests, drop the prefixing in implementedOps()",
+      "`API_BASE_PATH` in src/client.ts is empty; canonicalOp() needs the legacy prefix to fold the two spec spellings together",
     );
   }
-  // It is concatenated straight onto method-relative paths, so a stray leading
-  // or trailing slash would silently shift every derived operation.
+  // It is stripped as a path prefix, so a stray leading or trailing slash would
+  // silently mis-fold every twin.
   if (!base.startsWith("/") || base.endsWith("/")) {
     fail(
-      `\`API_BASE_PATH\` must start with "/" and must not end with one (got ${JSON.stringify(base)}); it is concatenated directly onto method-relative paths`,
+      `\`API_BASE_PATH\` must start with "/" and must not end with one (got ${JSON.stringify(base)}); canonicalOp() strips it as a path prefix`,
     );
   }
   return base;
@@ -572,19 +564,12 @@ function clientBasePath(src) {
 // Every REST call in src/client.ts goes through the single private helper
 // `this.#request(method, path, options?)`, so — unlike the Rust SDK's several
 // typed helpers — there is exactly one call shape to parse. The parser depends
-// on two conventions at those call sites, and ENFORCES both with a loud failure
+// on one convention at those call sites, and ENFORCES it with a loud failure
 // rather than best-effort guessing, because the failure mode that matters is
 // *undercounting* (a checker reporting green over a real gap is worse than no
-// checker):
-//
-//   1. the method and path are inline literals — `"GET"` and either `"/orders"`
-//      or a template literal `` `/orders/${seg(id)}` `` — never built into a
-//      local variable first;
-//   2. the options argument, when present, is either an inline object literal
-//      or a bare identifier forwarded from the method's own `opts` parameter.
-//      `root: true` (which drops the `/api/v1` prefix) is only ever set in an
-//      inline literal, so an expression the parser cannot see through would
-//      silently attribute the call to the wrong path.
+// checker): the method and path are inline literals — `"GET"` and either
+// `"/orders"` or a template literal `` `/orders/${seg(id)}` `` — never built
+// into a local variable first.
 const REQUEST_CALL = "this.#request";
 
 /**
@@ -666,11 +651,13 @@ function literalPath(expr) {
 }
 
 /**
- * Derive the `METHOD /full-path` operations src/client.ts implements from its
- * `this.#request(...)` call sites, prefixing `basePath` unless the call opts out
- * with `root: true`. Placeholders are normalized to `{}`.
+ * Derive the `METHOD /path` operations src/client.ts implements from its
+ * `this.#request(...)` call sites. The path literal is the spec path as sent
+ * and signed (EDR-006: every route is bare, the bridge routes spell
+ * `/api/v1/…` in full), so nothing is prefixed. Placeholders are normalized
+ * to `{}`.
  */
-function implementedOps(src, basePath = clientBasePath(src), sites = []) {
+function implementedOps(src, sites = []) {
   const ops = new Set();
   let searched = 0;
   let count = 0;
@@ -716,19 +703,7 @@ function implementedOps(src, basePath = clientBasePath(src), sites = []) {
       );
     }
 
-    const opts = args[2];
-    let root = false;
-    if (opts !== undefined) {
-      if (opts.startsWith("{")) {
-        root = /\broot\s*:\s*true\b/.test(opts);
-      } else if (!/^[A-Za-z_$][\w$]*$/.test(opts)) {
-        fail(
-          `src/client.ts:${line}: the options argument to \`${REQUEST_CALL}\` must be an inline object literal or a bare identifier (got ${JSON.stringify(opts)}); \`root: true\` decides whether the call targets ${JSON.stringify(basePath)} or the host root, so an expression the parser cannot see through would attribute the call to the wrong path`,
-        );
-      }
-    }
-
-    const op = `${method} ${normalizeOpPath(root ? path : basePath + path)}`;
+    const op = `${method} ${normalizeOpPath(path)}`;
     ops.add(op);
     sites.push({ op, line, name: enclosingMethod(src, at, line) });
   }
@@ -782,20 +757,20 @@ function enclosingMethod(src, at, line) {
  * carries ENG-17740 has to empty this map.
  */
 const OPERATION_IDS_AHEAD_OF_PIN = new Map([
+  ["POST /account/credit", "claimCredit"],
+  ["GET /account/fees", "fetchTradingFees"],
   ["POST /account/margin", "addMargin"],
   ["GET /agents", "fetchAgents"],
-  ["POST /api/v1/account/credit", "claimCreditV1"],
-  ["GET /api/v1/account/fees", "fetchTradingFeesV1"],
-  ["GET /api/v1/bridge/assets", "fetchBridgeAssets"],
-  ["GET /api/v1/bridge/deposits", "fetchBridgeDeposits"],
-  ["GET /api/v1/bridge/deposits/{id}", "fetchBridgeDeposit"],
-  ["GET /api/v1/fills", "fetchMyTradesV1"],
-  ["GET /api/v1/markets/{market_id}/funding", "fetchFundingRateHistoryV1"],
-  ["POST /api/v1/orders/batch", "createOrdersV1"],
-  ["GET /api/v1/orders/history", "fetchOrdersV1"],
-  ["GET /api/v1/positions/closed", "fetchPositionsHistoryV1"],
+  ["GET /api/v1/bridge/assets", "fetchBridgeAssetsV1"],
+  ["GET /api/v1/bridge/deposits", "fetchBridgeDepositsV1"],
+  ["GET /api/v1/bridge/deposits/{id}", "fetchBridgeDepositV1"],
+  ["GET /fills", "fetchMyTrades"],
   ["GET /funding", "fetchFundingHistory"],
   ["GET /keys", "fetchApiKeys"],
+  ["GET /markets/{market_id}/funding", "fetchFundingRateHistory"],
+  ["POST /orders/batch", "createOrders"],
+  ["GET /orders/history", "fetchOrders"],
+  ["GET /positions/closed", "fetchPositionsHistory"],
 ]);
 
 /** The name R2.25 gives a TS wrapper for `operationId`: drop the `V1` suffix. */
@@ -1053,7 +1028,7 @@ function main() {
       "spec/uncovered-ops.txt",
       read(join(REPO, "spec", "uncovered-ops.txt")),
     ),
-    implemented: implementedOps(clientSrc, basePath, sites),
+    implemented: implementedOps(clientSrc, sites),
     basePath,
   });
   const names = wrapperNameDrift({ sites, spec });
@@ -1061,7 +1036,7 @@ function main() {
   console.log(`Pinned API version : ${pin}`);
   console.log(`Vendored spec      : ${specPath}`);
   console.log(`Spec version       : v${specVersion}`);
-  console.log(`Client base path   : ${basePath}`);
+  console.log(`Legacy prefix      : ${basePath} (folds twin spellings)`);
   console.log(
     `SDK targets ${targeted.length} schema(s); spec has ${specSchemas.length}.`,
   );

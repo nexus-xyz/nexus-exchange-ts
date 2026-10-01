@@ -25,52 +25,48 @@
 #
 #   METHOD /path      (placeholders match the spec, e.g. {market_id})
 #
-# Dual-stack routing (ENG-4947 / gateway elimination ENG-4740): the path here is
-# the LOGICAL path — the one the SDK signs, which is the wire path minus whatever
-# prefix the deployment base carries (ENG-8463 split the two: the testnet base is
-# `https://api.testnet.nexus.xyz/indexer` since ENG-8867, and the deployment
-# strips that prefix before the HMAC is verified). A method that does not pass
-# `root: true` composes
-# `API_BASE_PATH` + its path and is listed with the `/api/v1` prefix; a method
-# that does passes it bare and is listed bare. Which of the two a route uses is
-# not a style choice — it is whichever spelling the spec declares, since a line
-# here that the spec does not define fails invariant F.
+# Paths (EDR-006, ENG-18321): the path here is the one the SDK sends under the
+# network's `/v1` REST base and signs, which is the spec's bare path. The bridge
+# routes are the one exception: the pinned spec declares no bare twin for any of
+# them, so they keep the `/api/v1/bridge/…` spelling until a released spec does.
+# Either way the line is whichever spelling the spec declares, since a line here
+# that the spec does not define fails invariant F.
 
-# --- Direct-service surface (/api/v1) — public market data ---
-GET /api/v1/markets/summary
-GET /api/v1/tickers
-GET /api/v1/markets/{market_id}/ticker
-GET /api/v1/markets/{market_id}/orderbook
-GET /api/v1/markets/{market_id}/trades
-GET /api/v1/markets/{market_id}/candles
-GET /api/v1/markets/{market_id}/funding
-GET /api/v1/markets/{market_id}/funding-samples
-GET /api/v1/markets/{market_id}/mark-price
-GET /api/v1/markets/{market_id}/status
-GET /api/v1/stats
-GET /api/v1/stats/history
+# --- public market data ---
+GET /markets/summary
+GET /tickers
+GET /markets/{market_id}/ticker
+GET /markets/{market_id}/orderbook
+GET /markets/{market_id}/trades
+GET /markets/{market_id}/candles
+GET /markets/{market_id}/funding
+GET /markets/{market_id}/funding-samples
+GET /markets/{market_id}/mark-price
+GET /markets/{market_id}/status
+GET /stats
+GET /stats/history
 
 # `GET /bridge/assets` is PUBLIC — the spec gives it `security: []` and declares
 # only 200/429, unlike the three authenticated bridge routes below. Listed here,
 # with the other unauthenticated reads, so the grouping matches the contract.
 GET /api/v1/bridge/assets
 
-# --- Direct-service surface (/api/v1) — authenticated account ---
-GET /api/v1/account
-GET /api/v1/account/summary
-GET /api/v1/account/equity-history
-GET /api/v1/account/state
-GET /api/v1/account/fees
-GET /api/v1/account/portfolio-history
-GET /api/v1/account/rate-limit
-GET /api/v1/account/cancel-on-disconnect
-PUT /api/v1/account/cancel-on-disconnect
-GET /api/v1/positions
-GET /api/v1/positions/closed
-GET /api/v1/fills
-POST /api/v1/account/credit
+# --- authenticated account ---
+GET /account
+GET /account/summary
+GET /account/equity-history
+GET /account/state
+GET /account/fees
+GET /account/portfolio-history
+GET /account/rate-limit
+GET /account/cancel-on-disconnect
+PUT /account/cancel-on-disconnect
+GET /positions
+GET /positions/closed
+GET /fills
+POST /account/credit
 
-# --- Direct-service surface (/api/v1) — authenticated bridge (deposits) ---
+# --- authenticated bridge (deposits) ---
 # All three are `[{hmacAuth: []}]` in the spec. `GET /bridge/assets` is NOT here
 # on purpose — see the public block above.
 POST /api/v1/bridge/deposit-addresses
@@ -78,7 +74,7 @@ GET /api/v1/bridge/deposit-addresses
 GET /api/v1/bridge/deposits
 GET /api/v1/bridge/deposits/{id}
 
-# --- Direct-service surface (/api/v1) — authenticated bridge (withdrawal
+# --- authenticated bridge (withdrawal
 # wallets) ---
 # The two-step ownership proof: `…/challenge` issues a message, the wallet signs
 # it EIP-191 (EthSigner.registerWallet), `…/wallets` registers the address. The
@@ -88,24 +84,18 @@ POST /api/v1/bridge/wallets/challenge
 POST /api/v1/bridge/wallets
 GET /api/v1/bridge/wallets
 
-# --- Direct-service surface (/api/v1) — authenticated orders ---
-POST /api/v1/orders
-POST /api/v1/orders/batch
-POST /api/v1/orders/preview
-GET /api/v1/orders
-GET /api/v1/orders/history
-PATCH /api/v1/orders/{order_id}
-DELETE /api/v1/orders/{order_id}
-DELETE /api/v1/orders
+# --- authenticated orders ---
+POST /orders
+POST /orders/batch
+POST /orders/preview
+GET /orders
+GET /orders/history
+PATCH /orders/{order_id}
+DELETE /orders/{order_id}
+DELETE /orders
 
-# --- Root-relative surface (`root: true`) — market data & venue health ---
-# The spec declares these four bare and declares NO `/api/v1` twin of any of
-# them — unlike their neighbours in the `/api/v1` market-data block above, which
-# it declares both ways. That asymmetry is the contract's, not a preference:
-# `root: true` is read off each operation's own spelling (invariant F fails on
-# the other one), never off what the routes next to it use.
-#
-# Two of the four are authenticated (`[{hmacAuth: []}]`, and they document a
+# --- market data & venue health ---
+# Declared only bare in the spec (no `/api/v1` twin). Two of the four are authenticated (`[{hmacAuth: []}]`, and they document a
 # 401): `GET /markets`, whose full market parameters are not part of the public
 # summary surface, and `GET /markets/{market_id}/adl-events`. `GET /status` and
 # `…/risk-params` are `security: []`.
@@ -114,9 +104,8 @@ GET /status
 GET /markets/{market_id}/risk-params
 GET /markets/{market_id}/adl-events
 
-# --- Root-relative surface (`root: true`) — funds ---
-# Sent and signed bare, because the spec declares them bare and declares no
-# `/api/v1` twin of any of them. The server does mount `/api/v1` siblings for the
+# --- funds ---
+# Declared only bare in the spec. The server does mount `/api/v1` siblings for the
 # four ledger/faucet routes (`funds_extra_v1_routes`, ENG-4737) and the SDK used
 # to target those, parked in CODE_ONLY_OPS; the allowlist is gone and with it the
 # undocumented paths (ENG-8620). `/account/{deposit,margin}` never had a sibling
@@ -128,21 +117,18 @@ GET /withdrawals
 POST /faucet
 POST /account/margin
 
-# --- Root-relative surface (`root: true`) — authenticated account reads ---
+# --- authenticated account reads ---
 # Account funding payments. Sent and signed bare because that is the spelling
 # the contract carries: the indexer also mounts an `/api/v1` sibling (ENG-4737)
 # but the spec has never declared it, and per ENG-8616 an operation is targeted
 # at the path the spec documents rather than parked in an allowlist.
 GET /funding
 # ADL settlements touching one account, and the single-order read. Both are bare
-# in the spec with no `/api/v1` twin. `GET /orders/{order_id}` is the sharp one:
-# the PATCH and DELETE on that same path DO have `/api/v1` twins and are listed
-# in the orders block above, so the three verbs on one path do not share a
-# spelling — see Client.fetchOrder.
+# in the spec with no `/api/v1` twin.
 GET /account/{address}/adl-history
 GET /orders/{order_id}
 
-# --- Root-relative surface (`root: true`) — wallet auth, API keys, agent keys ---
+# --- wallet auth, API keys, agent keys ---
 POST /auth/login
 POST /keys
 GET /keys
@@ -151,7 +137,7 @@ POST /agents/register
 GET /agents
 DELETE /agents/{address}
 
-# --- Root-relative surface (`root: true`) — streaming ---
+# --- streaming ---
 # The canonical token route. The legacy `POST /ws-tokens` is recorded in
 # spec/uncovered-ops.txt with why (ENG-10492).
 POST /ws/token

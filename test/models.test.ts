@@ -857,15 +857,14 @@ test("ops drift: FAILS when endpoints.txt lists an operation the spec lacks", ()
   // The py bug in miniature: right operation, path the spec does not define. The
   // client is untouched, so only the manifest -> spec direction can catch it.
   const r = runDriftSandbox({
-    mutateEndpoints: (t) =>
-      replaceOnce(t, "GET /api/v1/tickers\n", "GET /api/v1/tickerz\n"),
+    mutateEndpoints: (t) => replaceOnce(t, "GET /tickers\n", "GET /tickerz\n"),
   });
   assert.equal(r.status, 1);
   assert.match(
     r.stderr,
     /operation\(s\) in endpoints\.txt are NOT in the spec/,
   );
-  assert.match(r.stderr, /GET \/api\/v1\/tickerz/);
+  assert.match(r.stderr, /GET \/tickerz/);
 });
 
 test("ops drift: FAILS when the spec gains an operation neither list knows", () => {
@@ -911,14 +910,14 @@ test("ops drift: FAILS on an uncovered-ops entry that is now targeted", () => {
 
 test("ops drift: FAILS when a wrapper exists but endpoints.txt doesn't list it", () => {
   const r = runDriftSandbox({
-    mutateEndpoints: (t) => withoutOp(t, "GET /api/v1/stats/history"),
+    mutateEndpoints: (t) => withoutOp(t, "GET /stats/history"),
   });
   assert.equal(r.status, 1);
   assert.match(
     r.stderr,
     /implemented in src\/client\.ts but NOT in endpoints\.txt/,
   );
-  assert.match(r.stderr, /GET \/api\/v1\/stats\/history/);
+  assert.match(r.stderr, /GET \/stats\/history/);
 });
 
 test("ops drift: FAILS when endpoints.txt lists an operation no wrapper implements", () => {
@@ -991,11 +990,7 @@ test("ops drift: FAILS on ANY CODE_ONLY_OPS entry, however well attributed", () 
   // it, and it carries a ticket reference. It must fail anyway.
   const r = runDriftSandbox({
     mutateClient: (src) =>
-      replaceOnce(
-        src,
-        '"POST", "/faucet", {\n      signed: true,\n      root: true,',
-        '"POST", "/faucet", {\n      signed: true,',
-      ),
+      replaceOnce(src, '"POST", "/faucet", {', '"POST", "/api/v1/faucet", {'),
     mutateScript: (src) =>
       replaceOnce(
         src,
@@ -1042,21 +1037,6 @@ test("ops drift: a path built into a local variable ABORTS the check", () => {
   assert.match(r.stderr, /inline path literal/);
 });
 
-test("ops drift: an unreadable options argument ABORTS the check", () => {
-  // `root: true` decides whether the call targets /api/v1 or the host root, so
-  // an expression the parser can't see through would mis-attribute the path.
-  const r = runDriftSandbox({
-    mutateClient: (src) =>
-      replaceOnce(
-        src,
-        'return this.#request<StatsSnapshot>("GET", "/stats", opts);',
-        'return this.#request<StatsSnapshot>("GET", "/stats", makeOpts(opts));',
-      ),
-  });
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /inline object literal or a bare identifier/);
-});
-
 test("ops drift: a renamed request helper ABORTS instead of reporting zero ops", () => {
   const r = runDriftSandbox({
     mutateClient: (src) => src.replaceAll("this.#request", "this.#send"),
@@ -1065,11 +1045,11 @@ test("ops drift: a renamed request helper ABORTS instead of reporting zero ops",
   assert.match(r.stderr, /parsed zero/);
 });
 
-// The base path used to be reconciled across the per-network base URLs, which
-// stopped being the right invariant with the network axis (ENG-6453): the
-// networks deliberately no longer share a prefix — mainnet has no live base at
-// all — so agreement would fail on a correct map. It now reads the single
-// `API_BASE_PATH` constant, and these three pin that it still cannot be fooled.
+// The drift script reads the single `API_BASE_PATH` constant to fold an
+// operation's two spec spellings together for the coverage summary. Requests no
+// longer compose it (EDR-006), so a changed value moves only the summary; these
+// two pin that a renamed or malformed constant still aborts rather than
+// silently mis-folding.
 
 test("ops drift: a renamed API_BASE_PATH ABORTS instead of assuming a prefix", () => {
   const r = runDriftSandbox({
@@ -1083,21 +1063,6 @@ test("ops drift: a renamed API_BASE_PATH ABORTS instead of assuming a prefix", (
   assert.equal(r.status, 1);
   assert.match(r.stderr, /could not find/);
   assert.match(r.stderr, /API_BASE_PATH/);
-});
-
-test("ops drift: a changed API_BASE_PATH is detected, not silently accepted", () => {
-  // Every targeted operation would move, so the check must go red rather than
-  // keep comparing the old paths.
-  const r = runDriftSandbox({
-    mutateClient: (src) =>
-      replaceOnce(
-        src,
-        'export const API_BASE_PATH = "/api/v1";',
-        'export const API_BASE_PATH = "/v1";',
-      ),
-  });
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /endpoints\.txt/);
 });
 
 test("ops drift: a malformed API_BASE_PATH ABORTS the check", () => {

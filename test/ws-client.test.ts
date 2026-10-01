@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -487,4 +487,187 @@ test("unsubscribe sends an unsubscribe op and closes the last socket", async () 
 
   sub.unsubscribe(); // idempotent
   client.close();
+});
+
+// ── Recovery (ENG-10674) ──────────────────────────────────────────────────────
+
+test("out_of_sync re-subscribes on the open socket, from the live edge", async () => {
+  reset();
+  const client = createWsClient({ url: "wss://test", WebSocketImpl: Ctor });
+  const sub = client.subscribe("book", { market: "BTC-PERP" });
+  const iter = sub.events[Symbol.asyncIterator]();
+  const ws = await waitForSocket();
+  ws.open();
+  ws.emit({
+    op: "subscribed",
+    channel: "book",
+    market: "BTC-PERP",
+    seq_at_join: 3,
+  });
+  ws.emit({
+    op: "event",
+    channel: "book",
+    market: "BTC-PERP",
+    seq: 7,
+    payload: {},
+  });
+  assert.ok((await nextEvent(iter)) !== "timeout");
+
+  // The server ended this subscription; the socket stays open.
+  ws.emit({
+    op: "out_of_sync",
+    channel: "book",
+    market: "BTC-PERP",
+    oldest_seq: 3,
+  });
+  const notice = await nextEvent(iter);
+  assert.ok(notice !== "timeout");
+  assert.equal(notice.outOfSync, true);
+  assert.equal(sub.health(), "resyncing");
+  assert.equal(client.status(), "open");
+  // Re-sent at once, with no `since`: not the old cursor (7), not oldest_seq (3).
+  assert.deepEqual(ws.sent.at(-1), {
+    op: "subscribe",
+    channel: "book",
+    market: "BTC-PERP",
+  });
+  assert.equal(FakeWebSocket.instances.length, 1);
+
+  ws.emit({
+    op: "subscribed",
+    channel: "book",
+    market: "BTC-PERP",
+    seq_at_join: 40,
+  });
+  assert.equal(sub.health(), "live");
+  // The fresh ack re-seeds the cursor: 40 and below are dropped, 41 delivered.
+  ws.emit({
+    op: "event",
+    channel: "book",
+    market: "BTC-PERP",
+    seq: 40,
+    payload: {},
+  });
+  ws.emit({
+    op: "event",
+    channel: "book",
+    market: "BTC-PERP",
+    seq: 41,
+    payload: {},
+  });
+  const next = await nextEvent(iter);
+  assert.ok(next !== "timeout");
+  assert.equal(next.seq, 41n);
+  client.close();
+});
+
+test("an out_of_sync with a null market resyncs every market of that channel", async () => {
+  reset();
+  const client = createWsClient({ url: "wss://test", WebSocketImpl: Ctor });
+  const btc = client.subscribe("book", { market: "BTC-PERP" });
+  const eth = client.subscribe("book", { market: "ETH-PERP" });
+  const trades = client.subscribe("trades", { market: "BTC-PERP" });
+  const ws = await waitForSocket();
+  ws.open();
+  ws.sent.length = 0;
+
+  ws.emit({
+    op: "out_of_sync",
+    channel: "book",
+    market: null,
+    oldest_seq: null,
+  });
+  assert.equal(btc.health(), "resyncing");
+  assert.equal(eth.health(), "resyncing");
+  assert.equal(trades.health(), "live");
+  assert.deepEqual(ws.sent.map((m) => m.market).sort(), [
+    "BTC-PERP",
+    "ETH-PERP",
+  ]);
+  client.close();
+});
+
+test("the subscribed ack's seq_at_join is the resume cursor, including 0", async () => {
+  for (const join of [0, 12]) {
+    reset();
+    const client = createWsClient({
+      url: "wss://test",
+      WebSocketImpl: Ctor,
+      baseReconnectDelayMs: 10,
+    });
+    client.subscribe("trades", { market: "BTC-PERP" });
+    const ws1 = await waitForSocket();
+    ws1.open();
+    ws1.emit({
+      op: "subscribed",
+      channel: "trades",
+      market: "BTC-PERP",
+      seq_at_join: join,
+    });
+    // Dropped before any event arrived: resume from the join point, not live.
+    ws1.serverClose();
+    const ws2 = await waitForSocket(2);
+    ws2.open();
+    assert.deepEqual(ws2.sent[0], {
+      op: "subscribe",
+      channel: "trades",
+      market: "BTC-PERP",
+      since: join,
+    });
+    client.close();
+  }
+});
+
+test("reconnect backoff resets after the first frame, not on open", () => {
+  reset();
+  // Mocked timers: a public-channel connect has no await, so each reconnect
+  // timer creates its socket synchronously and delays can be checked exactly.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const client = createWsClient({
+      url: "wss://test",
+      WebSocketImpl: Ctor,
+      baseReconnectDelayMs: 20,
+    });
+    client.subscribe("trades");
+    // Upgrade-then-drop with no frame: each delay's ceiling keeps doubling.
+    for (let n = 1; n <= 4; n++) {
+      FakeWebSocket.instances[n - 1].open();
+      FakeWebSocket.instances[n - 1].serverClose();
+      mock.timers.tick(20 * 2 ** (n - 1));
+      assert.equal(FakeWebSocket.instances.length, n + 1);
+    }
+    // Fifth attempt: ceiling 320 ms, so no reconnect before 160 ms. Resetting
+    // on open would keep it at the 20 ms base.
+    FakeWebSocket.instances[4].open();
+    FakeWebSocket.instances[4].serverClose();
+    mock.timers.tick(159);
+    assert.equal(
+      FakeWebSocket.instances.length,
+      5,
+      "backoff was reset on open",
+    );
+    mock.timers.tick(161);
+    assert.equal(FakeWebSocket.instances.length, 6);
+
+    // One real frame proves the connection works: back to the 20 ms base.
+    const ws6 = FakeWebSocket.instances[5];
+    ws6.open();
+    ws6.emit({
+      op: "subscribed",
+      channel: "trades",
+      market: null,
+      seq_at_join: 1,
+    });
+    ws6.serverClose();
+    mock.timers.tick(20);
+    assert.equal(
+      FakeWebSocket.instances.length,
+      7,
+      "backoff was not reset after a frame",
+    );
+    client.close();
+  } finally {
+    mock.timers.reset();
+  }
 });
