@@ -943,7 +943,7 @@ test("name drift: FAILS when a wrapper is not named for its operationId", () => 
   assert.match(r.stderr, /not named for their operationId/);
   assert.match(
     r.stderr,
-    /placeOrder sends POST \/api\/v1\/orders \(operationId createOrderV1\), so it must be named createOrder/,
+    /placeOrder sends POST \/orders \(operationId createOrder\), so it must be named createOrder/,
   );
 });
 
