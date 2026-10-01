@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.5.0...v0.6.0) (2026-10-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** fetchFundingHistory now reads the account's funding payments (GET /funding, formerly getAccountFunding) and has no alias for its old meaning. A market's funding-rate history (GET /markets/{market_id}/funding) is now fetchFundingRateHistory(marketId). Passing a market id to fetchFundingHistory rejects with a TypeError.
+* **client:** cancelOrder, cancelAllOrders, setCancelOnDisconnect and every other PUT/DELETE call now surface a transient error on the first failure instead of retrying it. Re-read state before re-sending a write.
+* **wallet:** EthSigner.registerAgent requires `network`, and NetworkSigningDomain has a new `salt` field.
+
+### Features
+
+* **client:** deprecate the bridge deposit-address methods, whose route was cancelled (ENG-18022) ([#92](https://github.com/nexus-xyz/nexus-exchange-ts/issues/92)) ([3c0219b](https://github.com/nexus-xyz/nexus-exchange-ts/commit/3c0219b70c2272cb67b3c5594a5d898c3f8e8c98))
+* **client:** name every method camelCase(operationId), keep old names as deprecated aliases (ENG-17741) ([#97](https://github.com/nexus-xyz/nexus-exchange-ts/issues/97)) ([826c740](https://github.com/nexus-xyz/nexus-exchange-ts/commit/826c740679a658e64901cd377371d71dcc15fe1c))
+
+
+### Bug Fixes
+
+* **client:** never auto-retry writes, so a lost cancel response can't re-run it (ENG-18682) ([#95](https://github.com/nexus-xyz/nexus-exchange-ts/issues/95)) ([79075b5](https://github.com/nexus-xyz/nexus-exchange-ts/commit/79075b503602e9acc5c316682c14d8c44fb0f6a8))
+* **wallet:** salt the RegisterAgent domain with the network (ENG-17753) ([#90](https://github.com/nexus-xyz/nexus-exchange-ts/issues/90)) ([5369ff8](https://github.com/nexus-xyz/nexus-exchange-ts/commit/5369ff843358d93c82bfbf2a9fa1188c9bc718ea))
+* **ws:** re-subscribe after out_of_sync and resume from seq_at_join (ENG-10674) ([#94](https://github.com/nexus-xyz/nexus-exchange-ts/issues/94)) ([4c50e3c](https://github.com/nexus-xyz/nexus-exchange-ts/commit/4c50e3cf63d0d214d13638bf727c626fdfbc5ebc))
+
 ## [0.5.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.4.0...v0.5.0) (2026-09-23)
 
 
