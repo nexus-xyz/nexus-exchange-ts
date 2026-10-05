@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
 import { Client, Network } from "../src/client.js";
-import { InvalidRequestError, MissingCredentialsError } from "../src/errors.js";
+import {
+  InvalidRequestError,
+  MissingCredentialsError,
+  NexusExchangeError,
+} from "../src/errors.js";
 
 // The operations that closed the last real gaps against the pinned spec
 // (ENG-9199): `GET /markets`, `GET /status`, `…/risk-params`, `…/adl-events`,
@@ -81,7 +85,61 @@ function assertSignedOver(
 
 // ─── GET /markets ────────────────────────────────────────────────────────────
 
-test("fetchMarkets signs the bare /markets path", async () => {
+// A `/markets` row verbatim as public testnet served it on 2026-10-05: CCXT
+// names (`id`/`base`/`quote`), not the pinned spec's `market_id`/`base_asset`/
+// `quote_asset` (ENG-19678). Same fixture as nexus-exchange-py's SERVED_MARKET.
+const SERVED_MARKET = {
+  active: true,
+  base: "BTC",
+  contractSize: "1",
+  funding_rate_cap: "0.001",
+  id: "BTC-USDX-PERP",
+  initial_margin_rate: "0.02",
+  lifecycle: "active",
+  lot_size: "0.001",
+  maintenance_margin_rate: "0.01",
+  maker_rebate_bps: -2,
+  marginModes: { cross: true, isolated: true },
+  max_leverage: 50,
+  max_open_interest: "10000",
+  max_open_interest_notional: null,
+  max_order_size: "100",
+  min_order_size: "0.001",
+  price_band_bps: 500,
+  quote: "USDX",
+  settle: "USDX",
+  taker_fee_bps: 5,
+  tick_size: "0.5",
+  type: "swap",
+};
+
+test("fetchMarkets decodes the served CCXT-named row", async () => {
+  // Credential-less on purpose: the route is served keyless (ENG-19678).
+  const { client } = capture(
+    { credentialed: false },
+    () => new Response(JSON.stringify([SERVED_MARKET]), { status: 200 }),
+  );
+  const [m] = await client.fetchMarkets();
+  assert.equal(m!.market_id, "BTC-USDX-PERP");
+  assert.equal(m!.base_asset, "BTC");
+  assert.equal(m!.quote_asset, "USDX");
+  assert.equal(m!.tick_size, "0.5");
+  assert.equal(m!.max_leverage, 50);
+});
+
+test("fetchMarkets throws on a row with no market id, base or quote", async () => {
+  for (const key of ["id", "base", "quote"] as const) {
+    const row: Record<string, unknown> = { ...SERVED_MARKET };
+    delete row[key];
+    const { client } = capture(
+      {},
+      () => new Response(JSON.stringify([row]), { status: 200 }),
+    );
+    await assert.rejects(client.fetchMarkets(), NexusExchangeError);
+  }
+});
+
+test("fetchMarkets reads the bare /markets path unsigned", async () => {
   const markets = [
     {
       market_id: "BTC-USDX-PERP",
@@ -101,6 +159,7 @@ test("fetchMarkets signs the bare /markets path", async () => {
     () => new Response(JSON.stringify(markets), { status: 200 }),
   );
 
+  // The spec-named row still decodes: those names are the fallback.
   const out = await client.fetchMarkets();
   assert.equal(out[0]!.market_id, "BTC-USDX-PERP");
   assert.equal(out[0]!.max_leverage, 20);
@@ -111,21 +170,11 @@ test("fetchMarkets signs the bare /markets path", async () => {
   // Bare, NOT `/api/v1/markets`: the spec declares this operation only at the
   // deployment root, unlike the `/markets/{id}/…` reads it sits beside.
   assert.equal(c.url, "http://localhost:9090/markets");
-  assertSignedOver(c, "GET", "/markets");
-});
-
-test("fetchMarkets is authenticated, unlike the rest of market data", async () => {
-  // The spec gives this operation `security: [{hmacAuth: []}]` and a documented
-  // 401 — the mirror image of the fetchBridgeAssets bug (a public route shipped
-  // `signed: true`). The drift checker validates schemas and enums, not
-  // per-route `security`, so this test is the guard in both directions.
-  const { client, calls } = capture({ credentialed: false });
-  await assert.rejects(client.fetchMarkets(), MissingCredentialsError);
-  assert.equal(calls.length, 0);
-
-  // Its public counterpart on the same client still works with no credentials.
-  await client.fetchMarketsSummary();
-  assert.equal(calls.length, 1);
+  // Unsigned even with credentials: the spec says `hmacAuth`, but the venue
+  // serves the route keyless (ENG-19678). The drift checker does not compare
+  // per-route `security`, so this test is the guard.
+  assert.equal(c.headers.get("x-signature"), null);
+  assert.equal(c.headers.get("x-api-key"), null);
 });
 
 // ─── GET /status ─────────────────────────────────────────────────────────────

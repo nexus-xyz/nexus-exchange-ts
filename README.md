@@ -40,7 +40,7 @@ signs and assembles its own request, with no shared mutable state and no locks.
 
 ### Market-data methods
 
-`fetchMarketsSummary`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
+`fetchMarkets`, `fetchMarketsSummary`, `fetchTickers`, `fetchTicker`, `fetchOrderBook`,
 `fetchTrades`, `fetchOHLCV`, `fetchFundingRateHistory`, `fetchFundingSamples`,
 `fetchMarkPrice`, `fetchMarketStatus`, `fetchMarketRiskParams`, `fetchStats`,
 `fetchStatsHistory`, and `fetchStatus` — covering the public market-data routes
@@ -52,13 +52,11 @@ status page; branch on the top-level `status`, since the per-component `services
 map is explicitly informational and free to evolve. `fetchMarketStatus` is the
 different thing it sounds like: one market's halt state.
 
-Two market reads are **authenticated** despite living in this family, because the
-spec gives them `hmacAuth`: `fetchMarkets` (full trading parameters — tick and
-lot size, order-size bounds, margin rates, max leverage) and `fetchAdlEvents` (a
-market's auto-deleveraging settlements). Without credentials they throw
-`MissingCredentialsError` before anything reaches the wire. `fetchMarketsSummary`
-is the unauthenticated way to enumerate markets, and `fetchMarketRiskParams` the
-public read of one market's margin rates and leverage cap.
+`fetchMarkets` is sent unsigned even though the pinned spec gives it `hmacAuth`,
+because the venue serves it keyless. One market read is **authenticated** despite
+living in this family: `fetchAdlEvents` (a market's auto-deleveraging
+settlements). Without credentials it throws `MissingCredentialsError` before
+anything reaches the wire.
 
 Errors are a small hierarchy under `NexusExchangeError`: `ApiError` (non-2xx;
 `transient` for 5xx/408), `TransportError` (connection/timeout/abort; always
