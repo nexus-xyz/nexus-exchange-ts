@@ -837,6 +837,38 @@ function readClosedPosition(row: ClosedPosition): ClosedPosition {
   return (filled ?? wire) as unknown as ClosedPosition;
 }
 
+/** `Market`'s v0.8.1 field names, each paired with the CCXT name served for it. */
+const MARKET_CCXT_SPELLINGS = [
+  ["market_id", "id"],
+  ["base_asset", "base"],
+  ["quote_asset", "quote"],
+] as const;
+
+/**
+ * Read a `/markets` row under either wire spelling (ENG-19678).
+ *
+ * The venue serves `/markets` rows under CCXT's names (`id`, `base`, `quote`),
+ * while the pinned spec v0.8.1 declares `market_id`, `base_asset` and
+ * `quote_asset`. The served name wins and the spec's is the fallback, as in the
+ * Python SDK. A row carrying neither throws instead of decoding to `undefined`,
+ * which would only fail later as a request to `/markets/undefined/...`. Every
+ * key the server sent is kept.
+ */
+function readMarket(row: Market): Market {
+  const wire = (row ?? {}) as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...wire };
+  for (const [spec, ccxt] of MARKET_CCXT_SPELLINGS) {
+    const value = wire[ccxt] ?? wire[spec];
+    if (typeof value !== "string") {
+      throw new NexusExchangeError(
+        `GET /markets returned a row with no string "${ccxt}" (or "${spec}")`,
+      );
+    }
+    out[spec] = value;
+  }
+  return out as unknown as Market;
+}
+
 function normalizeDescriptor(input: NetworkConfig): NetworkConfig {
   const domain: unknown = input.signingDomain;
   const chainId =
@@ -2084,20 +2116,17 @@ export class Client {
    * `GET /markets` — full trading parameters for every perpetual market: tick
    * and lot size, order-size bounds, margin rates, and max leverage.
    *
-   * **Authenticated, unlike the rest of this section.** The spec gives this
-   * operation `security: [{ hmacAuth: [] }]` and documents a `401`, so it is
-   * sent signed and a credential-less client gets `MissingCredentialsError`
-   * before anything reaches the wire. That is the contract, not an oversight
-   * here — `GET /markets/summary` is the unauthenticated way to enumerate
-   * markets, and {@link fetchMarketRiskParams} is the public read of the margin
-   * rates and leverage cap for one of them.
+   * **Sent unsigned, although the pinned spec marks it `hmacAuth`.** The venue
+   * serves this route keyless (a `200` with no credentials) and the Python SDK
+   * calls it unsigned. Signing it made a credential-less client throw
+   * `MissingCredentialsError` before anything reached the wire (ENG-19678).
    *
+   * Each row is read by {@link readMarket}, which accepts the served CCXT names.
    */
   fetchMarkets(opts?: { signal?: AbortSignal }): Promise<Market[]> {
-    return this.#request<Market[]>("GET", "/markets", {
-      signed: true,
-      signal: opts?.signal,
-    });
+    return this.#request<Market[]>("GET", "/markets", opts).then((rows) =>
+      (rows ?? []).map(readMarket),
+    );
   }
 
   /** `GET /markets/summary` — per-market 24h volume and halt state. */
@@ -2229,7 +2258,7 @@ export class Client {
    * and leverage cap.
    *
    * Public (`security: []`), so no credentials are needed — this is the
-   * unauthenticated read of the risk fields {@link fetchMarkets} also carries.
+   * one-market read of the risk fields {@link fetchMarkets} also carries.
    * Answers `404` for an unknown market.
    */
   fetchMarketRiskParams(
