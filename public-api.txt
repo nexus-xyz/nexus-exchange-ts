@@ -1,0 +1,757 @@
+class AgentSigner
+class AgentSigner { authHeaders(parts: AgentRequestParts): AgentAuthHeaders }
+class AgentSigner { get address(): string }
+class AgentSigner { nextNonce(floorMs: number): number }
+class AgentSigner { private constructor() }
+class AgentSigner { sign(parts: AgentRequestParts & { nonce: number; }): AgentAuthHeaders }
+class AgentSigner { static fromHex(privateKey: string): AgentSigner }
+class AgentSigner { toJSON(): { address: string; } }
+class AgentSigner { toString(): string }
+class ApiError extends NexusExchangeError
+class ApiError { constructor(status: number, body: string, opts?: { code?: string; message?: string; retryAfterMs?: number; }) }
+class ApiError { get transient(): boolean }
+class ApiError { readonly body: string }
+class ApiError { readonly code?: string }
+class ApiError { readonly retryAfterMs?: number }
+class ApiError { readonly status: number }
+class Client
+class Client { addMargin(request: MarginAdjustRequest, opts?: { signal?: AbortSignal; }): Promise<MarginAdjustResponse> }
+class Client { adjustMargin(...args: Parameters<Client["addMargin"]>): ReturnType<Client["addMargin"]> }
+class Client { amendOrder(...args: Parameters<Client["editOrder"]>): ReturnType<Client["editOrder"]> }
+class Client { cancelAllOrders(opts?: { signal?: AbortSignal; }): Promise<void> }
+class Client { cancelOrder(orderId: string, marketId: string, opts?: { signal?: AbortSignal; }): Promise<void> }
+class Client { claimCredit(request?: CreditRequest, opts?: { signal?: AbortSignal; }): Promise<CreditResponse> }
+class Client { claimFaucet(opts?: { signal?: AbortSignal; }): Promise<FaucetResponse> }
+class Client { constructor(options?: ClientOptions) }
+class Client { createApiKey(opts?: { signal?: AbortSignal; }): Promise<CreatedApiKey> }
+class Client { createBridgeDepositAddress(chain: string, opts?: { signal?: AbortSignal; }): Promise<BridgeDepositAddress> }
+class Client { createBridgeWalletChallenge(address: string, opts?: { signal?: AbortSignal; }): Promise<BridgeWalletChallenge> }
+class Client { createDeposit(request: DepositRequest, opts?: { signal?: AbortSignal; }): Promise<DepositResponse> }
+class Client { createOrder(order: OrderRequest, opts?: { signal?: AbortSignal; }): Promise<OrderResponse> }
+class Client { createOrders(orders: OrderRequest[], opts?: { signal?: AbortSignal; }): Promise<OrderResult[]> }
+class Client { createWsToken(opts?: { signal?: AbortSignal; }): Promise<string> }
+class Client { deleteApiKey(keyId: string, opts?: { signal?: AbortSignal; }): Promise<void> }
+class Client { deposit(amount: Decimal, opts?: { signal?: AbortSignal; }): Promise<DepositResponse> }
+class Client { editOrder(orderId: string, marketId: string, amend: AmendOrderRequest, opts?: { signal?: AbortSignal; }): Promise<Order> }
+class Client { fetchAccountState(opts?: { signal?: AbortSignal; }): Promise<AccountState> }
+class Client { fetchAccountSummary(opts?: { signal?: AbortSignal; }): Promise<AccountPortfolioSummary> }
+class Client { fetchAdlEvents(marketId: string, opts?: { limit?: number; signal?: AbortSignal; }): Promise<AdlEventRecord[]> }
+class Client { fetchAdlHistory(address: string, opts?: { limit?: number; signal?: AbortSignal; }): Promise<AdlEventRecord[]> }
+class Client { fetchAgents(opts?: { signal?: AbortSignal; }): Promise<AgentInfo[]> }
+class Client { fetchApiKeys(opts?: { signal?: AbortSignal; }): Promise<ApiKeyInfo[]> }
+class Client { fetchBalance(opts?: { signal?: AbortSignal; }): Promise<AccountSummary> }
+class Client { fetchBridgeAssets(opts?: { signal?: AbortSignal; }): Promise<BridgeAssetsResponse> }
+class Client { fetchBridgeDeposit(id: string, opts?: { signal?: AbortSignal; }): Promise<BridgeDeposit> }
+class Client { fetchBridgeDeposits(opts?: { limit?: number; chain?: string; asset?: BridgeAssetSymbol; status?: BridgeDepositStatus; signal?: AbortSignal; }): Promise<BridgeDeposit[]> }
+class Client { fetchCancelOnDisconnect(opts?: { signal?: AbortSignal; }): Promise<CancelOnDisconnectStatus> }
+class Client { fetchCandles(...args: Parameters<Client["fetchOHLCV"]>): ReturnType<Client["fetchOHLCV"]> }
+class Client { fetchDeposits(opts?: { signal?: AbortSignal; }): Promise<FundsEntry[]> }
+class Client { fetchEquityHistory(opts?: { limit?: number; signal?: AbortSignal; }): Promise<EquityPoint[]> }
+class Client { fetchEquityHistoryPaginated(opts?: { signal?: AbortSignal; }): Paginator<EquityPoint> }
+class Client { fetchFundingHistory(opts?: { limit?: number; signal?: AbortSignal; }): Promise<AccountFunding[]> }
+class Client { fetchFundingRateHistory(marketId: string, opts?: { limit?: number; signal?: AbortSignal; }): Promise<FundingSample[]> }
+class Client { fetchFundingSamples(marketId: string, opts?: { limit?: number; signal?: AbortSignal; }): Promise<FundingPremiumSample[]> }
+class Client { fetchMarkPrice(marketId: string, opts?: { signal?: AbortSignal; }): Promise<MarkPrice> }
+class Client { fetchMarketRiskParams(marketId: string, opts?: { signal?: AbortSignal; }): Promise<MarketRiskParams> }
+class Client { fetchMarketStatus(marketId: string, opts?: { signal?: AbortSignal; }): Promise<MarketStatus> }
+class Client { fetchMarketSummaries(...args: Parameters<Client["fetchMarketsSummary"]>): ReturnType<Client["fetchMarketsSummary"]> }
+class Client { fetchMarkets(opts?: { signal?: AbortSignal; }): Promise<Market[]> }
+class Client { fetchMarketsSummary(opts?: { signal?: AbortSignal; }): Promise<MarketSummary[]> }
+class Client { fetchMyTrades(opts?: { limit?: number; signal?: AbortSignal; }): Promise<Fill[]> }
+class Client { fetchMyTradesPaginated(opts?: { signal?: AbortSignal; }): Paginator<Fill> }
+class Client { fetchOHLCV(marketId: string, opts?: { timeframe?: string; limit?: number; signal?: AbortSignal; }): Promise<Candle[]> }
+class Client { fetchOpenOrders(opts?: { signal?: AbortSignal; }): Promise<Order[]> }
+class Client { fetchOrder(orderId: string, marketId: string, opts?: { signal?: AbortSignal; }): Promise<Order> }
+class Client { fetchOrderBook(marketId: string, opts?: { signal?: AbortSignal; }): Promise<OrderBook> }
+class Client { fetchOrders(opts?: { limit?: number; signal?: AbortSignal; }): Promise<OrderHistoryEntry[]> }
+class Client { fetchOrdersPaginated(opts?: { signal?: AbortSignal; }): Paginator<OrderHistoryEntry> }
+class Client { fetchPortfolioHistory(opts?: { window?: PortfolioWindow; limit?: number; signal?: AbortSignal; }): Promise<PortfolioHistory> }
+class Client { fetchPositions(opts?: { signal?: AbortSignal; }): Promise<Position[]> }
+class Client { fetchPositionsHistory(opts?: { limit?: number; signal?: AbortSignal; }): Promise<ClosedPosition[]> }
+class Client { fetchPositionsHistoryPaginated(opts?: { signal?: AbortSignal; }): Paginator<ClosedPosition> }
+class Client { fetchRateLimitStatus(opts?: { signal?: AbortSignal; }): Promise<RateLimitStatus> }
+class Client { fetchStats(opts?: { signal?: AbortSignal; }): Promise<StatsSnapshot> }
+class Client { fetchStatsHistory(opts?: { signal?: AbortSignal; }): Promise<ThroughputSample[]> }
+class Client { fetchStatus(opts?: { signal?: AbortSignal; }): Promise<ServiceHealth> }
+class Client { fetchTicker(marketId: string, opts?: { signal?: AbortSignal; }): Promise<Ticker> }
+class Client { fetchTickers(opts?: { signal?: AbortSignal; }): Promise<Record<string, Ticker>> }
+class Client { fetchTrades(marketId: string, opts?: { limit?: number; signal?: AbortSignal; }): Promise<Trade[]> }
+class Client { fetchTradesPaginated(marketId: string, opts?: { signal?: AbortSignal; }): Paginator<Trade> }
+class Client { fetchTradingFees(opts?: { signal?: AbortSignal; }): Promise<AccountFees> }
+class Client { fetchWithdrawals(opts?: { signal?: AbortSignal; }): Promise<Withdrawal[]> }
+class Client { get baseUrl(): string }
+class Client { get funds(): Funds }
+class Client { get hasCredentials(): boolean }
+class Client { get hasFaucet(): boolean }
+class Client { get hasSession(): boolean }
+class Client { get isRealFunds(): boolean }
+class Client { get label(): string }
+class Client { get network(): NetworkSelector }
+class Client { get networkConfig(): NetworkConfig }
+class Client { get signingDomain(): NetworkSigningDomain }
+class Client { get wsUrl(): string }
+class Client { getAccount(...args: Parameters<Client["fetchBalance"]>): ReturnType<Client["fetchBalance"]> }
+class Client { getAccountFees(...args: Parameters<Client["fetchTradingFees"]>): ReturnType<Client["fetchTradingFees"]> }
+class Client { getAccountFunding(...args: Parameters<Client["fetchFundingHistory"]>): ReturnType<Client["fetchFundingHistory"]> }
+class Client { getAccountState(...args: Parameters<Client["fetchAccountState"]>): ReturnType<Client["fetchAccountState"]> }
+class Client { getAccountSummary(...args: Parameters<Client["fetchAccountSummary"]>): ReturnType<Client["fetchAccountSummary"]> }
+class Client { getAdlHistory(...args: Parameters<Client["fetchAdlHistory"]>): ReturnType<Client["fetchAdlHistory"]> }
+class Client { getBridgeAssets(...args: Parameters<Client["fetchBridgeAssets"]>): ReturnType<Client["fetchBridgeAssets"]> }
+class Client { getBridgeDeposit(...args: Parameters<Client["fetchBridgeDeposit"]>): ReturnType<Client["fetchBridgeDeposit"]> }
+class Client { getBridgeDeposits(...args: Parameters<Client["fetchBridgeDeposits"]>): ReturnType<Client["fetchBridgeDeposits"]> }
+class Client { getCancelOnDisconnect(...args: Parameters<Client["fetchCancelOnDisconnect"]>): ReturnType<Client["fetchCancelOnDisconnect"]> }
+class Client { getClosedPositions(...args: Parameters<Client["fetchPositionsHistory"]>): ReturnType<Client["fetchPositionsHistory"]> }
+class Client { getClosedPositionsPaginated(...args: Parameters<Client["fetchPositionsHistoryPaginated"]>): ReturnType<Client["fetchPositionsHistoryPaginated"]> }
+class Client { getDeposits(...args: Parameters<Client["fetchDeposits"]>): ReturnType<Client["fetchDeposits"]> }
+class Client { getEquityHistory(...args: Parameters<Client["fetchEquityHistory"]>): ReturnType<Client["fetchEquityHistory"]> }
+class Client { getEquityHistoryPaginated(...args: Parameters<Client["fetchEquityHistoryPaginated"]>): ReturnType<Client["fetchEquityHistoryPaginated"]> }
+class Client { getFills(...args: Parameters<Client["fetchMyTrades"]>): ReturnType<Client["fetchMyTrades"]> }
+class Client { getFillsPaginated(...args: Parameters<Client["fetchMyTradesPaginated"]>): ReturnType<Client["fetchMyTradesPaginated"]> }
+class Client { getOpenOrders(...args: Parameters<Client["fetchOpenOrders"]>): ReturnType<Client["fetchOpenOrders"]> }
+class Client { getOrder(...args: Parameters<Client["fetchOrder"]>): ReturnType<Client["fetchOrder"]> }
+class Client { getOrderHistory(...args: Parameters<Client["fetchOrders"]>): ReturnType<Client["fetchOrders"]> }
+class Client { getOrderHistoryPaginated(...args: Parameters<Client["fetchOrdersPaginated"]>): ReturnType<Client["fetchOrdersPaginated"]> }
+class Client { getPortfolioHistory(...args: Parameters<Client["fetchPortfolioHistory"]>): ReturnType<Client["fetchPortfolioHistory"]> }
+class Client { getPositions(...args: Parameters<Client["fetchPositions"]>): ReturnType<Client["fetchPositions"]> }
+class Client { getRateLimit(...args: Parameters<Client["fetchRateLimitStatus"]>): ReturnType<Client["fetchRateLimitStatus"]> }
+class Client { getWithdrawals(...args: Parameters<Client["fetchWithdrawals"]>): ReturnType<Client["fetchWithdrawals"]> }
+class Client { listAgents(...args: Parameters<Client["fetchAgents"]>): ReturnType<Client["fetchAgents"]> }
+class Client { listApiKeys(...args: Parameters<Client["fetchApiKeys"]>): ReturnType<Client["fetchApiKeys"]> }
+class Client { listBridgeDepositAddresses(opts?: { signal?: AbortSignal; }): Promise<BridgeDepositAddress[]> }
+class Client { listBridgeWallets(opts?: { signal?: AbortSignal; }): Promise<BridgeWalletsResponse> }
+class Client { login(signer: EthSigner, opts?: { signal?: AbortSignal; }): Promise<LoginResponse> }
+class Client { mintWsToken(...args: Parameters<Client["createWsToken"]>): ReturnType<Client["createWsToken"]> }
+class Client { placeOrder(...args: Parameters<Client["createOrder"]>): ReturnType<Client["createOrder"]> }
+class Client { placeOrderBatch(...args: Parameters<Client["createOrders"]>): ReturnType<Client["createOrders"]> }
+class Client { previewOrder(order: OrderRequest, opts?: { signal?: AbortSignal; }): Promise<PreviewResponse> }
+class Client { registerAgent(registration: AgentRegistrationRequest, opts?: { signal?: AbortSignal; }): Promise<unknown> }
+class Client { registerBridgeWallet(request: RegisterBridgeWalletRequest, opts?: { signal?: AbortSignal; }): Promise<BridgeWallet> }
+class Client { requireSigningChainId(): number }
+class Client { revokeAgent(address: string, opts?: { signal?: AbortSignal; }): Promise<void> }
+class Client { setCancelOnDisconnect(enabled: boolean, opts?: { signal?: AbortSignal; }): Promise<CancelOnDisconnectStatus> }
+class Client { setSessionToken(token: string | undefined): void }
+class Client { signIn(...args: Parameters<Client["login"]>): ReturnType<Client["login"]> }
+class Client { wsTokenProvider(): () => Promise<string> }
+class Cursor
+class Cursor { constructor(raw: string) }
+class Cursor { equals(other: Cursor | null | undefined): boolean }
+class Cursor { toJSON(): string }
+class Cursor { toString(): string }
+class EthSigner
+class EthSigner { get address(): string }
+class EthSigner { private constructor() }
+class EthSigner { registerAgent(options: RegisterAgentOptions): AgentRegistrationRequest }
+class EthSigner { registerWallet(challenge: BridgeWalletChallenge): RegisterBridgeWalletRequest }
+class EthSigner { signIn(): LoginRequest }
+class EthSigner { static fromHex(privateKey: string): EthSigner }
+class InvalidRequestError extends NexusExchangeError
+class MissingCredentialsError extends NexusExchangeError
+class NexusExchangeError extends Error
+class NexusExchangeError { constructor(message: string) }
+class NexusExchangeError { get transient(): boolean }
+class Page<T>
+class Page<T> { constructor(items: readonly T[], nextCursor: Cursor | null) }
+class Page<T> { isLast(): boolean }
+class Page<T> { readonly items: readonly T[] }
+class Page<T> { readonly nextCursor: Cursor | null }
+class Paginator<T> implements AsyncIterable<T>
+class Paginator<T> { [Symbol.asyncIterator](): AsyncIterator<T> }
+class Paginator<T> { all(): Promise<T[]> }
+class Paginator<T> { constructor(fetch: FetchPage<T>) }
+class Paginator<T> { maxPages(max: number): this }
+class Paginator<T> { nextPage(): Promise<Page<T> | null> }
+class Paginator<T> { pageSize(limit: number): this }
+class Paginator<T> { startingAfter(cursor: Cursor | string): this }
+class TransportError extends NexusExchangeError
+class TransportError { constructor(message: string, options?: { cause?: unknown; }) }
+class TransportError { get transient(): boolean }
+const API_BASE_PATH: string
+const API_VERSION: string
+const CLOSED_POSITIONS_LIMIT_MAX: number
+const DEFAULT_USER_AGENT: string
+const EQUITY_HISTORY_LIMIT_MAX: number
+const FILLS_LIMIT_MAX: number
+const NETWORKS: Readonly<Record<Network, NetworkConfig>>
+const ORDER_HISTORY_LIMIT_MAX: number
+const SDK_VERSION: string
+const SIGN_IN_MESSAGE: string
+const TRADES_LIMIT_MAX: number
+enum Network
+enum Network { Local = "local" }
+enum Network { Mainnet = "mainnet" }
+enum Network { Testnet = "testnet" }
+function agentCanonicalString(parts: AgentRequestParts & { nonce: number; }): string
+function baseUrlForNetwork(network: NetworkSelector): string
+function bytesToHex(bytes: Uint8Array): string
+function createWsClient(opts: CreateWsClientOpts): WsClient
+function customNetwork(options: CustomNetworkOptions): NetworkConfig
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer>
+function networkConfig(network: NetworkSelector): NetworkConfig
+function sanitizeErrorBody(raw: string): string
+function sha256Hex(data: Uint8Array): Promise<string>
+function signRequest(apiKey: string, secretHex: string, method: string, path: string, query: string, body: Uint8Array, timestampMs: number): Promise<Record<string, string>>
+function toCursor(value: Cursor | string | null | undefined): Cursor | null
+interface AccountFees
+interface AccountFees { discounts: FeeDiscount[] }
+interface AccountFees { maker_fee_bps: number }
+interface AccountFees { schedule: OpenUnion<"standard"> }
+interface AccountFees { taker_fee_bps: number }
+interface AccountFees { tier: OpenUnion<"base"> }
+interface AccountFees { volume_30d: Decimal }
+interface AccountFees { volume_30d_estimated: boolean }
+interface AccountFunding
+interface AccountFunding { amount: Decimal }
+interface AccountFunding { direction: "paid" | "received" }
+interface AccountFunding { funding_rate: Decimal }
+interface AccountFunding { market_id: string }
+interface AccountFunding { position_size: Decimal }
+interface AccountFunding { timestamp: TimestampMs }
+interface AccountPortfolioSummary
+interface AccountPortfolioSummary { available_margin: Decimal }
+interface AccountPortfolioSummary { collateral: Decimal }
+interface AccountPortfolioSummary { early_access_allowed?: boolean }
+interface AccountPortfolioSummary { margin_used: Decimal }
+interface AccountPortfolioSummary { open_orders_count: number }
+interface AccountPortfolioSummary { open_positions_count: number }
+interface AccountPortfolioSummary { total_equity: Decimal }
+interface AccountPortfolioSummary { total_realized_pnl_24h: Decimal }
+interface AccountPortfolioSummary { total_unrealized_pnl: Decimal }
+interface AccountPortfolioSummary { total_volume_24h: Decimal }
+interface AccountPortfolioSummary { withdrawable?: Decimal }
+interface AccountState
+interface AccountState { positions: Position[] }
+interface AccountState { summary: AccountPortfolioSummary }
+interface AccountSummary
+interface AccountSummary { available_margin: Decimal }
+interface AccountSummary { balance: Decimal }
+interface AccountSummary { collateral: Decimal }
+interface AccountSummary { equity: Decimal }
+interface AccountSummary { positions: Position[] }
+interface AdlClosureRecord
+interface AdlClosureRecord { account_id: string }
+interface AdlClosureRecord { position_closed: Decimal }
+interface AdlClosureRecord { settlement_amount: Decimal }
+interface AdlEventRecord
+interface AdlEventRecord { bad_debt_absorbed_by_fund: Decimal }
+interface AdlEventRecord { bankruptcy_price: Decimal }
+interface AdlEventRecord { counterparty_closures: AdlClosureRecord[] }
+interface AdlEventRecord { market_id: string }
+interface AdlEventRecord { sequence: number }
+interface AdlEventRecord { target_account: string }
+interface AdlEventRecord { timestamp: TimestampMs }
+interface AgentAuthHeaders
+interface AgentAuthHeaders { "x-agent": string }
+interface AgentAuthHeaders { "x-nonce": string }
+interface AgentAuthHeaders { "x-signature": string }
+interface AgentAuthHeaders { "x-timestamp": string }
+interface AgentInfo
+interface AgentInfo { address: string }
+interface AgentInfo { expiresAt: TimestampMs }
+interface AgentInfo { label: string | null }
+interface AgentInfo { registeredAt: TimestampMs }
+interface AgentRegistrationRequest
+interface AgentRegistrationRequest { agent: string }
+interface AgentRegistrationRequest { expires_at?: TimestampMs }
+interface AgentRegistrationRequest { label?: string }
+interface AgentRegistrationRequest { nonce: number }
+interface AgentRegistrationRequest { signature: string }
+interface AgentRegistrationRequest { wallet: string }
+interface AgentRequestParts
+interface AgentRequestParts { body?: Uint8Array | string }
+interface AgentRequestParts { method: string }
+interface AgentRequestParts { path: string }
+interface AgentRequestParts { query?: string }
+interface AgentRequestParts { timestampMs: number }
+interface AmendOrderRequest
+interface AmendOrderRequest { price?: Decimal }
+interface AmendOrderRequest { size?: Decimal }
+interface ApiKeyInfo
+interface ApiKeyInfo { key_id: string }
+interface ApiKeyInfo { tier: string }
+interface BridgeAsset
+interface BridgeAsset { confirmations: number }
+interface BridgeAsset { contract_address?: string | null }
+interface BridgeAsset { decimals: number }
+interface BridgeAsset { fee?: Decimal }
+interface BridgeAsset { min_amount: Decimal }
+interface BridgeAsset { symbol: BridgeAssetSymbol }
+interface BridgeAssetsResponse
+interface BridgeAssetsResponse { chains: BridgeChainAssets[] }
+interface BridgeChainAssets
+interface BridgeChainAssets { chain: string }
+interface BridgeChainAssets { chain_id?: number | null }
+interface BridgeChainAssets { deposit_assets: BridgeAsset[] }
+interface BridgeChainAssets { withdraw_assets: BridgeAsset[] }
+interface BridgeDeposit
+interface BridgeDeposit { account_id: string }
+interface BridgeDeposit { address: string }
+interface BridgeDeposit { amount: Decimal }
+interface BridgeDeposit { asset: BridgeAssetSymbol }
+interface BridgeDeposit { chain: string }
+interface BridgeDeposit { confirmations?: number | null }
+interface BridgeDeposit { created_at: TimestampMs }
+interface BridgeDeposit { credited_at?: TimestampMs | null }
+interface BridgeDeposit { id: string }
+interface BridgeDeposit { required_confirmations?: number | null }
+interface BridgeDeposit { status: BridgeDepositStatus }
+interface BridgeDeposit { tx_hash?: string | null }
+interface BridgeDeposit { updated_at?: TimestampMs }
+interface BridgeDepositAddress
+interface BridgeDepositAddress { accepts: BridgeAssetSymbol[] }
+interface BridgeDepositAddress { account_id: string }
+interface BridgeDepositAddress { address: string }
+interface BridgeDepositAddress { chain: string }
+interface BridgeDepositAddress { created_at: TimestampMs }
+interface BridgeError
+interface BridgeError { error: { code: string; message: string; details?: Record<string, unknown>; } }
+interface BridgeWallet
+interface BridgeWallet { address: string }
+interface BridgeWallet { is_default: boolean }
+interface BridgeWallet { verified: boolean }
+interface BridgeWalletChallenge
+interface BridgeWalletChallenge { address: string }
+interface BridgeWalletChallenge { expires_at: TimestampMs }
+interface BridgeWalletChallenge { message: string }
+interface BridgeWalletChallenge { nonce: string }
+interface BridgeWalletsResponse
+interface BridgeWalletsResponse { wallets: BridgeWallet[] }
+interface CancelOnDisconnectStatus
+interface CancelOnDisconnectStatus { active: boolean }
+interface CancelOnDisconnectStatus { enabled: boolean }
+interface CancelOnDisconnectStatus { grace_secs?: number | null }
+interface ClientOptions
+interface ClientOptions { agentSigner?: AgentSigner }
+interface ClientOptions { apiKey?: string }
+interface ClientOptions { apiSecret?: string }
+interface ClientOptions { apiVersion?: string }
+interface ClientOptions { baseUrl?: string }
+interface ClientOptions { fetchImpl?: typeof fetch }
+interface ClientOptions { network?: NetworkSelector }
+interface ClientOptions { nowMs?: () => number }
+interface ClientOptions { retry?: RetryOptions }
+interface ClientOptions { sessionToken?: string }
+interface ClientOptions { sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void> }
+interface ClientOptions { timeoutMs?: number }
+interface ClientOptions { userAgent?: string }
+interface ClosedPosition
+interface ClosedPosition { closed_at_ms: TimestampMs }
+interface ClosedPosition { entry_price: Decimal }
+interface ClosedPosition { exit_price: Decimal }
+interface ClosedPosition { market_id: string }
+interface ClosedPosition { realized_pnl: Decimal }
+interface ClosedPosition { side: PositionSide }
+interface ClosedPosition { size: Decimal }
+interface CreateBridgeDepositAddressRequest
+interface CreateBridgeDepositAddressRequest { chain: string }
+interface CreateBridgeWalletChallengeRequest
+interface CreateBridgeWalletChallengeRequest { address: string }
+interface CreateWsClientOpts
+interface CreateWsClientOpts { WebSocketImpl?: WebSocketCtor }
+interface CreateWsClientOpts { baseReconnectDelayMs?: number }
+interface CreateWsClientOpts { maxQueueSize?: number }
+interface CreateWsClientOpts { maxReconnectDelayMs?: number }
+interface CreateWsClientOpts { path?: string }
+interface CreateWsClientOpts { tokenProvider?: TokenProvider }
+interface CreateWsClientOpts { url: string }
+interface CreatedApiKey
+interface CreatedApiKey { key_id: string }
+interface CreatedApiKey { secret: string }
+interface CreditRequest
+interface CreditRequest { amount?: Decimal }
+interface CreditResponse
+interface CreditResponse { amount: Decimal }
+interface CreditResponse { credited_today: Decimal }
+interface CreditResponse { daily_limit: Decimal }
+interface CustomNetworkOptions
+interface CustomNetworkOptions { baseUrl: string }
+interface CustomNetworkOptions { faucet?: boolean }
+interface CustomNetworkOptions { funds: Funds }
+interface CustomNetworkOptions { label: string }
+interface CustomNetworkOptions { signingChainId?: number }
+interface CustomNetworkOptions { wsUrl?: string }
+interface DepositRequest
+interface DepositRequest { amount: Decimal }
+interface DepositRequest { asset?: string }
+interface DepositResponse
+interface DepositResponse { [key: string]: unknown }
+interface DepositResponse { balance: Decimal }
+interface EquityPoint
+interface EquityPoint { equity: number }
+interface EquityPoint { timestamp_ms: TimestampMs }
+interface FaucetResponse
+interface FaucetResponse { amount: Decimal }
+interface FaucetResponse { available_at_ms: TimestampMs }
+interface FeeDiscount
+interface FeeDiscount { [key: string]: unknown }
+interface Fill
+interface Fill { fee: Decimal }
+interface Fill { id: string }
+interface Fill { is_liquidation: boolean }
+interface Fill { market_id: string }
+interface Fill { order_id: string }
+interface Fill { price: Decimal }
+interface Fill { side: TradeSide }
+interface Fill { size: Decimal }
+interface Fill { taker_or_maker: TakerOrMaker }
+interface Fill { timestamp: TimestampMs }
+interface FundingPremiumSample
+interface FundingPremiumSample { premium_index: Decimal }
+interface FundingPremiumSample { timestamp: TimestampMs }
+interface FundingSample
+interface FundingSample { funding_rate: Decimal }
+interface FundingSample { mark_price: Decimal }
+interface FundingSample { oracle_price: Decimal }
+interface FundingSample { premium_index: Decimal }
+interface FundingSample { timestamp: TimestampMs }
+interface FundsEntry
+interface FundsEntry { account: string }
+interface FundsEntry { amount: Decimal }
+interface FundsEntry { asset: string }
+interface FundsEntry { id: number }
+interface FundsEntry { kind: "deposit" | "withdrawal" | "faucet" }
+interface FundsEntry { status: "pending" | "confirmed" | "failed" }
+interface FundsEntry { timestamp: TimestampMs }
+interface FundsEntry { tx_hash: string | null }
+interface JurisdictionError
+interface JurisdictionError { code: OpenUnion<"RESTRICTED_JURISDICTION" | "US_RESTRICTED" | "GEO_UNRESOLVED"> }
+interface JurisdictionError { message: string }
+interface LiquidationAlert
+interface LiquidationAlert { account_id: string }
+interface LiquidationAlert { emitted_at: TimestampMs }
+interface LiquidationAlert { epoch: number }
+interface LiquidationAlert { equity: Decimal }
+interface LiquidationAlert { maintenance_margin: Decimal }
+interface LiquidationAlert { market_id: string | null }
+interface LiquidationAlert { sequence: number }
+interface LiquidationAlert { severity: LiquidationSeverity }
+interface LiquidationEvent
+interface LiquidationEvent { LiquidationAlert?: LiquidationAlert }
+interface LiquidationEvent { PortfolioLiquidation?: PortfolioLiquidation }
+interface LoginRequest
+interface LoginRequest { message: string }
+interface LoginRequest { signature: string }
+interface LoginResponse
+interface LoginResponse { address: string }
+interface LoginResponse { token: string }
+interface MarginAdjustRequest
+interface MarginAdjustRequest { amount: Decimal }
+interface MarginAdjustRequest { direction: MarginDirection }
+interface MarginAdjustRequest { market_id: string }
+interface MarginAdjustResponse
+interface MarginAdjustResponse { allocated_margin: Decimal }
+interface MarginAdjustResponse { collateral: Decimal }
+interface MarginAdjustResponse { market_id: string }
+interface MarkPrice
+interface MarkPrice { mark_price: Decimal }
+interface MarkPrice { market_id: string }
+interface Market
+interface Market { base_asset: string }
+interface Market { initial_margin_rate: Decimal }
+interface Market { lot_size: Decimal }
+interface Market { maintenance_margin_rate: Decimal }
+interface Market { market_id: string }
+interface Market { max_leverage: number }
+interface Market { max_order_size: Decimal }
+interface Market { min_order_size: Decimal }
+interface Market { quote_asset: string }
+interface Market { tick_size: Decimal }
+interface MarketRiskParams
+interface MarketRiskParams { initial_margin_rate: Decimal }
+interface MarketRiskParams { maintenance_margin_rate: Decimal }
+interface MarketRiskParams { market_id: string }
+interface MarketRiskParams { max_leverage: number }
+interface MarketStatus
+interface MarketStatus { adl_event_count: number }
+interface MarketStatus { halt_reason: string | null }
+interface MarketStatus { halted_at: number | null }
+interface MarketStatus { market_id: string }
+interface MarketStatus { status: MarketLifecycle }
+interface MarketSummary
+interface MarketSummary { adl_event_count: number }
+interface MarketSummary { halt_reason: string | null }
+interface MarketSummary { halted_at: number | null }
+interface MarketSummary { last_trade_price: number | null }
+interface MarketSummary { market_id: string }
+interface MarketSummary { status: MarketLifecycle }
+interface MarketSummary { trade_count: number }
+interface MarketSummary { volume_24h: number }
+interface Metadata
+interface Metadata { current_api_version: string }
+interface Metadata { min_api_version: string }
+interface Metadata { network?: OpenUnion<"mainnet" | "testnet" | "local"> }
+interface Metadata { networks?: Record<string, NetworkTarget> }
+interface Metadata { signing_domain?: SigningDomain }
+interface Metadata { ws_url?: string }
+interface NetworkConfig
+interface NetworkConfig { readonly baseUrl: string | null }
+interface NetworkConfig { readonly faucet: boolean }
+interface NetworkConfig { readonly funds: Funds }
+interface NetworkConfig { readonly label: string }
+interface NetworkConfig { readonly signingDomain: NetworkSigningDomain }
+interface NetworkConfig { readonly wsUrl: string | null }
+interface NetworkSigningDomain
+interface NetworkSigningDomain { readonly chainId: number | null }
+interface NetworkSigningDomain { readonly name: string }
+interface NetworkSigningDomain { readonly salt: string | null }
+interface NetworkSigningDomain { readonly version: string }
+interface NetworkTarget
+interface NetworkTarget { faucet?: boolean }
+interface NetworkTarget { funds?: OpenUnion<"real" | "play"> }
+interface NetworkTarget { host?: string }
+interface NetworkTarget { label?: string }
+interface NetworkTarget { network: OpenUnion<"mainnet" | "testnet" | "local"> }
+interface NetworkTarget { rest_base: string }
+interface NetworkTarget { signing_domain?: SigningDomain }
+interface NetworkTarget { ws_authenticated_url?: string }
+interface NetworkTarget { ws_market_data_url?: string }
+interface NetworkTarget { ws_url?: string }
+interface Order
+interface Order { account_id: string }
+interface Order { cancellation_reason?: CancellationReason }
+interface Order { created_at: TimestampMs }
+interface Order { filled_qty: Decimal }
+interface Order { id: string }
+interface Order { limit_offset_bps: number | null }
+interface Order { market_id: string }
+interface Order { max_slippage_bps?: number | null }
+interface Order { order_type: OpenUnion<OrderType> }
+interface Order { price: Decimal }
+interface Order { quantity: Decimal }
+interface Order { side: OrderSide }
+interface Order { status: OrderStatus }
+interface Order { stp?: OpenUnion<StpMode> | null }
+interface Order { time_in_force: OpenUnion<TimeInForce> }
+interface Order { updated_at: TimestampMs }
+interface OrderBook
+interface OrderBook { asks: Array<[ number, number ]> }
+interface OrderBook { bids: Array<[ number, number ]> }
+interface OrderBook { datetime: string }
+interface OrderBook { nonce: number }
+interface OrderBook { symbol: string }
+interface OrderBook { timestamp: TimestampMs }
+interface OrderHistoryEntry
+interface OrderHistoryEntry { cancellation_reason: string | null }
+interface OrderHistoryEntry { completed_at_ms: TimestampMs }
+interface OrderHistoryEntry { created_at_ms: TimestampMs }
+interface OrderHistoryEntry { filled_qty: Decimal }
+interface OrderHistoryEntry { id: string }
+interface OrderHistoryEntry { market_id: string }
+interface OrderHistoryEntry { order_type: string }
+interface OrderHistoryEntry { price: Decimal | null }
+interface OrderHistoryEntry { side: TradeSide }
+interface OrderHistoryEntry { size: Decimal }
+interface OrderHistoryEntry { status: "Filled" | "Cancelled" | "Rejected" | "Expired" }
+interface OrderRequest
+interface OrderRequest { limit_offset_bps?: number | null }
+interface OrderRequest { market_id: string }
+interface OrderRequest { max_slippage_bps?: number | null }
+interface OrderRequest { order_type: OrderType }
+interface OrderRequest { price?: Decimal }
+interface OrderRequest { quantity: Decimal }
+interface OrderRequest { reduce_only?: boolean }
+interface OrderRequest { side: OrderSide }
+interface OrderRequest { stop_price?: Decimal | null }
+interface OrderRequest { stp?: StpMode | null }
+interface OrderRequest { time_in_force: TimeInForce }
+interface OrderRequest { trailing_offset_bps?: number | null }
+interface OrderRequest { trigger_price?: Decimal | null }
+interface OrderResponse
+interface OrderResponse { fills: Fill[] }
+interface OrderResponse { order: Order }
+interface OrderResultErr
+interface OrderResultErr { error: string }
+interface OrderResultErr { message: string }
+interface OrderResultErr { outcome: "err" }
+interface OrderResultOk
+interface OrderResultOk { fills?: Fill[] }
+interface OrderResultOk { order: Order }
+interface OrderResultOk { outcome: "ok" }
+interface PageRequest
+interface PageRequest { cursor: Cursor | null }
+interface PageRequest { limit: number | null }
+interface PortfolioHistory
+interface PortfolioHistory { cadence_ms: number }
+interface PortfolioHistory { points: PortfolioPoint[] }
+interface PortfolioHistory { window: PortfolioWindow }
+interface PortfolioLiquidation
+interface PortfolioLiquidation { account_id: string }
+interface PortfolioLiquidation { closures: PortfolioLiquidationClosure[] }
+interface PortfolioLiquidation { emitted_at: TimestampMs }
+interface PortfolioLiquidation { epoch: number }
+interface PortfolioLiquidation { equity_after: Decimal }
+interface PortfolioLiquidation { equity_before: Decimal }
+interface PortfolioLiquidation { sequence: number }
+interface PortfolioLiquidationClosure
+interface PortfolioLiquidationClosure { market_id: string }
+interface PortfolioLiquidationClosure { position_size_closed: Decimal }
+interface PortfolioLiquidationClosure { settlement_amount: Decimal }
+interface PortfolioLiquidationClosure { settlement_price: Decimal }
+interface PortfolioPoint
+interface PortfolioPoint { equity: Decimal }
+interface PortfolioPoint { pnl: Decimal }
+interface PortfolioPoint { timestamp_ms: TimestampMs }
+interface PortfolioPoint { volume: Decimal }
+interface Position
+interface Position { entry_price: Decimal }
+interface Position { funding_paid?: Decimal }
+interface Position { leverage?: number | null }
+interface Position { leverage_error?: PositionFieldError | null }
+interface Position { liquidation_price: Decimal }
+interface Position { margin_used?: Decimal | null }
+interface Position { margin_used_error?: PositionFieldError | null }
+interface Position { market_id: string }
+interface Position { max_leverage?: number | null }
+interface Position { max_leverage_error?: PositionFieldError | null }
+interface Position { notional_value?: Decimal | null }
+interface Position { notional_value_error?: PositionFieldError | null }
+interface Position { realized_pnl: Decimal }
+interface Position { roe?: Decimal | null }
+interface Position { roe_error?: PositionFieldError | null }
+interface Position { side: PositionSide }
+interface Position { size: Decimal }
+interface Position { unrealized_pnl: Decimal }
+interface PreviewResponse
+interface PreviewResponse { accepted: boolean }
+interface PreviewResponse { expected_fill_vwap: Decimal | null }
+interface PreviewResponse { projected_fees: Decimal }
+interface PreviewResponse { projected_post_trade_equity: Decimal }
+interface PreviewResponse { projected_post_trade_leverage: Decimal }
+interface PreviewResponse { projected_post_trade_liquidation_price: Decimal | null }
+interface PreviewResponse { reject_reason: string | null }
+interface PreviewResponse { required_initial_margin: Decimal }
+interface RateLimitStatus
+interface RateLimitStatus { limit: number | null }
+interface RateLimitStatus { remaining: number | null }
+interface RateLimitStatus { reset_at_ms: number | null }
+interface RateLimitStatus { tier: string }
+interface RegisterAgentOptions
+interface RegisterAgentOptions { agent: string }
+interface RegisterAgentOptions { chainId: number | bigint }
+interface RegisterAgentOptions { expiresAtMs: number | bigint }
+interface RegisterAgentOptions { label?: string }
+interface RegisterAgentOptions { network: NetworkSelector }
+interface RegisterAgentOptions { nonce: number | bigint }
+interface RegisterBridgeWalletRequest
+interface RegisterBridgeWalletRequest { address: string }
+interface RegisterBridgeWalletRequest { message: string }
+interface RegisterBridgeWalletRequest { signature: string }
+interface ServiceHealth
+interface ServiceHealth { services: Record<string, unknown> }
+interface ServiceHealth { status: "ok" | "degraded" | "down" | "starting" }
+interface ServiceHealth { timestamp_ms: TimestampMs }
+interface SetCancelOnDisconnectRequest
+interface SetCancelOnDisconnectRequest { enabled: boolean }
+interface SigningDomain
+interface SigningDomain { chain_id?: number | null }
+interface SigningDomain { name?: string }
+interface SigningDomain { version?: string }
+interface StatsSnapshot
+interface StatsSnapshot { connected?: boolean }
+interface StatsSnapshot { events_per_sec?: number }
+interface StatsSnapshot { events_received?: number }
+interface StatsSnapshot { fills_total?: number }
+interface StatsSnapshot { gap_count?: number }
+interface StatsSnapshot { health?: string }
+interface StatsSnapshot { highest_sequence_seen?: number }
+interface StatsSnapshot { last_event_ms?: TimestampMs | null }
+interface StatsSnapshot { liquidations_total?: number }
+interface StatsSnapshot { unique_traders_24h?: number }
+interface StatsSnapshot { unique_traders_30d?: number }
+interface StatsSnapshot { unique_traders_7d?: number }
+interface StatsSnapshot { uptime_seconds?: number }
+interface ThroughputSample
+interface ThroughputSample { fills: number }
+interface ThroughputSample { timestamp: number }
+interface Ticker
+interface Ticker { ask: number | null }
+interface Ticker { askVolume: number | null }
+interface Ticker { baseVolume: number | null }
+interface Ticker { bid: number | null }
+interface Ticker { bidVolume: number | null }
+interface Ticker { change: number | null }
+interface Ticker { close: number | null }
+interface Ticker { datetime: string }
+interface Ticker { high: number | null }
+interface Ticker { indexPrice: number | null }
+interface Ticker { info: Record<string, unknown> }
+interface Ticker { last: number | null }
+interface Ticker { low: number | null }
+interface Ticker { markPrice: number | null }
+interface Ticker { open: number | null }
+interface Ticker { percentage: number | null }
+interface Ticker { quoteVolume: number | null }
+interface Ticker { symbol: string }
+interface Ticker { timestamp: TimestampMs }
+interface Trade
+interface Trade { amount: number }
+interface Trade { cost: number }
+interface Trade { datetime: string }
+interface Trade { id: string }
+interface Trade { info: Record<string, unknown> }
+interface Trade { is_liquidation: boolean }
+interface Trade { price: number }
+interface Trade { side: TradeSide }
+interface Trade { symbol: string }
+interface Trade { takerOrMaker: OpenUnion<TakerOrMaker> | null }
+interface Trade { timestamp: TimestampMs }
+interface WebSocketCtor
+interface WebSocketCtor { new (url: string): WebSocketLike }
+interface WebSocketCtor { readonly OPEN: number }
+interface WebSocketLike
+interface WebSocketLike { close(code?: number, reason?: string): void }
+interface WebSocketLike { onclose: ((ev: unknown) => void) | null }
+interface WebSocketLike { onerror: ((ev: unknown) => void) | null }
+interface WebSocketLike { onmessage: ((ev: { data: unknown; }) => void) | null }
+interface WebSocketLike { onopen: ((ev: unknown) => void) | null }
+interface WebSocketLike { readyState: number }
+interface WebSocketLike { send(data: string): void }
+interface Withdrawal
+interface Withdrawal { amount: Decimal }
+interface Withdrawal { id: string }
+interface Withdrawal { status: "pending" | "settled" | "failed" }
+interface Withdrawal { timestamp: TimestampMs }
+interface WsClient
+interface WsClient { close(): void }
+interface WsClient { status(): WsStatus }
+interface WsClient { subscribe(channel: Channel, opts?: { market?: string; since?: bigint; }): WsSubscription }
+interface WsEvent
+interface WsEvent { channel: Channel }
+interface WsEvent { data: unknown }
+interface WsEvent { market?: string }
+interface WsEvent { outOfSync?: boolean }
+interface WsEvent { seq: bigint }
+interface WsSubscription
+interface WsSubscription { events: AsyncIterable<WsEvent> }
+interface WsSubscription { health(): WsStreamHealth }
+interface WsSubscription { unsubscribe(): void }
+type AccountChannel = "orders" | "fills" | "positions" | "balances" | "liquidations"
+type BridgeAssetSymbol = "USDC" | "USDX"
+type BridgeDepositStatus = "detected" | "confirming" | "credited" | "failed"
+type CancellationCause = "User" | "SlippageCap" | "Liquidation" | "Expired" | "MarketHalt" | "AmendReplace" | "InsufficientLiquidity" | "BracketClosed" | "BracketFlipped" | "PriceBandExceeded"
+type CancellationReason = OpenUnion<CancellationCause> | { Stp: OpenUnion<StpMode>; } | null
+type Candle = [ TimestampMs, number, number, number, number, number ]
+type Channel = PublicChannel | AccountChannel
+type Decimal = string
+type FetchPage<T> = (req: PageRequest) => Promise<Page<T>>
+type Funds = "real" | "play" | "unknown"
+type LiquidationSeverity = "Warning" | "Critical" | "Imminent" | "Unknown"
+type MarginDirection = "add" | "remove"
+type MarketLifecycle = "active" | "halted"
+type NetworkSelector = Network | NetworkConfig
+type OpenUnion<T extends string> = T | (string & {})
+type OrderResult = OrderResultOk | OrderResultErr
+type OrderSide = "Buy" | "Sell"
+type OrderStatus = "Open" | "PartiallyFilled" | "Filled" | "Cancelled" | "Expired" | "Rejected"
+type OrderType = "Limit" | "Market" | "StopLimit" | "StopMarket" | "TakeProfitLimit" | "TakeProfitMarket" | "TrailingStop" | "TrailingLimit"
+type PortfolioWindow = "day" | "week" | "month" | "all"
+type PositionFieldError = OpenUnion<"margin_state_not_mirrored" | "mark_price_unavailable" | "margin_rate_unavailable" | "margin_used_zero" | "market_params_unavailable">
+type PositionSide = "Long" | "Short"
+type PublicChannel = "book" | "trades" | "candles"
+type StpMode = "CancelNewest" | "CancelOldest" | "DecrementAndCancel"
+type TakerOrMaker = "taker" | "maker"
+type TimeInForce = "GTC" | "IOC" | "FOK" | "PostOnly"
+type TimestampMs = number
+type TokenProvider = () => Promise<string>
+type TradeSide = "buy" | "sell"
+type WsStatus = "connecting" | "open" | "reconnecting" | "closed"
+type WsStreamHealth = "live" | "resyncing"

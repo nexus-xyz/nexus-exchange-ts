@@ -1,0 +1,138 @@
+name: Pre-publish
+
+# The checks between a release PR and npm (ENG-18798). An npm version can't be
+# published twice, even after an unpublish, so publishing stays a person merging
+# the release PR; these make sure what they merge is not broken. Three jobs,
+# with the same names in every SDK repo, so one required-checks setting covers
+# the fleet:
+#
+#   prepublish-surface  the packed package's public API equals the committed public-api.txt
+#   prepublish-smoke    the packed package, installed into a clean consumer, reads the public testnet
+#   prepublish-verdict  the version the release PR proposes fits the spec change since the last
+#                       publish, graded by the monorepo's classifier (scripts/release_gate/VENDORED.md)
+#
+# The drift check is the fourth leg and is not repeated here: `drift`
+# (spec-drift.yml: the pin, the vendored spec's bytes, schemas, enum members and
+# operations) already runs on every PR, the release PR among them.
+#
+# RUNS ON EVERY PR, with no `paths:` filter, for spec-drift.yml's reason: a
+# required check that is skipped reports nothing, and the PR waits on it
+# forever. What changes on a release PR (head branch `release-please--*`), or on
+# a PR that edits this gate:
+#   * smoke makes the testnet read. Elsewhere it packs, installs and imports
+#     only, and says so.
+#   * verdict is enforced on a release PR. Elsewhere it reports what the next
+#     release will need.
+# The surface check is enforced on every PR, because the PR that changes the API
+# is where the snapshot has to move. A release PR moves only versions, and
+# constants are listed by type, not value, so it passes unchanged.
+#
+# The release PR's runs need one click today. release-please opens it with
+# GITHUB_TOKEN, and this repo's approval policy parks those runs in
+# `action_required` until someone clicks "Approve and run workflows" on the PR.
+# Until then the PR shows no checks, so it can't merge either way.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-publish-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The version classify_spec_change.py requires (its OASDIFF_VERSION), by
+  # checksum, as the monorepo installs it.
+  OASDIFF_VERSION: 1.30.0
+  OASDIFF_SHA256: bfa353e7c699dd201d52dd42839330a0d4ba0429767c8ec9fc0e5fdc650b8060
+
+jobs:
+  prepublish-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      # typescript, from the lockfile: it builds the tarball and reads its .d.ts.
+      - run: pnpm install --frozen-lockfile
+      - name: Public surface of the packed package vs public-api.txt
+        run: node scripts/release_gate/public-surface.mjs
+
+  prepublish-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Release PR, or a change to this gate?
+        id: mode
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == release-please--* ]]; then
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BASE_SHA" HEAD | grep -qE '^(\.github/workflows/pre-publish\.yml|scripts/release_gate/)'; then
+            echo "mode=gate-change" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=other" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Pack, install into a clean consumer, read testnet
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          if [ "$MODE" = "other" ]; then
+            node scripts/release_gate/smoke.mjs --install-only
+          else
+            node scripts/release_gate/smoke.mjs
+          fi
+
+  prepublish-verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release tags: the spec pin of the published version is read at `v<version>`.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install oasdiff ${{ env.OASDIFF_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz" \
+            -o "$RUNNER_TEMP/oasdiff.tar.gz"
+          echo "${OASDIFF_SHA256}  $RUNNER_TEMP/oasdiff.tar.gz" | sha256sum -c
+          tar -xz -C "$RUNNER_TEMP" -f "$RUNNER_TEMP/oasdiff.tar.gz" oasdiff
+          echo "OASDIFF=$RUNNER_TEMP/oasdiff" >> "$GITHUB_ENV"
+      # The gate's own tests first, against the binary just installed: a broken
+      # gate fails as a broken gate, and a vendored file that drifted from the
+      # monorepo fails here.
+      - name: Self-test the gate
+        run: python3 scripts/release_gate/test_release_verdict.py
+      - name: Version proposed vs the spec change since the last publish
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          args=(--registry npm --package @nexus-xyz/exchange-ts --manifest package.json)
+          if [[ "$HEAD_REF" != release-please--* ]]; then
+            args+=(--report)
+          fi
+          python3 scripts/release_gate/release_verdict.py "${args[@]}"
