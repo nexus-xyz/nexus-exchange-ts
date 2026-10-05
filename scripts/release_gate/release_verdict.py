@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Pre-publish verdict gate (ENG-18798): does the version a release PR proposes fit the contract change it ships?
+"""Pre-publish verdict gate (ENG-18798): does the version a release PR proposes fit the change it ships?
 
-A release PR moves this package from the version last PUBLISHED to the version in the manifest. The
-contract change that release carries is the difference between the spec the published version was
-pinned to (`.api-version` at its `v<version>` tag) and the spec this branch pins. The monorepo's
-classifier (ENG-18796, vendored here, see VENDORED.md) grades that difference, and this script checks
-the proposed bump against the grade:
+A release PR moves this package from the version last PUBLISHED to the version in the manifest. It
+carries two changes, and the proposed bump has to fit both:
 
-  spec unchanged, or non-breaking   any version increase passes
-  breaking                          needs a breaking bump: below 1.0 the minor (0.11.x -> 0.12.0,
+  - the contract: the spec the published version was pinned to (`.api-version` at its `v<version>`
+    tag) against the spec this branch pins, graded by the monorepo's classifier (ENG-18796, vendored
+    here, see VENDORED.md);
+  - the package's own public API: `public-api.txt` at that tag against this branch's (below).
+
+The proposed bump is checked against the grade:
+
+  neither change breaking           any version increase passes
+  either one breaking               needs a breaking bump: below 1.0 the minor (0.11.x -> 0.12.0,
                                     or 1.0.0), from 1.0 the major. A patch bump fails.
   could-not-classify                fails under its own name, exit 2: a person has to look. It never
                                     folds into a pass (the classifier's own rule).
@@ -19,10 +23,20 @@ WHY THE MINOR IS THE BREAKING DIGIT BELOW 1.0. Cargo and npm caret ranges (`^0.1
 breaking change pre-1.0; release-please runs with `bump-minor-pre-major`) all treat it that way.
 Agreed for ENG-18798 on 2026-10-05.
 
-THE SPEC AND THE SDK'S OWN API ARE DIFFERENT QUESTIONS. This gate grades the contract the package
-is built against. A breaking change to the package's own public API (a removed method) is the
-public-surface snapshot's job (`prepublish-surface`), and in the Rust SDK release-plz's
-cargo-semver-checks report on the release PR.
+THE PACKAGE'S OWN API. `prepublish-surface` keeps `public-api.txt` equal to what the package
+exports, but a PR that removes an export also regenerates that file, so on the release PR the two
+always match. What it lost shows only against the PUBLISHED snapshot: a line of the tag's
+`public-api.txt` that is not on this branch is an item removed or reshaped, and grades `breaking`.
+New lines grade `additive`. The listing has no descriptions, so rewording does not count. Limits:
+  - A published tag without `public-api.txt` (every release before this gate) is `no-baseline`:
+    only the spec is graded until the first release that carries the file.
+  - An added line can break too (a new required member on an interface callers implement). The
+    reviewer of that PR has to call it.
+  - A change to the listing's own format reads as removals. The gate then asks for the breaking
+    bump: below 1.0 that is a minor, the cheap side to err on.
+  - `--surface-file ''` turns this grade off. The Rust SDK does that: release-plz already picks its
+    version with cargo-semver-checks, and its listing renders dependency paths that move without
+    any change for users.
 
 Outside a release PR (`--report`), the same comparison runs against the version on the branch and
 reports what the next release will need, then exits 0: there is no release to gate, and the job
@@ -210,22 +224,55 @@ def fetch_spec(tag, workdir):
     raise CannotDecide(f"cannot fetch the {tag} spec from {url}: {last}")
 
 
+# --- the package's own public API -------------------------------------------------------------
+
+def surface_lines(text):
+    return {line for line in text.splitlines() if line.strip()}
+
+
+def surface_at_tag(tag, surface_file):
+    """The tag's snapshot text, or None when the tag predates the snapshot. A missing tag cannot decide."""
+    proc = subprocess.run(["git", "show", f"{tag}:{surface_file}"], capture_output=True, text=True)
+    if proc.returncode == 0:
+        return proc.stdout
+    tagged = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}"], capture_output=True)
+    if tagged.returncode == 0:
+        return None
+    raise CannotDecide(f"cannot read tag {tag}: {proc.stderr.strip()} (is the tag fetched? the job needs fetch-depth: 0)")
+
+
+def grade_surface(published_text, branch_text):
+    """(verdict, removed lines, added count). `published_text` None means the tag has no snapshot."""
+    if published_text is None:
+        return "no-baseline", [], 0
+    old, new = surface_lines(published_text), surface_lines(branch_text)
+    removed, added = sorted(old - new), len(new - old)
+    if removed:
+        return "breaking", removed, added
+    return ("additive" if added else "unchanged"), [], added
+
+
 # --- the verdict ------------------------------------------------------------------------------
 
-def decide(published, proposed, spec_verdict):
-    """(outcome, reason) from versions and the classifier's verdict, `unchanged` included."""
+def decide(published, proposed, spec_verdict, surface_verdict="unchanged"):
+    """(outcome, reason) from versions, the classifier's verdict and the public-API grade."""
     if spec_verdict == "could-not-classify":
         return "could-not-classify", "the classifier could not grade the spec change; a person has to look"
     if bump_kind(published, proposed) == "none":
         return "fail", f"the proposed version {fmt(proposed)} is not above the published {fmt(published)}"
-    if spec_verdict == "breaking" and not is_breaking_bump(published, proposed):
+    breaking = [what for what, verdict in (("the spec change", spec_verdict), ("the public API change", surface_verdict))
+                if verdict == "breaking"]
+    if breaking and not is_breaking_bump(published, proposed):
         need = fmt(smallest_breaking_bump(published))
         return "fail", (
-            f"the spec change since {fmt(published)} is breaking, and {fmt(published)} -> {fmt(proposed)} "
-            f"is a {bump_kind(published, proposed)} bump; it needs at least {need}"
+            f"{' and '.join(breaking)} since {fmt(published)} {'is' if len(breaking) == 1 else 'are'} breaking, "
+            f"and {fmt(published)} -> {fmt(proposed)} is a {bump_kind(published, proposed)} bump; "
+            f"it needs at least {need}"
         )
-    what = "the spec pin is unchanged" if spec_verdict == "unchanged" else f"a {spec_verdict} spec change"
-    return "pass", f"{what}, under a {bump_kind(published, proposed)} bump ({fmt(published)} -> {fmt(proposed)})"
+    spec = "spec pin unchanged" if spec_verdict == "unchanged" else f"spec change {spec_verdict}"
+    api = {"no-baseline": "no published public API to compare", "not-graded": "public API not graded here"}.get(
+        surface_verdict, f"public API {surface_verdict}")
+    return "pass", f"{spec}, {api}: a {bump_kind(published, proposed)} bump ({fmt(published)} -> {fmt(proposed)}) fits"
 
 
 def run(args):
@@ -234,6 +281,7 @@ def run(args):
         "published_version": None, "proposed_version": None, "bump": None,
         "published_pin": None, "proposed_pin": None, "spec_verdict": None,
         "breaking_changes": [], "classifier": None,
+        "surface_verdict": None, "surface_removed": [], "surface_added": 0,
     }
     try:
         published_raw = args.published_version
@@ -250,9 +298,23 @@ def run(args):
         result["published_version"] = fmt(published)
         result["bump"] = bump_kind(published, proposed)
 
-        old_pin = args.published_pin or pin_at_tag(f"{args.tag_prefix}{fmt(published)}", args.pin_file)
+        tag = f"{args.tag_prefix}{fmt(published)}"
+        old_pin = args.published_pin or pin_at_tag(tag, args.pin_file)
         new_pin = args.proposed_pin or read_pin(Path(args.pin_file).read_text(), args.pin_file)
         result.update(published_pin=old_pin, proposed_pin=new_pin)
+
+        if not args.surface_file:
+            result["surface_verdict"] = "not-graded"
+        else:
+            if args.published_surface is not None:
+                published_text = Path(args.published_surface).read_text() if args.published_surface else None
+            else:
+                published_text = surface_at_tag(tag, args.surface_file)
+            branch = Path(args.surface_file)
+            if not branch.is_file():
+                raise CannotDecide(f"{args.surface_file} is missing on this branch; prepublish-surface writes it")
+            verdict, removed, added = grade_surface(published_text, branch.read_text())
+            result.update(surface_verdict=verdict, surface_removed=removed, surface_added=added)
 
         if old_pin == new_pin and not (args.old_spec or args.new_spec):
             result["spec_verdict"] = "unchanged"
@@ -272,10 +334,10 @@ def run(args):
                 result.update(outcome="could-not-classify", reason=f"could not classify: {graded['reason']}")
                 return result
 
-        outcome, reason = decide(published, proposed, result["spec_verdict"])
+        outcome, reason = decide(published, proposed, result["spec_verdict"], result["surface_verdict"])
         if args.report and result["bump"] == "none":
-            need = (fmt(smallest_breaking_bump(published)) if result["spec_verdict"] == "breaking"
-                    else "any increase")
+            breaking = "breaking" in (result["spec_verdict"], result["surface_verdict"])
+            need = fmt(smallest_breaking_bump(published)) if breaking else "any increase"
             reason = f"not a release PR; the next release after {fmt(published)} needs: {need}"
             outcome = "pass"
         result.update(outcome=outcome, reason=reason)
@@ -288,7 +350,7 @@ def render(result):
     """Markdown for the job summary. The outcome is the first thing a reader sees."""
     headline = {
         "pass": "✅ passed",
-        "fail": "❌ FAILED: the proposed version does not fit the contract change",
+        "fail": "❌ FAILED: the proposed version does not fit the change it ships",
         "could-not-classify": "⚠️ COULD NOT CLASSIFY: not a pass, a person has to look",
     }[result["outcome"]]
     if result["mode"] == "report":
@@ -302,9 +364,17 @@ def render(result):
         f"| Spec pin at the published version | `{result['published_pin']}` |",
         f"| Spec pin on this branch | `{result['proposed_pin']}` |",
         f"| Spec change | `{result['spec_verdict']}` |",
+        f"| Public API since the published version | `{result['surface_verdict']}` "
+        f"({len(result['surface_removed'])} gone or changed, {result['surface_added']} new) |",
     ]
     for change in result["breaking_changes"]:
         lines.append(f"- `{change.get('id')}` {change.get('operation', '')} {change.get('path', '')}: {change.get('text')}")
+    if result["surface_removed"]:
+        lines += ["", "Public API items in the published version that this branch no longer has:", "", "```diff"]
+        lines += [f"-{line}" for line in result["surface_removed"][:50]]
+        if len(result["surface_removed"]) > 50:
+            lines.append(f"# ... and {len(result['surface_removed']) - 50} more")
+        lines.append("```")
     return "\n".join(lines) + "\n"
 
 
@@ -315,6 +385,8 @@ def main(argv=None):
     parser.add_argument("--manifest", required=True, help="Cargo.toml, pyproject.toml or package.json")
     parser.add_argument("--pin-file", default=".api-version")
     parser.add_argument("--tag-prefix", default="v")
+    parser.add_argument("--surface-file", default="public-api.txt",
+                        help="public-API snapshot graded against the published tag's; '' turns that off")
     parser.add_argument("--report", action="store_true", help="not a release PR: report, never fail")
     parser.add_argument("--oasdiff", default=os.environ.get("OASDIFF", "oasdiff"))
     # Overrides, for tests and for reproducing a run by hand.
@@ -324,6 +396,9 @@ def main(argv=None):
     parser.add_argument("--proposed-pin")
     parser.add_argument("--old-spec", help="spec file to use for the published pin instead of fetching it")
     parser.add_argument("--new-spec", help="spec file to use for this branch's pin instead of fetching it")
+    parser.add_argument("--published-surface",
+                        help="snapshot file to use for the published version instead of reading it at the tag; "
+                             "'' means the tag has none")
     args = parser.parse_args(argv)
 
     result = run(args)
