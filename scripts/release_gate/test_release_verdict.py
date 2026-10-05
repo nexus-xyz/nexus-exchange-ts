@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +97,22 @@ class Bumps(unittest.TestCase):
         self.assertEqual(V.bump_kind((0, 11, 1), (0, 11, 1)), "none")
         self.assertEqual(V.bump_kind((0, 11, 1), (0, 10, 9)), "none")
         self.assertFalse(V.is_breaking_bump((0, 11, 1), (0, 11, 1)))
+
+    def test_a_python_without_tomllib_cannot_decide_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as d:
+            manifest = Path(d, "Cargo.toml")
+            manifest.write_text('[package]\nversion = "0.1.0"\n')
+            saved = sys.modules.get("tomllib")
+            sys.modules["tomllib"] = None  # what `import tomllib` sees on Python 3.10
+            try:
+                with self.assertRaises(V.CannotDecide) as caught:
+                    V.manifest_version(manifest)
+            finally:
+                if saved is None:
+                    del sys.modules["tomllib"]
+                else:
+                    sys.modules["tomllib"] = saved
+        self.assertIn("3.11", str(caught.exception))
 
     def test_versions_parse_with_or_without_a_v(self):
         self.assertEqual(V.parse_version("v0.5.0"), (0, 5, 0))

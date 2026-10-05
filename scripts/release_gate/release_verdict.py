@@ -181,7 +181,13 @@ def manifest_version(path):
     path = Path(path)
     if path.name == "package.json":
         return json.loads(path.read_text())["version"]
-    import tomllib  # 3.11+; the gate runs on the runner's python3, not the SDK's test matrix
+    try:
+        import tomllib  # 3.11+; the gate runs on the runner's python3, not the SDK's test matrix
+    except ImportError:
+        raise CannotDecide(
+            f"reading {path.name} needs Python 3.11+ (tomllib); this is {sys.version.split()[0]}. "
+            "Run the gate with python3.11 or newer"
+        ) from None
 
     data = tomllib.loads(path.read_text())
     if path.name == "Cargo.toml":
