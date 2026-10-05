@@ -87,9 +87,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          # Into a file, not a pipe: under pipefail a failed `git diff`, or one cut short by
+          # `grep -q` (SIGPIPE), would read as "not a gate change" and skip the read quietly.
+          git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed.txt"
           if [[ "$HEAD_REF" == release-please--* ]]; then
             echo "mode=release" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "$BASE_SHA" HEAD | grep -qE '^(\.github/workflows/pre-publish\.yml|scripts/release_gate/)'; then
+          elif grep -qE '^(\.github/workflows/pre-publish\.yml|scripts/release_gate/)' "$RUNNER_TEMP/changed.txt"; then
             echo "mode=gate-change" >> "$GITHUB_OUTPUT"
           else
             echo "mode=other" >> "$GITHUB_OUTPUT"

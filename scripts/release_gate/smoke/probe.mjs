@@ -51,6 +51,11 @@ function describe(err) {
 }
 
 if (process.argv.includes("--link-only")) {
+  // The method the read below calls, so renaming it fails this PR and not the
+  // next release PR.
+  if (typeof Client.prototype.fetchMarketsSummary !== "function") {
+    finish(1, "Client.prototype.fetchMarketsSummary is not a function");
+  }
   // Not "passed": nothing was read, and the outcome must not say otherwise.
   console.log("smoke: not run: the imports resolved; no read was made");
   process.exit(0);

@@ -31,9 +31,13 @@ export function run(cmd, args, opts = {}) {
 }
 
 /**
- * Pack the package into `work` exactly as `pnpm publish` would (prepack
- * rebuilds dist/). The output path is pinned with --out rather than parsed from
- * stdout, because prepack's output is interleaved there.
+ * Pack the package into `work` (prepack rebuilds dist/). release.yml publishes
+ * with `npm publish`; `pnpm pack` gives the same dist/ (compared byte for byte,
+ * ENG-18798 review), but drops `packageManager` and `prepack` from the packed
+ * package.json, which nothing reads at install time. A `publishConfig` override
+ * would differ between the two, so add one only with that in mind. The output
+ * path is pinned with --out rather than parsed from stdout, because prepack's
+ * output is interleaved there.
  */
 export function pack(work) {
   const tarball = join(work, "package.tgz");

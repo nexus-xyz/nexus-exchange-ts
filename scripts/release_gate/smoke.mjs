@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pre-publish smoke test (ENG-18798). Packs the package as `pnpm publish`
- * would, installs the tarball into a throwaway consumer project, and runs one
+ * Pre-publish smoke test (ENG-18798). Packs the package (see pack.mjs), installs the tarball into a throwaway consumer project, and runs one
  * unauthenticated read against the public testnet through it
  * (scripts/release_gate/smoke/probe.mjs). No keys, no writes.
  *
@@ -49,8 +48,17 @@ const built = `${pkg.name}@${pkg.version}`;
 const work = mkdtempSync(join(tmpdir(), "exchange-ts-smoke-"));
 let code;
 let line;
+let installError;
 try {
-  const consumer = installConsumer(work, pack(work));
+  let consumer;
+  try {
+    consumer = installConsumer(work, pack(work));
+  } catch (err) {
+    // A pack or registry failure, before any read. Its own outcome, not a
+    // stack trace and not "the SDK failed".
+    installError = String(err?.message ?? err).split("\n")[0];
+    throw err;
+  }
   copyFileSync(
     join(REPO, "scripts", "release_gate", "smoke", "probe.mjs"),
     join(consumer, "probe.mjs"),
@@ -69,8 +77,17 @@ try {
   if (!line) {
     line = `smoke: failed: the probe exited ${probe.status ?? probe.signal} without an outcome`;
   }
+} catch (err) {
+  if (installError === undefined) throw err;
 } finally {
   rmSync(work, { recursive: true, force: true });
+}
+if (installError !== undefined) {
+  console.log(
+    `::error title=prepublish-smoke (install failed)::The package could not be packed or installed into a clean consumer, so nothing was read. If the registry was down, re-run this job; otherwise the package does not install. ${installError}`,
+  );
+  summary("❌ INSTALL FAILED: nothing was read", installError);
+  process.exit(1);
 }
 console.log(line);
 

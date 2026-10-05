@@ -20,7 +20,9 @@ updates:
       # `pnpm lint` cannot run at all. Support is tracked for TS >= 7.1 in
       # typescript-eslint#10940. Drop this entry once that ships; the migration
       # also needs `"types": ["node"]` in tsconfig.json, since TS 7 no longer
-      # auto-includes @types/node (558 type errors without it).
+      # auto-includes @types/node (558 type errors without it), and
+      # scripts/release_gate/public-surface.mjs, which reads the .d.ts through
+      # the compiler API that TS 7 no longer exports from "typescript".
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
       # @types/node majors track a Node major. `engines` here is ">=20.19" and

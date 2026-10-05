@@ -42,6 +42,16 @@ import { REPO, pack, run } from "./pack.mjs";
 const SNAPSHOT = "public-api.txt";
 const WRITE_CMD = "node scripts/release_gate/public-surface.mjs --write";
 
+// TypeScript 7 no longer exports the compiler API from "typescript" (only
+// ./lib/version.cjs and ./unstable/*), so this reader needs TypeScript 6 or
+// earlier. Say so, instead of a TypeError on the first call.
+if (typeof ts.createProgram !== "function") {
+  console.log(
+    `::error title=prepublish-surface::typescript ${ts.version} has no compiler API at "typescript". This reader needs TypeScript 6 or earlier: pin it (an npm alias) or port it to TypeScript 7's API.`,
+  );
+  process.exit(1);
+}
+
 const printer = ts.createPrinter({
   removeComments: true,
   newLine: ts.NewLineKind.LineFeed,
@@ -205,7 +215,19 @@ function surface(root) {
     if (declarations.length === 0) {
       throw new Error(`export "${name}" resolves to no declaration`);
     }
-    for (const decl of declarations) lines.push(...linesFor(name, decl));
+    // `export { type X }` of a class, function or const keeps X's declaration
+    // but drops its runtime value: `new X()` and `instanceof X` stop working.
+    // Mark every line of it, so that change reads as items gone and replaced.
+    const typeOnly =
+      exported.flags & ts.SymbolFlags.Alias &&
+      target.flags & ts.SymbolFlags.Value &&
+      (exported.declarations ?? []).some((d) =>
+        ts.isTypeOnlyImportOrExportDeclaration(d),
+      );
+    for (const decl of declarations) {
+      const out = linesFor(name, decl);
+      lines.push(...(typeOnly ? out.map((l) => `type-only ${l}`) : out));
+    }
   }
   // Code-unit order, not localeCompare: the same bytes on every machine.
   return lines.sort();
@@ -271,7 +293,7 @@ try {
     const added = body.filter((line) => line.startsWith("+")).length;
     process.stdout.write(diff);
     console.log(
-      `::error title=prepublish-surface::The packed package's public API differs from ${SNAPSHOT}: ${removed} item(s) gone or changed, ${added} new. If that is deliberate, run ${WRITE_CMD} and commit ${SNAPSHOT} in this PR, so the change is in the diff a reviewer reads. A removal or change is breaking.`,
+      `::error title=prepublish-surface::The packed package's public API differs from ${SNAPSHOT}: ${removed} item(s) gone or changed, ${added} new. If that is deliberate, run ${WRITE_CMD} and commit ${SNAPSHOT} in this PR, so the change is in the diff a reviewer reads. A "-" line is breaking and needs a "!" PR title. A "+" line can be too, if it adds a required member to an interface callers implement.`,
     );
     summary(
       [
