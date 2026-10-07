@@ -1,0 +1,57 @@
+name: Docs
+
+# TypeDoc API reference, published to GitHub Pages
+# (https://nexus-xyz.github.io/nexus-exchange-ts/) (ENG-20362).
+#
+#   * pull_request: build only, so a change that breaks the doc build fails CI.
+#   * workflow_call: release.yml calls this after a release is cut. Not a
+#     `release: published` trigger: release-please creates the release with
+#     GITHUB_TOKEN, and events raised by that token start no workflow runs.
+#   * workflow_dispatch: rebuild and redeploy from the chosen ref by hand.
+#
+# Deploying needs Pages enabled with source "GitHub Actions" in repo settings.
+
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event_name == 'pull_request' && github.ref || 'pages' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run docs
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
