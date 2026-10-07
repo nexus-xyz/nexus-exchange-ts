@@ -803,6 +803,11 @@ serialized losslessly — parse them with a decimal library, never a JS `number`
 or you will lose precision. CCXT-shaped market-data fields (ticker, trade,
 order book) are JSON numbers, matching the wire.
 
+To snap a computed price or size onto a market's tick or lot, which the
+exchange requires, use `roundPrice(market, price, side)` (a `"Buy"` rounds
+down, a `"Sell"` up) and `roundSize(market, size)` (toward zero). Both work on
+the `Decimal` strings exactly, with no float in between.
+
 ## Method names
 
 Each `Client` method is named `camelCase(operationId)` of the operation it sends
