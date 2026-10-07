@@ -55,6 +55,33 @@ PR description is dropped at merge. With `bump-minor-pre-major` set in
 one silently ships as a patch — so the `!` is the difference between `0.x.0` and
 `0.x.y`.
 
+## Cutting a release
+
+release-please opens and maintains the release PR (version bump and changelog).
+Merging it is the release: the `Release` workflow's run on that merge tags it and
+publishes to npm. The only other way to publish is a person dispatching that
+workflow for an existing tag.
+
+**Before merging, the pre-publish checks have to be green on the release PR**
+(`.github/workflows/pre-publish.yml`, ENG-18798). release-please opens the PR
+with the default token, so its runs wait for **Approve and run workflows** on
+the PR.
+
+- `prepublish-surface`: the packed package's public API equals
+  `public-api.txt`.
+- `prepublish-smoke`: the packed package, installed into a clean consumer,
+  lists markets on the public testnet. _Testnet unreachable_ fails under its
+  own name. It is not a pass, so re-run the job once testnet answers.
+- `prepublish-verdict`: the proposed version fits the spec change since the
+  last published version, graded by the monorepo's classifier
+  (`scripts/release_gate/VENDORED.md`). Below 1.0 a breaking change needs a
+  minor bump. _Could not classify_ fails and needs a person.
+  And the public API change since then: a line of `public-api.txt` at the
+  published version's tag that this branch no longer has is a removed or
+  reshaped export, and needs the same bump. Releases before ENG-18798 carry no
+  `public-api.txt`, so that part starts with the first release after it.
+- `drift`, and CI's `check` and `test`, as on every PR.
+
 ## API version and the spec
 
 This SDK targets a released version of the Exchange API spec, which lives in

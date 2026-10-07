@@ -19,6 +19,13 @@ The TypeScript SDK for the Nexus Exchange API.
 
 - `pnpm run lint`, `pnpm run format:check`, `pnpm run typecheck`, and
   `pnpm test` all pass — CI enforces these.
+- If you changed the public API (what `src/index.ts` exports, or the shape of
+  a type it exports), regenerate `public-api.txt` with
+  `node scripts/release_gate/public-surface.mjs --write` and commit it in the
+  same PR. `prepublish-surface` fails on any difference, so a removal shows up
+  in the diff a reviewer reads (ENG-18798).
+  A `-` line is a breaking change: give the PR a `!` title, because the next
+  release's `prepublish-verdict` fails a patch bump for it.
 
 ## API contract
 

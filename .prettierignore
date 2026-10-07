@@ -10,3 +10,6 @@ spec/openapi.json
 # there is invisible until the release lands and turns main red. Fixed by hand
 # once already, in #34's "style: prettier-format the release-please CHANGELOG".
 CHANGELOG.md
+# Copied byte for byte from nexus-exchange-rs and identical in every SDK repo
+# (ENG-18798); prettier would realign its table and the copies would drift.
+scripts/release_gate/VENDORED.md
