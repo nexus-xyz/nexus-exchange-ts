@@ -89,6 +89,9 @@ export {
   type AgentRequestParts,
 } from "./agent.js";
 
+// Tick / lot rounding before an order goes out (mirrors the Rust SDK's markets.rs).
+export { roundPrice, roundSize } from "./markets.js";
+
 // Cursor / auto-paging helpers for list endpoints (mirrors the Rust SDK).
 export {
   Cursor,
