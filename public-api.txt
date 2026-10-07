@@ -353,6 +353,8 @@ interface CreateWsClientOpts { baseReconnectDelayMs?: number }
 interface CreateWsClientOpts { maxQueueSize?: number }
 interface CreateWsClientOpts { maxReconnectDelayMs?: number }
 interface CreateWsClientOpts { path?: string }
+interface CreateWsClientOpts { pingIntervalMs?: number }
+interface CreateWsClientOpts { staleTimeoutMs?: number }
 interface CreateWsClientOpts { tokenProvider?: TokenProvider }
 interface CreateWsClientOpts { url: string }
 interface CreatedApiKey
@@ -701,10 +703,12 @@ interface WebSocketCtor { new (url: string): WebSocketLike }
 interface WebSocketCtor { readonly OPEN: number }
 interface WebSocketLike
 interface WebSocketLike { close(code?: number, reason?: string): void }
+interface WebSocketLike { on?(event: "pong", listener: () => void): unknown }
 interface WebSocketLike { onclose: ((ev: unknown) => void) | null }
 interface WebSocketLike { onerror: ((ev: unknown) => void) | null }
 interface WebSocketLike { onmessage: ((ev: { data: unknown; }) => void) | null }
 interface WebSocketLike { onopen: ((ev: unknown) => void) | null }
+interface WebSocketLike { ping?(): void }
 interface WebSocketLike { readyState: number }
 interface WebSocketLike { send(data: string): void }
 interface Withdrawal
@@ -722,6 +726,7 @@ interface WsEvent { data: unknown }
 interface WsEvent { market?: string }
 interface WsEvent { outOfSync?: boolean }
 interface WsEvent { seq: bigint }
+interface WsEvent { stale?: boolean }
 interface WsSubscription
 interface WsSubscription { events: AsyncIterable<WsEvent> }
 interface WsSubscription { health(): WsStreamHealth }

@@ -671,3 +671,136 @@ test("reconnect backoff resets after the first frame, not on open", () => {
     mock.timers.reset();
   }
 });
+
+// ── Silent connections (ENG-20363) ───────────────────────────────────────────
+
+/** A `ws`-package-like socket: can ping, and answers with a pong if `ponging`. */
+class FakePingSocket extends FakeWebSocket {
+  pings = 0;
+  ponging = true;
+  private pong: (() => void) | null = null;
+  ping() {
+    this.pings += 1;
+    if (this.ponging) this.pong?.();
+  }
+  on(_event: "pong", listener: () => void) {
+    this.pong = listener;
+  }
+}
+const PingCtor = FakePingSocket as unknown as WebSocketCtor;
+
+test("a silent connection is declared stale, reconnected and resumed", async () => {
+  reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    const client = createWsClient({ url: "wss://test", WebSocketImpl: Ctor });
+    const sub = client.subscribe("trades", { market: "BTC-PERP" });
+    const ws1 = FakeWebSocket.instances[0];
+    ws1.open();
+    ws1.emit({
+      op: "subscribed",
+      channel: "trades",
+      market: "BTC-PERP",
+      seq_at_join: 5,
+    });
+    mock.timers.tick(29_999);
+    assert.equal(ws1.readyState, FakeWebSocket.OPEN, "dropped before 30s");
+    mock.timers.tick(1);
+    assert.equal(ws1.readyState, 3, "still open after 30s of silence");
+    assert.equal(client.status(), "reconnecting");
+    assert.equal(sub.health(), "resyncing");
+
+    const ev = await sub.events[Symbol.asyncIterator]().next();
+    assert.deepEqual(ev.value, {
+      channel: "trades",
+      market: "BTC-PERP",
+      seq: 5n,
+      data: null,
+      stale: true,
+    });
+
+    mock.timers.tick(250); // max first backoff
+    const ws2 = FakeWebSocket.instances[1];
+    ws2.open();
+    assert.deepEqual(ws2.sent[0], {
+      op: "subscribe",
+      channel: "trades",
+      market: "BTC-PERP",
+      since: 5,
+    });
+    client.close();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a connection with traffic, or answering pings, is not replaced", () => {
+  reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    // Traffic every 10s; this socket cannot ping.
+    const busy = createWsClient({ url: "wss://test", WebSocketImpl: Ctor });
+    busy.subscribe("trades", { market: "BTC-PERP" });
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    for (let seq = 1; seq <= 12; seq++) {
+      mock.timers.tick(10_000);
+      ws.emit({
+        op: "event",
+        channel: "trades",
+        market: "BTC-PERP",
+        seq,
+        payload: {},
+      });
+    }
+    assert.equal(FakeWebSocket.instances.length, 1);
+    assert.equal(ws.readyState, FakeWebSocket.OPEN);
+    busy.close();
+
+    // No traffic at all, but every ping is answered.
+    reset();
+    const quiet = createWsClient({
+      url: "wss://test",
+      WebSocketImpl: PingCtor,
+    });
+    quiet.subscribe("trades", { market: "BTC-PERP" });
+    const pws = FakeWebSocket.instances[0] as FakePingSocket;
+    pws.open();
+    mock.timers.tick(120_000);
+    assert.equal(pws.pings, 8);
+    assert.equal(FakeWebSocket.instances.length, 1);
+    assert.equal(pws.readyState, FakeWebSocket.OPEN);
+
+    // Pongs stop: stale within 30s of the last one.
+    pws.ponging = false;
+    mock.timers.tick(30_000);
+    assert.equal(pws.readyState, 3);
+    quiet.close();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("staleTimeoutMs: 0 and pingIntervalMs: 0 disable the keepalive", () => {
+  reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  try {
+    const client = createWsClient({
+      url: "wss://test",
+      WebSocketImpl: PingCtor,
+      staleTimeoutMs: 0,
+      pingIntervalMs: 0,
+    });
+    client.subscribe("trades", { market: "BTC-PERP" });
+    const ws = FakeWebSocket.instances[0] as FakePingSocket;
+    ws.ponging = false;
+    ws.open();
+    mock.timers.tick(600_000);
+    assert.equal(ws.pings, 0);
+    assert.equal(ws.readyState, FakeWebSocket.OPEN);
+    assert.equal(FakeWebSocket.instances.length, 1);
+    client.close();
+  } finally {
+    mock.timers.reset();
+  }
+});
