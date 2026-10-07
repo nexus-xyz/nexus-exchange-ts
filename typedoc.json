@@ -1,0 +1,9 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/index.ts"],
+  "tsconfig": "tsconfig.json",
+  "out": "site",
+  "name": "@nexus-xyz/exchange-ts",
+  "readme": "none",
+  "includeVersion": true
+}

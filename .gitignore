@@ -13,3 +13,6 @@ package-lock.json
 
 # Byte-cache from the Python in scripts/release_gate/ (the verdict gate and its tests).
 __pycache__/
+
+# TypeDoc output (`pnpm run docs`); CI deploys it to GitHub Pages, never commit it.
+site/

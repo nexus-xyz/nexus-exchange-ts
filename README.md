@@ -6,6 +6,10 @@ Official TypeScript SDK for the [Nexus Exchange](https://exchange.nexus.xyz) API
 — a typed wrapper over the public REST + WebSocket API, usable from the browser
 and Node.
 
+**API reference:** <https://nexus-xyz.github.io/nexus-exchange-ts/>, generated
+by TypeDoc from the source and republished on every release (`pnpm run docs`
+builds it locally into `site/`).
+
 > **Status: beta.** Pre-1.0: the API may change between minor versions. Built
 > and tested against testnet; mainnet is not live yet.
 >

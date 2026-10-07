@@ -156,3 +156,16 @@ jobs:
       # after install/build/test, so it cannot affect the artifact, only the upload.
       - run: npm install -g "npm@^11.5.1"
       - run: npm publish --provenance --access public
+
+  # Publish the TypeDoc reference to GitHub Pages for the release just cut
+  # (ENG-20362). Called here rather than on `release: published`, which a
+  # GITHUB_TOKEN-created release never raises. Independent of `publish`: a
+  # failed npm upload should not hold back docs, nor the reverse.
+  docs:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml
