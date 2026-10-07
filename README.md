@@ -10,15 +10,20 @@ and Node.
 by TypeDoc from the source and republished on every release (`pnpm run docs`
 builds it locally into `site/`).
 
-> **⚠️ Experimental / in development.** It is being extracted and sanitized out
-> of the Nexus web app's existing bindings, so the surface is young even where it
-> is complete. It now wraps **every operation of the pinned spec** that a public
-> trading client can meaningfully expose — market data, account, orders,
-> positions, funds, the bridge, and WebSocket streaming — with the remainder
-> recorded, one by one and with a reason, in
-> [`spec/uncovered-ops.txt`](./spec/uncovered-ops.txt): the `admin_secret`-gated
-> tier routes, and two deprecated routes superseded by ones this client already
-> uses. The [Rust](https://github.com/nexus-xyz/nexus-exchange-rs) and
+> **Status: beta.** Pre-1.0: the API may change between minor versions. Built
+> and tested against testnet; mainnet is not live yet.
+>
+> It is extracted and sanitized out of the Nexus web app's existing bindings, so
+> the surface is young even where it is complete. It covers **63 of the 68
+> operations** in the pinned spec (`.api-version`), listed in
+> [`endpoints.txt`](./endpoints.txt) and checked against the spec in CI. That is
+> every operation a public trading client can meaningfully expose (market data,
+> account, orders, positions, funds, the bridge, and WebSocket streaming). The
+> other five are recorded, one by one and with a reason, in
+> [`spec/uncovered-ops.txt`](./spec/uncovered-ops.txt): the three
+> `admin_secret`-gated tier routes, and two deprecated routes superseded by ones
+> this client already uses. The
+> [Rust](https://github.com/nexus-xyz/nexus-exchange-rs) and
 > [Python](https://github.com/nexus-xyz/nexus-exchange-py) SDKs are the older,
 > more battle-tested implementations of the same contract.
 
