@@ -37,7 +37,8 @@
     "test": "node --test --import tsx test/*.test.ts",
     "bench": "node --import tsx bench/signing.bench.ts",
     "verify:pack": "node scripts/verify-pack.mjs",
-    "prepack": "pnpm run build"
+    "prepack": "pnpm run build",
+    "docs": "typedoc"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -46,6 +47,7 @@
     "globals": "^17.7.0",
     "prettier": "^3.8.4",
     "tsx": "^4.19.2",
+    "typedoc": "^0.28.20",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.62.0"
   },
