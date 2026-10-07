@@ -15,6 +15,13 @@
 //   3. Surfaces every subscription as an `AsyncIterable<WsEvent>` with
 //      bounded buffering, the connection state via `status()`, and the
 //      per-subscription delivery state via `WsSubscription.health()`.
+//   4. Treats a connection that delivers no frame for `staleTimeoutMs` as dead
+//      (ENG-20363): a half-open socket looks open while nothing arrives. Each
+//      subscription gets a `stale` notice and the client reconnects as above.
+//      Where the socket can ping (the `ws` package), it pings every
+//      `pingIntervalMs` and a pong counts as a frame. Browsers cannot send
+//      pings, so there silence alone is the detector; the server answers
+//      protocol pings but sends no heartbeat of its own.
 //
 // Per-subscription recovery (ENG-10674)
 // -------------------------------------
@@ -103,8 +110,8 @@ export interface WsEvent {
   /** Server-assigned monotonic sequence number per (channel, market). */
   seq: bigint;
   /**
-   * Opaque event payload. `null` when `outOfSync` is true (the sentinel
-   * carries no payload of its own).
+   * Opaque event payload. `null` on a synthetic notice (`outOfSync` or
+   * `stale`), which carries no payload of its own.
    */
   data: unknown;
   /**
@@ -114,6 +121,14 @@ export interface WsEvent {
    * a full REST refetch and rely on live events from here on.
    */
   outOfSync?: boolean;
+  /**
+   * True when this is a synthetic notice that the connection went silent for
+   * `staleTimeoutMs` and was dropped, so what the consumer holds may be stale.
+   * `seq` is the cursor. No refetch is needed: the client re-subscribes from
+   * the cursor and the server replays what was missed (or answers
+   * `out_of_sync`, surfaced as usual).
+   */
+  stale?: boolean;
 }
 
 /**
@@ -122,8 +137,9 @@ export interface WsEvent {
  *
  *   • `live`      — delivering. The initial state, and set again by the
  *                   server's `subscribed` ack.
- *   • `resyncing` — the server ended it (`out_of_sync`) and the client has
- *                   already re-subscribed; `live` again on the next ack.
+ *   • `resyncing` — the server ended it (`out_of_sync`), or the connection
+ *                   went stale, and the client is re-subscribing; `live`
+ *                   again on the next ack.
  */
 export type WsStreamHealth = "live" | "resyncing";
 
@@ -166,6 +182,10 @@ export interface WebSocketLike {
   onclose: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
   onmessage: ((ev: { data: unknown }) => void) | null;
+  /** Sends a WebSocket ping, where the implementation can (the `ws` package). */
+  ping?(): void;
+  /** Listens for pongs, where the implementation can (the `ws` package). */
+  on?(event: "pong", listener: () => void): unknown;
 }
 
 export interface WebSocketCtor {
@@ -198,6 +218,23 @@ export interface CreateWsClientOpts {
   baseReconnectDelayMs?: number;
   /** Max reconnect backoff in ms. Default 10000. */
   maxReconnectDelayMs?: number;
+  /**
+   * A connection that delivers no frame for this many ms is treated as dead:
+   * every subscription gets a `stale` notice, and the client drops the socket,
+   * reconnects and re-subscribes from each cursor. Default 30000, matching the
+   * Rust SDK's 30s reconnect. 0 disables it.
+   *
+   * Without pings (browsers, Node's global WebSocket) a connection whose
+   * subscriptions are all quiet this long is replaced too. That costs a
+   * reconnect, not data: the re-subscribe replays from the cursor.
+   */
+  staleTimeoutMs?: number;
+  /**
+   * Ping interval in ms, used only when the WebSocket implementation has
+   * `ping()` and `on("pong")` (the `ws` package). A pong counts as a frame, so
+   * a quiet but healthy connection is kept. Default 15000. 0 disables pings.
+   */
+  pingIntervalMs?: number;
 }
 
 // ── Wire shapes (server → client) ─────────────────────────────────────────────
@@ -279,6 +316,8 @@ class WsClientImpl implements WsClient {
   private readonly maxQueueSize: number;
   private readonly baseReconnectDelayMs: number;
   private readonly maxReconnectDelayMs: number;
+  private readonly staleTimeoutMs: number;
+  private readonly pingIntervalMs: number;
 
   private ws: WebSocketLike | null = null;
   private state: WsStatus = "closed";
@@ -288,6 +327,11 @@ class WsClientImpl implements WsClient {
 
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** When the current socket opened or last delivered a frame or pong. */
+  private lastFrameAt = 0;
+  private staleTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   private readonly subs = new Map<string, Sub>();
   /** Subs whose `subscribe` op has been sent on the *current* socket. */
@@ -301,6 +345,8 @@ class WsClientImpl implements WsClient {
     maxQueueSize: number;
     baseReconnectDelayMs: number;
     maxReconnectDelayMs: number;
+    staleTimeoutMs: number;
+    pingIntervalMs: number;
   }) {
     this.base = opts.base;
     this.path = opts.path;
@@ -309,6 +355,8 @@ class WsClientImpl implements WsClient {
     this.maxQueueSize = opts.maxQueueSize;
     this.baseReconnectDelayMs = opts.baseReconnectDelayMs;
     this.maxReconnectDelayMs = opts.maxReconnectDelayMs;
+    this.staleTimeoutMs = opts.staleTimeoutMs;
+    this.pingIntervalMs = opts.pingIntervalMs;
   }
 
   status(): WsStatus {
@@ -447,10 +495,12 @@ class WsClientImpl implements WsClient {
       // drops would otherwise be retried at the base delay forever. The first
       // frame (below) is the proof the connection works.
       for (const sub of this.subs.values()) this.sendSubscribe(sub);
+      this.startKeepalive(ws);
     };
 
     ws.onmessage = (ev: { data: unknown }) => {
       if (this.ws !== ws) return;
+      this.lastFrameAt = Date.now();
       let parsed: unknown;
       try {
         parsed = JSON.parse(typeof ev.data === "string" ? ev.data : "");
@@ -483,6 +533,63 @@ class WsClientImpl implements WsClient {
       // socket actually closes so the reconnect path runs.
       this.safeClose(ws);
     };
+  }
+
+  private startKeepalive(ws: WebSocketLike): void {
+    this.lastFrameAt = Date.now();
+    const timeout = this.staleTimeoutMs;
+    if (timeout > 0) {
+      // Re-arm for the remaining time instead of resetting a timer per frame:
+      // a busy book stream would otherwise churn a timer per message.
+      const check = () => {
+        const idle = Date.now() - this.lastFrameAt;
+        if (idle < timeout) {
+          this.staleTimer = setTimeout(check, timeout - idle);
+          return;
+        }
+        this.staleTimer = null;
+        this.declareStale(ws);
+      };
+      this.staleTimer = setTimeout(check, timeout);
+    }
+    if (
+      this.pingIntervalMs > 0 &&
+      typeof ws.ping === "function" &&
+      typeof ws.on === "function"
+    ) {
+      ws.on("pong", () => {
+        if (this.ws === ws) this.lastFrameAt = Date.now();
+      });
+      this.pingTimer = setInterval(() => {
+        try {
+          ws.ping?.();
+        } catch {
+          // Lost a race with close — `onclose` drives the reconnect.
+        }
+      }, this.pingIntervalMs);
+    }
+  }
+
+  /**
+   * The socket went silent: tell every subscription, then replace the socket
+   * without waiting for `onclose`, since a half-open socket's close handshake
+   * can hang as long as the silence did.
+   */
+  private declareStale(ws: WebSocketLike): void {
+    if (this.ws !== ws || this.closing) return;
+    for (const sub of [...this.subs.values()]) {
+      this.deliverEvent(sub, {
+        channel: sub.channel,
+        market: sub.market,
+        seq: sub.cursor ?? 0n,
+        data: null,
+        stale: true,
+      });
+      sub.health = "resyncing";
+    }
+    this.dropSocket();
+    this.state = "reconnecting";
+    this.scheduleReconnect();
   }
 
   private scheduleReconnect(): void {
@@ -691,6 +798,14 @@ class WsClientImpl implements WsClient {
   }
 
   private detach(ws: WebSocketLike): void {
+    if (this.staleTimer) {
+      clearTimeout(this.staleTimer);
+      this.staleTimer = null;
+    }
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
     ws.onopen = null;
     ws.onmessage = null;
     ws.onclose = null;
@@ -780,5 +895,7 @@ export function createWsClient(opts: CreateWsClientOpts): WsClient {
     maxQueueSize,
     baseReconnectDelayMs: opts.baseReconnectDelayMs ?? 250,
     maxReconnectDelayMs: opts.maxReconnectDelayMs ?? 10_000,
+    staleTimeoutMs: opts.staleTimeoutMs ?? 30_000,
+    pingIntervalMs: opts.pingIntervalMs ?? 15_000,
   });
 }
