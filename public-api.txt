@@ -127,7 +127,7 @@ class Client { previewOrder(order: OrderRequest, opts?: { signal?: AbortSignal; 
 class Client { registerAgent(registration: AgentRegistrationRequest, opts?: { signal?: AbortSignal; }): Promise<unknown> }
 class Client { registerBridgeWallet(request: RegisterBridgeWalletRequest, opts?: { signal?: AbortSignal; }): Promise<BridgeWallet> }
 class Client { requireSigningChainId(): number }
-class Client { revokeAgent(address: string, opts?: { signal?: AbortSignal; }): Promise<void> }
+class Client { revokeAgent(revocation: AgentRevocation, opts?: { signal?: AbortSignal; }): Promise<void> }
 class Client { setCancelOnDisconnect(enabled: boolean, opts?: { signal?: AbortSignal; }): Promise<CancelOnDisconnectStatus> }
 class Client { setSessionToken(token: string | undefined): void }
 class Client { signIn(...args: Parameters<Client["login"]>): ReturnType<Client["login"]> }
@@ -142,6 +142,7 @@ class EthSigner { get address(): string }
 class EthSigner { private constructor() }
 class EthSigner { registerAgent(options: RegisterAgentOptions): AgentRegistrationRequest }
 class EthSigner { registerWallet(challenge: BridgeWalletChallenge): RegisterBridgeWalletRequest }
+class EthSigner { revokeAgent(options: RevokeAgentOptions): AgentRevocation }
 class EthSigner { signIn(): LoginRequest }
 class EthSigner { static fromHex(privateKey: string): EthSigner }
 class InvalidRequestError extends NexusExchangeError
@@ -264,6 +265,12 @@ interface AgentRequestParts { method: string }
 interface AgentRequestParts { path: string }
 interface AgentRequestParts { query?: string }
 interface AgentRequestParts { timestampMs: number }
+interface AgentRevocation
+interface AgentRevocation { account: string }
+interface AgentRevocation { agent: string }
+interface AgentRevocation { chainId: number }
+interface AgentRevocation { nonce: number }
+interface AgentRevocation { signature: string }
 interface AmendOrderRequest
 interface AmendOrderRequest { price?: Decimal }
 interface AmendOrderRequest { size?: Decimal }
@@ -639,6 +646,11 @@ interface RegisterBridgeWalletRequest
 interface RegisterBridgeWalletRequest { address: string }
 interface RegisterBridgeWalletRequest { message: string }
 interface RegisterBridgeWalletRequest { signature: string }
+interface RevokeAgentOptions
+interface RevokeAgentOptions { agent: string }
+interface RevokeAgentOptions { chainId: number }
+interface RevokeAgentOptions { network: NetworkSelector }
+interface RevokeAgentOptions { nonce: number }
 interface ServiceHealth
 interface ServiceHealth { services: Record<string, unknown> }
 interface ServiceHealth { status: "ok" | "degraded" | "down" | "starting" }

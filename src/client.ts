@@ -28,7 +28,7 @@ import { API_VERSION, SDK_VERSION } from "./version.js";
 import { Cursor, Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
 import type { AgentSigner } from "./agent.js";
-import type { EthSigner } from "./wallet.js";
+import type { AgentRevocation, EthSigner } from "./wallet.js";
 import type {
   AccountFees,
   AccountFunding,
@@ -326,13 +326,14 @@ export interface NetworkSigningDomain {
    */
   readonly chainId: number | null;
   /**
-   * The `RegisterAgent` domain `salt`: `keccak256(network name)`, `0x`-prefixed
+   * The agent-key domain `salt`: `keccak256(network name)`, `0x`-prefixed
    * 32-byte hex, as published in the spec's `x-nexus-networks[*].signing_domain`.
-   * The server salts only `RegisterAgent` with it (ENG-15643), so a registration
-   * signed for one network does not verify on another.
+   * The server salts the agent-key messages (`RegisterAgent`, `RevokeAgentKey`)
+   * with it (ENG-15643), so one signed for one network does not verify on
+   * another.
    *
    * `null` on a custom target, which names no network. `EthSigner.registerAgent`
-   * refuses to sign there rather than drop the salt.
+   * and `EthSigner.revokeAgent` refuse to sign there rather than drop the salt.
    */
   readonly salt: string | null;
 }
@@ -1447,10 +1448,10 @@ export interface ClientOptions {
    *
    * Mutually exclusive with `apiKey` / `apiSecret` — a client has one request
    * credential, as in the Rust SDK, so which one signed a request is never a
-   * guess. Agent keys are trade-only: they **cannot withdraw**, and the
-   * agent-management calls ({@link Client.fetchAgents},
-   * {@link Client.revokeAgent}) need an HMAC client, so they are refused
-   * locally here.
+   * guess. Agent keys are trade-only: they **cannot withdraw**, and
+   * {@link Client.fetchAgents} needs an HMAC client, so it is refused locally
+   * here. {@link Client.revokeAgent} is authorized by the wallet's own
+   * signature, so any client can send it.
    *
    * Concurrent writes from one agent key can be refused as replays (ENG-17010);
    * keep one mutating request in flight per agent key. See {@link AgentSigner}.
@@ -1515,6 +1516,8 @@ interface RequestOptions {
    * request is refused locally, before anything is signed or sent.
    */
   hmacOnly?: boolean;
+  /** Extra request headers, e.g. the `x-wallet-*` credential of `revokeAgent`. */
+  headers?: Record<string, string>;
   signal?: AbortSignal;
 }
 
@@ -1849,7 +1852,7 @@ export class Client {
           "signs with one request credential, and silently preferring one of " +
           "them would leave which key authorized a trade to a rule nobody " +
           "reads. Use two clients if you need both (e.g. an HMAC client for " +
-          "fetchAgents/revokeAgent).",
+          "fetchAgents).",
       );
     }
     this.#apiKey = options.apiKey;
@@ -3509,14 +3512,34 @@ export class Client {
 
   /**
    * `DELETE /agents/{address}` — revoke an agent key by address. After this
-   * returns, in-flight requests signed by the agent are rejected. Requires HMAC
-   * API-key credentials (`apiKey` / `apiSecret`); an agent-signed client is
-   * refused locally.
+   * returns, in-flight requests signed by the agent are rejected. Authorized
+   * only by the wallet's EIP-712 signature (produced by
+   * `signer.revokeAgent(...)`), sent as the four `x-wallet-*` headers; the
+   * server ignores HMAC, session and agent credentials here, so this sends
+   * none and works from any client.
+   *
+   * ```ts
+   * await client.revokeAgent(
+   *   walletSigner.revokeAgent({
+   *     agent: agentSigner.address,
+   *     chainId, // `signing_domain.chain_id` from GET /metadata
+   *     network: client.network,
+   *     nonce: Date.now(), // single use; see RevokeAgentOptions.nonce
+   *   }),
+   * );
+   * ```
    */
-  revokeAgent(address: string, opts?: { signal?: AbortSignal }): Promise<void> {
-    return this.#request<void>("DELETE", `/agents/${seg(address)}`, {
-      signed: true,
-      hmacOnly: true,
+  revokeAgent(
+    revocation: AgentRevocation,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    return this.#request<void>("DELETE", `/agents/${seg(revocation.agent)}`, {
+      headers: {
+        "x-wallet-account": revocation.account,
+        "x-wallet-nonce": String(revocation.nonce),
+        "x-wallet-signature": revocation.signature,
+        "x-wallet-chain-id": String(revocation.chainId),
+      },
       signal: opts?.signal,
     });
   }
@@ -3837,6 +3860,7 @@ export class Client {
       signed = false,
       session = false,
       hmacOnly = false,
+      headers: extraHeaders,
       signal,
     } = options;
 
@@ -3862,6 +3886,7 @@ export class Client {
     if (body !== undefined && body !== null) {
       headers["content-type"] = "application/json";
     }
+    Object.assign(headers, extraHeaders);
     if (session) {
       if (!this.#sessionToken) {
         throw new MissingCredentialsError(

@@ -102,11 +102,13 @@ export {
   type FetchPage,
 } from "./pagination.js";
 // EVM wallet signer for the wallet-authorized auth flows (EIP-191 sign-in,
-// EIP-712 agent registration).
+// EIP-712 agent registration and revocation).
 export {
   EthSigner,
   SIGN_IN_MESSAGE,
+  type AgentRevocation,
   type RegisterAgentOptions,
+  type RevokeAgentOptions,
 } from "./wallet.js";
 
 // WebSocket streaming client (book / trades / candles + account-scoped).

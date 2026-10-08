@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
+import { AgentSigner } from "../src/agent.js";
 import { Client, Network } from "../src/client.js";
 import type { ClientOptions } from "../src/client.js";
 import { EthSigner } from "../src/wallet.js";
@@ -228,29 +229,46 @@ test("fetchAgents GETs host-root /agents signed with HMAC over the bare path", a
   );
 });
 
-test("revokeAgent DELETEs host-root /agents/{address} signed with HMAC", async () => {
-  const { client, calls } = clientWithCapture({
+// The server takes only the wallet signature here (ENG-20579) and ignores any
+// HMAC, session or agent credential, so the client sends exactly the four
+// wallet headers whatever it is configured with, and needs none of its own.
+test("revokeAgent DELETEs /agents/{address} with only the four wallet headers", async () => {
+  const wallet = EthSigner.fromHex(TEST_KEY);
+  const revocation = wallet.revokeAgent({
+    agent: "0xABABABABABABABABABABABABABABABABABABABAB",
+    chainId: 20056,
     network: Network.Local,
-    apiKey: "nx_test",
-    apiSecret: SECRET,
+    nonce: 1_790_000_000_000,
   });
-
-  await client.revokeAgent("0xABCD");
-  const c = calls[0]!;
-  assert.equal(c.url, "http://localhost:9090/agents/0xABCD");
-  assert.equal(c.method, "DELETE");
-  const ts = c.headers.get("x-timestamp")!;
-  assert.equal(
-    c.headers.get("x-signature"),
-    referenceSignature(ts, "DELETE", "/agents/0xABCD", "", Buffer.alloc(0)),
-  );
+  for (const credentials of [
+    {},
+    { apiKey: "nx_test", apiSecret: SECRET, sessionToken: "tok" },
+    { agentSigner: AgentSigner.fromHex(`0x${"01".repeat(32)}`) },
+  ] satisfies Partial<ClientOptions>[]) {
+    const { client, calls } = clientWithCapture({
+      network: Network.Local,
+      userAgent: "",
+      apiVersion: "",
+      ...credentials,
+    });
+    await client.revokeAgent(revocation);
+    const c = calls[0]!;
+    assert.equal(
+      c.url,
+      "http://localhost:9090/agents/0xabababababababababababababababababababab",
+    );
+    assert.equal(c.method, "DELETE");
+    assert.equal(c.body, undefined);
+    assert.deepEqual(Object.fromEntries(c.headers), {
+      "x-wallet-account": wallet.address,
+      "x-wallet-nonce": "1790000000000",
+      "x-wallet-signature": revocation.signature,
+      "x-wallet-chain-id": "20056",
+    });
+  }
 });
 
-test("agent management throws MissingCredentialsError without API-key creds", async () => {
+test("fetchAgents throws MissingCredentialsError without API-key creds", async () => {
   const { client } = clientWithCapture({ network: Network.Local });
   await assert.rejects(() => client.fetchAgents(), MissingCredentialsError);
-  await assert.rejects(
-    () => client.revokeAgent("0x12"),
-    MissingCredentialsError,
-  );
 });
