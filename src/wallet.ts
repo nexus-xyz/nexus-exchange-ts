@@ -1,6 +1,7 @@
 // EVM wallet signing for the wallet-authorized flows: EIP-191 session login
-// (`signIn`), EIP-712 agent-key registration (`registerAgent`), and the EIP-191
-// withdrawal-wallet ownership proof (`registerWallet`).
+// (`signIn`), EIP-712 agent-key registration and revocation (`registerAgent`,
+// `revokeAgent`), and the EIP-191 withdrawal-wallet ownership proof
+// (`registerWallet`).
 //
 // {@link EthSigner} holds a secp256k1 private key and produces the *signed
 // request bodies* for those endpoints. It is a pure signer: deterministic,
@@ -34,7 +35,7 @@ import type {
 export const SIGN_IN_MESSAGE = "Sign in to Nexus Exchange";
 
 // EIP-712 domain, matching what the server verifies: these two, the chain id,
-// and (for `RegisterAgent`) a per-network `salt` (see `registerSalt`). NOTE: the OpenAPI prose for `POST /agents/register`
+// and a per-network `salt` (see `agentSalt`). NOTE: the OpenAPI prose for `POST /agents/register`
 // reads `name: 'NexusExchange'` / `uint256` fields, but the server (and the
 // reference Rust SDK's cross-checked vectors) actually use `"Nexus Exchange"`
 // (with a space) and `uint64` struct fields — that is a spec-prose error, so we
@@ -142,7 +143,7 @@ function assertWireSafeUint(value: number | bigint, field: string): void {
   throw new NexusExchangeError(
     `${field} must be a non-negative integer no greater than ` +
       `Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER}), got ${value}. ` +
-      `It is signed into the EIP-712 digest and also sent as a JSON number, so ` +
+      `It is signed into the EIP-712 digest and also sent on the wire, so ` +
       `a value that does not round-trip would sign one number and transmit ` +
       `another, and the signature could not verify.`,
   );
@@ -181,34 +182,63 @@ function eip191Digest(message: Uint8Array): Uint8Array {
 }
 
 /**
- * The `RegisterAgent` domain salt for a network, or refuse to sign.
+ * The agent-management domain salt for a network, or refuse to sign.
  *
- * The server verifies `RegisterAgent` under a domain salted with its own network
- * name, `keccak256(network)`, with no unsalted fallback (ENG-15643). A custom
- * target names no network, so it has no salt, and an unsalted signature would
- * only be refused by the server as `signer_mismatch`.
+ * The server verifies the agent-key messages (`RegisterAgent`,
+ * `RevokeAgentKey`) under a domain salted with its own network name,
+ * `keccak256(network)`, with no unsalted fallback (ENG-15643). A custom target
+ * names no network, so it has no salt, and an unsalted signature would only be
+ * refused by the server as a signer mismatch.
  */
-function registerSalt(network: NetworkSelector): Uint8Array {
+function agentSalt(network: NetworkSelector, message: string): Uint8Array {
   const config = networkConfig(network);
   const { salt } = config.signingDomain;
   if (salt === null) {
     throw new NexusExchangeError(
-      `no RegisterAgent signing salt is known for target ` +
-        `${JSON.stringify(config.label)}: the server binds agent registrations ` +
+      `no ${message} signing salt is known for target ` +
+        `${JSON.stringify(config.label)}: the server binds agent-key messages ` +
         `to its network name (salt = keccak256(network)), and a custom target ` +
         `names none. Pass \`network: Network.Mainnet | Network.Testnet | ` +
         `Network.Local\`, whichever the target server runs as. The salt only ` +
-        `names the network; the client you send the registration through ` +
+        `names the network; the client you send the request through ` +
         `still picks the host.`,
     );
   }
   return hexToBytes(strip0x(salt));
 }
 
+const enc = (s: string) => new TextEncoder().encode(s);
+
 /**
- * EIP-712 digest for `RegisterAgent{agent, expiresAt, nonce}` under the
- * `Nexus Exchange` domain with `salt` and no `verifyingContract`:
- * `keccak256(0x1901 || domainSeparator || hashStruct(message))`. Matches the
+ * EIP-712 digest of `hashStruct` under the `Nexus Exchange` domain with `salt`
+ * and no `verifyingContract`:
+ * `keccak256(0x1901 || domainSeparator || hashStruct)`.
+ */
+function agentTypedDataDigest(
+  chainId: number | bigint,
+  salt: Uint8Array,
+  hashStruct: Uint8Array,
+): Uint8Array {
+  const domainSeparator = keccak_256(
+    concatBytes(
+      keccak_256(
+        enc(
+          "EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)",
+        ),
+      ),
+      keccak_256(enc(EIP712_DOMAIN_NAME)),
+      keccak_256(enc(EIP712_DOMAIN_VERSION)),
+      u256(chainId),
+      salt,
+    ),
+  );
+  return keccak_256(
+    concatBytes(Uint8Array.from([0x19, 0x01]), domainSeparator, hashStruct),
+  );
+}
+
+/**
+ * EIP-712 digest for `RegisterAgent{agent, expiresAt, nonce}`. Matches the
  * server's `agent_store::eip712::register_agent_digest`.
  */
 function registerAgentDigest(
@@ -224,39 +254,48 @@ function registerAgentDigest(
   assertChainId(chainId);
   assertWireSafeUint(expiresAtMs, "expiresAtMs");
   assertWireSafeUint(nonce, "nonce");
-  const salt = registerSalt(network);
-  const enc = (s: string) => new TextEncoder().encode(s);
-
-  const domainTypeHash = keccak_256(
-    enc(
-      "EIP712Domain(string name,string version,uint256 chainId,bytes32 salt)",
-    ),
-  );
-  const domainSeparator = keccak_256(
-    concatBytes(
-      domainTypeHash,
-      keccak_256(enc(EIP712_DOMAIN_NAME)),
-      keccak_256(enc(EIP712_DOMAIN_VERSION)),
-      u256(chainId),
-      salt,
-    ),
-  );
-
-  const structTypeHash = keccak_256(
-    enc("RegisterAgent(address agent,uint64 expiresAt,uint64 nonce)"),
-  );
+  const salt = agentSalt(network, "RegisterAgent");
   const hashStruct = keccak_256(
     concatBytes(
-      structTypeHash,
+      keccak_256(
+        enc("RegisterAgent(address agent,uint64 expiresAt,uint64 nonce)"),
+      ),
       addressWord(agent),
       u256(expiresAtMs),
       u256(nonce),
     ),
   );
+  return agentTypedDataDigest(chainId, salt, hashStruct);
+}
 
-  return keccak_256(
-    concatBytes(Uint8Array.from([0x19, 0x01]), domainSeparator, hashStruct),
+/**
+ * EIP-712 digest for `RevokeAgentKey{account, agent, nonce}`, the message
+ * `DELETE /agents/{address}` verifies. Matches the accounts service's
+ * `PINNED_REVOKE` vector (test/wallet.test.ts).
+ *
+ * @internal Not re-exported from the package entry point.
+ */
+export function revokeAgentKeyDigest(
+  account: Uint8Array,
+  agent: Uint8Array,
+  nonce: number,
+  chainId: number,
+  network: NetworkSelector,
+): Uint8Array {
+  assertChainId(chainId);
+  assertWireSafeUint(nonce, "nonce");
+  const salt = agentSalt(network, "RevokeAgentKey");
+  const hashStruct = keccak_256(
+    concatBytes(
+      keccak_256(
+        enc("RevokeAgentKey(address account,address agent,uint64 nonce)"),
+      ),
+      addressWord(account),
+      addressWord(agent),
+      u256(nonce),
+    ),
   );
+  return agentTypedDataDigest(chainId, salt, hashStruct);
 }
 
 /** Options for {@link EthSigner.registerAgent}. */
@@ -305,6 +344,49 @@ export interface RegisterAgentOptions {
   nonce: number | bigint;
   /** Optional human-readable label for the agent (e.g. `"my-bot"`). */
   label?: string;
+}
+
+/** Options for {@link EthSigner.revokeAgent}. */
+export interface RevokeAgentOptions {
+  /** Agent address to revoke (`0x`-prefixed, 20 bytes): the `{address}` path segment. */
+  agent: string;
+  /**
+   * Unix milliseconds, sent as `x-wallet-nonce`; pass `Date.now()`. The server
+   * accepts it within `[now - 5 min, now + 60 s]` of its own clock, and it must
+   * be strictly greater than the last nonce this wallet used to rename or
+   * revoke an agent: each one is single use.
+   */
+  nonce: number;
+  /**
+   * The EIP-712 domain chain id, sent as `x-wallet-chain-id`. Same rules as
+   * {@link RegisterAgentOptions.chainId}: read it from `GET /metadata`, never
+   * default it.
+   */
+  chainId: number;
+  /**
+   * The network the revocation is for. The domain is salted with
+   * `keccak256(network name)`, exactly as for {@link RegisterAgentOptions.network};
+   * a custom target has no salt and is refused.
+   */
+  network: NetworkSelector;
+}
+
+/**
+ * A wallet-signed `RevokeAgentKey`, produced by {@link EthSigner.revokeAgent}
+ * and sent by `Client.revokeAgent` as the four `x-wallet-*` headers of
+ * `DELETE /agents/{address}`.
+ */
+export interface AgentRevocation {
+  /** The wallet that signed, lowercase `0x` hex (`x-wallet-account`). */
+  account: string;
+  /** The agent being revoked, lowercase `0x` hex (the path segment). */
+  agent: string;
+  /** Unix milliseconds the wallet signed at (`x-wallet-nonce`). */
+  nonce: number;
+  /** `0x` + 65-byte `r||s||v` (`x-wallet-signature`). */
+  signature: string;
+  /** The domain chain id signed with (`x-wallet-chain-id`). */
+  chainId: number;
 }
 
 /**
@@ -376,6 +458,7 @@ export function signPrehash(
  * Produces the *signed request bodies* for the wallet-authorized endpoints:
  * - {@link signIn} → `POST /auth/login` (EIP-191 `personal_sign`).
  * - {@link registerAgent} → `POST /agents/register` (EIP-712).
+ * - {@link revokeAgent} → `DELETE /agents/{address}` (EIP-712).
  * - {@link registerWallet} → `POST /bridge/wallets` (EIP-191 `personal_sign`).
  *
  * @example
@@ -444,6 +527,30 @@ export class EthSigner {
     };
     if (options.label !== undefined) body.label = options.label;
     return body;
+  }
+
+  /**
+   * Sign an agent-key revocation (`RevokeAgentKey`) with EIP-712, under the
+   * same salted domain as {@link registerAgent}. Pass the result to
+   * `Client.revokeAgent`; the wallet signature is the request's only
+   * credential, so no API key or session is needed.
+   */
+  revokeAgent(options: RevokeAgentOptions): AgentRevocation {
+    const agentBytes = parseAddress(options.agent, "agent address");
+    const digest = revokeAgentKeyDigest(
+      parseAddress(this.#address, "wallet address"),
+      agentBytes,
+      options.nonce,
+      options.chainId,
+      options.network,
+    );
+    return {
+      account: this.#address,
+      agent: `0x${bytesToHex(agentBytes)}`,
+      nonce: options.nonce,
+      signature: this.#signDigest(digest),
+      chainId: options.chainId,
+    };
   }
 
   /**

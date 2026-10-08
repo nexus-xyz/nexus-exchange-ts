@@ -4,7 +4,11 @@ import assert from "node:assert/strict";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
-import { EthSigner, SIGN_IN_MESSAGE } from "../src/wallet.js";
+import {
+  EthSigner,
+  SIGN_IN_MESSAGE,
+  revokeAgentKeyDigest,
+} from "../src/wallet.js";
 import { MissingCredentialsError, NexusExchangeError } from "../src/errors.js";
 import { customNetwork, Network, networkConfig } from "../src/client.js";
 
@@ -160,6 +164,79 @@ test("registerAgent refuses a custom target, which has no salt", () => {
         network,
       }),
     /no RegisterAgent signing salt/,
+  );
+});
+
+// The accounts service's `PINNED_REVOKE`, also published as the spec's
+// walletSignature test vector: same salted domain as RegisterAgent, message
+// `RevokeAgentKey(address account,address agent,uint64 nonce)`.
+const REVOKE_NONCE = 1_790_000_000_000;
+const REVOKE_DIGEST =
+  "73669adde69e6f7cd9f9ecc0825887403ee05d5fc6322d462e91c42920192bcb";
+
+test("revokeAgentKeyDigest matches the server's pinned vector", () => {
+  const digest = revokeAgentKeyDigest(
+    hexToBytesLocal("11".repeat(20)),
+    hexToBytesLocal("ab".repeat(20)),
+    REVOKE_NONCE,
+    KAT_CHAIN_ID,
+    KAT_NETWORK,
+  );
+  assert.equal(Buffer.from(digest).toString("hex"), REVOKE_DIGEST);
+});
+
+test("revokeAgent signs the digest with the wallet and lowercases addresses", () => {
+  const signer = EthSigner.fromHex(TEST_KEY);
+  const agent = `0x${"AB".repeat(20)}`;
+  const { signature, ...rest } = signer.revokeAgent({
+    agent,
+    chainId: KAT_CHAIN_ID,
+    network: KAT_NETWORK,
+    nonce: REVOKE_NONCE,
+  });
+  assert.deepEqual(rest, {
+    account: TEST_ADDR,
+    agent: agent.toLowerCase(),
+    nonce: REVOKE_NONCE,
+    chainId: KAT_CHAIN_ID,
+  });
+  const digest = revokeAgentKeyDigest(
+    hexToBytesLocal(TEST_ADDR.slice(2)),
+    hexToBytesLocal("ab".repeat(20)),
+    REVOKE_NONCE,
+    KAT_CHAIN_ID,
+    KAT_NETWORK,
+  );
+  const raw = hexToBytesLocal(signature.slice(2));
+  const sig = secp256k1.Signature.fromBytes(
+    raw.slice(0, 64),
+    "compact",
+  ).addRecoveryBit(raw[64]! - 27);
+  const pub = sig.recoverPublicKey(digest);
+  const addr = keccak_256(pub.toBytes(false).slice(1)).slice(12);
+  assert.equal(`0x${Buffer.from(addr).toString("hex")}`, TEST_ADDR);
+});
+
+test("revokeAgent refuses a bad agent address and a custom target", () => {
+  const signer = EthSigner.fromHex(TEST_KEY);
+  const base = { chainId: KAT_CHAIN_ID, nonce: REVOKE_NONCE };
+  assert.throws(
+    () =>
+      signer.revokeAgent({ ...base, agent: "0x1234", network: KAT_NETWORK }),
+    /agent address must be 20 bytes/,
+  );
+  assert.throws(
+    () =>
+      signer.revokeAgent({
+        ...base,
+        agent: KAT_AGENT,
+        network: customNetwork({
+          label: "dev",
+          baseUrl: "http://localhost:1",
+          funds: "play",
+        }),
+      }),
+    /no RevokeAgentKey signing salt/,
   );
 });
 

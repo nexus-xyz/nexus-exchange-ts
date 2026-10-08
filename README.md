@@ -622,15 +622,15 @@ Session tokens authenticate only the `/keys` endpoints and expire after 24h;
 call `login` again to renew, or `setSessionToken(...)` to supply/clear one.
 
 Agent keys let a derived keypair sign trading requests without exposing the main
-wallet. Registration is authorized by the wallet's EIP-712 signature (no session
-needed); listing and revoking use HMAC API-key credentials:
+wallet. Registration and revocation are authorized by the wallet's EIP-712
+signature (no session or API key needed); listing uses HMAC API-key credentials:
 
 ```ts
 const agent = EthSigner.fromHex(process.env.AGENT_PRIVATE_KEY!);
 await client.registerAgent(
   wallet.registerAgent({
     agent: agent.address,
-    chainId: 393, // exchange testnet chain id
+    chainId: 20056, // the EIP-712 domain chainId the server verifies
     network: client.network, // salts the domain: valid on this network only
     expiresAtMs: Date.now() + 30 * 24 * 3600_000,
     nonce: Date.now(),
@@ -640,7 +640,18 @@ await client.registerAgent(
 
 // With apiKey/apiSecret configured:
 const agents = await client.fetchAgents();
-await client.revokeAgent(agent.address);
+
+// From any client: the wallet's signature is the only credential.
+await client.revokeAgent(
+  wallet.revokeAgent({
+    agent: agent.address,
+    chainId: 20056,
+    network: client.network,
+    // Unix ms, within [now - 5 min, now + 60 s]; single use, and it must be
+    // greater than this wallet's last revoke or rename nonce.
+    nonce: Date.now(),
+  }),
+);
 ```
 
 #### Signing requests with an agent key
@@ -674,8 +685,9 @@ writes (reads parse but do not enforce them). `agentCanonicalString` is exported
 for debugging, since every rejection is the same opaque `401`.
 
 - **Agent keys are trade-only and cannot withdraw.** Agent-signed withdrawals
-  are refused (`403 AGENT_CANNOT_WITHDRAW`), and `fetchAgents` / `revokeAgent`
-  need an HMAC client — an agent-signed client refuses them locally.
+  are refused (`403 AGENT_CANNOT_WITHDRAW`), and `fetchAgents` needs an HMAC
+  client, so an agent-signed client refuses it locally. `revokeAgent` works
+  from any client, since the wallet signs it.
 - **Concurrent writes from one agent key can be refused as replays**
   (ENG-17010). Nonces are issued in order but can _arrive_ out of order; if
   the higher one lands first, the lower one gets a `401` indistinguishable from

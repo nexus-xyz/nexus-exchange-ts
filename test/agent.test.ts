@@ -314,7 +314,7 @@ test("agentSigner and apiKey/apiSecret are mutually exclusive", () => {
   assert.equal(new Client({ agentSigner }).hasCredentials, true);
 });
 
-test("agent-management routes are refused locally for an agent-signed client", async () => {
+test("fetchAgents is refused locally for an agent-signed client", async () => {
   let sent = 0;
   const client = new Client({
     agentSigner: AgentSigner.fromHex(VECTORS[1].private_key),
@@ -324,7 +324,6 @@ test("agent-management routes are refused locally for an agent-signed client", a
     }) as unknown as typeof fetch,
   });
   await assert.rejects(client.fetchAgents(), MissingCredentialsError);
-  await assert.rejects(client.revokeAgent("0xabc"), MissingCredentialsError);
   assert.equal(sent, 0, "nothing may be signed or sent");
 });
 
