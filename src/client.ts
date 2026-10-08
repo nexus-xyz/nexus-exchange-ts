@@ -3479,7 +3479,7 @@ export class Client {
    * await client.registerAgent(
    *   walletSigner.registerAgent({
    *     agent: agentSigner.address,
-   *     chainId: 393,
+   *     chainId: 20056,
    *     expiresAtMs: Date.now() + 30 * 24 * 3600_000,
    *     nonce: Date.now(),
    *     label: "my-bot",

@@ -630,7 +630,7 @@ const agent = EthSigner.fromHex(process.env.AGENT_PRIVATE_KEY!);
 await client.registerAgent(
   wallet.registerAgent({
     agent: agent.address,
-    chainId: 393, // exchange testnet chain id
+    chainId: 20056, // the EIP-712 domain chainId the server verifies
     network: client.network, // salts the domain: valid on this network only
     expiresAtMs: Date.now() + 30 * 24 * 3600_000,
     nonce: Date.now(),
@@ -645,7 +645,7 @@ const agents = await client.fetchAgents();
 await client.revokeAgent(
   wallet.revokeAgent({
     agent: agent.address,
-    chainId: 393,
+    chainId: 20056,
     network: client.network,
     // Unix ms, within [now - 5 min, now + 60 s]; single use, and it must be
     // greater than this wallet's last revoke or rename nonce.
