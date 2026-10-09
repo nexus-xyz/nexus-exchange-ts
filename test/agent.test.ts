@@ -301,14 +301,18 @@ test("the private key never renders", () => {
 
 // -- client wiring --------------------------------------------------------------
 
-test("agentSigner and apiKey/apiSecret are mutually exclusive", () => {
+test("agentSigner takes a whole apiKey/apiSecret pair or none (D26)", () => {
   const agentSigner = AgentSigner.fromHex(VECTORS[1].private_key);
-  assert.throws(
-    () => new Client({ agentSigner, apiKey: "k", apiSecret: "ab" }),
-    /either `agentSigner` or `apiKey`/,
+  assert.equal(
+    new Client({ agentSigner, apiKey: "k", apiSecret: "ab" }).hasCredentials,
+    true,
   );
   assert.throws(
     () => new Client({ agentSigner, apiKey: "k" }),
+    /pass both `apiKey` and `apiSecret` or neither/,
+  );
+  assert.throws(
+    () => new Client({ agentSigner, apiSecret: "ab" }),
     NexusExchangeError,
   );
   assert.equal(new Client({ agentSigner }).hasCredentials, true);

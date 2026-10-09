@@ -81,13 +81,17 @@ export {
 export { signRequest, sha256Hex, bytesToHex, hexToBytes } from "./sign.js";
 
 // Agent-key request signer (the spec's `agentAuth` scheme): pass an
-// `AgentSigner` as `ClientOptions.agentSigner` in place of apiKey/apiSecret.
+// `AgentSigner` as `ClientOptions.agentSigner`, alone or beside apiKey/apiSecret
+// (D26), to sign the order-path writes' trading actions (D27).
 export {
   AgentSigner,
   agentCanonicalString,
+  type ActionHeaders,
   type AgentAuthHeaders,
   type AgentRequestParts,
+  type AgentSignerOptions,
 } from "./agent.js";
+export { type TradingAction } from "./trading.js";
 
 // Tick / lot rounding before an order goes out (mirrors the Rust SDK's markets.rs).
 export { roundPrice, roundSize } from "./markets.js";

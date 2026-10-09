@@ -38,8 +38,9 @@
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
-import { NexusExchangeError } from "./errors.js";
+import { MissingCredentialsError, NexusExchangeError } from "./errors.js";
 import { bytesToHex } from "./sign.js";
+import { tradingDigest, type TradingAction } from "./trading.js";
 import { parsePrivateKey, signPrehash } from "./wallet.js";
 
 /** The four agent-auth request headers, lower-case. */
@@ -52,6 +53,39 @@ export interface AgentAuthHeaders {
   "x-nonce": string;
   /** `0x` + 65-byte `r||s||v` hex, `v ∈ {27, 28}`. */
   "x-signature": string;
+}
+
+/**
+ * The signed trading action headers (D27): `x-action-signature`,
+ * `x-action-timestamp`, `x-action-nonce`, and `x-acting-account` when the
+ * action is for an account other than the signer's own (D30).
+ */
+export type ActionHeaders = Record<string, string>;
+
+/** Options for {@link AgentSigner.fromHex}. */
+export interface AgentSignerOptions {
+  /**
+   * The account that registered this agent, `0x`-prefixed 20-byte hex. A
+   * signed trading action names the account it is for, so the agent needs it
+   * to sign one (see {@link AgentSigner.actionHeaders}); the canonical-string
+   * scheme does not.
+   */
+  account?: string;
+}
+
+/**
+ * Validate and lowercase a 20-byte `0x` address.
+ *
+ * @internal Not re-exported from the package entry point.
+ */
+export function normalizeAccount(name: string, value: string): string {
+  const lower = typeof value === "string" ? value.toLowerCase() : "";
+  if (!/^0x[0-9a-f]{40}$/.test(lower)) {
+    throw new NexusExchangeError(
+      `${name} must be a 0x-prefixed 20-byte hex address`,
+    );
+  }
+  return lower;
 }
 
 /** The parts of a request the agent signature covers. */
@@ -163,15 +197,29 @@ export function agentCanonicalString(
  * An agent registration belongs to the host it was registered on; the
  * canonical string has no network component, so the same signer is simply
  * unknown (and `401`s) elsewhere.
+ *
+ * ## Signed trading actions (D27)
+ *
+ * On the eight order-path writes the engine checks an EIP-712 action signed by
+ * an agent key, and once it enforces that it refuses an order without one. On a
+ * network that names its deployment domain (`NetworkConfig.deploymentDomain`)
+ * the client signs it with this agent, so build the signer with the account
+ * that registered it: `AgentSigner.fromHex(key, { account })`.
  */
 export class AgentSigner {
   readonly #privateKey: Uint8Array;
   readonly #address: string;
+  readonly #account?: string;
   #lastNonce = 0;
 
-  private constructor(privateKey: Uint8Array, address: string) {
+  private constructor(
+    privateKey: Uint8Array,
+    address: string,
+    account?: string,
+  ) {
     this.#privateKey = privateKey;
     this.#address = address;
+    this.#account = account;
   }
 
   /**
@@ -181,9 +229,21 @@ export class AgentSigner {
    * Throws `MissingCredentialsError` if the key is not 32 bytes of valid hex or
    * is not a valid secp256k1 scalar. The error never echoes the key.
    */
-  static fromHex(privateKey: string): AgentSigner {
+  static fromHex(
+    privateKey: string,
+    options?: AgentSignerOptions,
+  ): AgentSigner {
     const { key, address } = parsePrivateKey(privateKey);
-    return new AgentSigner(key, address);
+    const account =
+      options?.account === undefined
+        ? undefined
+        : normalizeAccount("account", options.account);
+    return new AgentSigner(key, address, account);
+  }
+
+  /** The account that registered this agent, if it was given. */
+  get account(): string | undefined {
+    return this.#account;
   }
 
   /**
@@ -232,6 +292,46 @@ export class AgentSigner {
       "x-nonce": String(parts.nonce),
       "x-signature": signPrehash(digest, this.#privateKey),
     };
+  }
+
+  /**
+   * Sign a trading action (D27) and return its `x-action-*` headers, issuing
+   * the nonce from this signer with `timestampMs` as its floor, the same
+   * sequence {@link authHeaders} draws from. `Client` calls this on the eight
+   * order-path writes when its network names a deployment domain.
+   *
+   * The struct's `account` is `actingAccount` when given (a subaccount, sent as
+   * `x-acting-account`), else this agent's own {@link account}.
+   */
+  actionHeaders(args: {
+    action: TradingAction;
+    domain: string;
+    timestampMs: number;
+    actingAccount?: string;
+  }): ActionHeaders {
+    if (this.#account === undefined) {
+      throw new MissingCredentialsError(
+        "a signed trading action names the account it is for: build the " +
+          "agent with `AgentSigner.fromHex(key, { account })`, the account " +
+          "that registered it",
+      );
+    }
+    assertU64("timestampMs", args.timestampMs);
+    const nonce = this.nextNonce(args.timestampMs);
+    const account = args.actingAccount ?? this.#account;
+    const digest = tradingDigest(args.action, {
+      account,
+      domain: args.domain,
+      timestampMs: args.timestampMs,
+      nonce,
+    });
+    const headers: ActionHeaders = {
+      "x-action-signature": signPrehash(digest, this.#privateKey),
+      "x-action-timestamp": String(args.timestampMs),
+      "x-action-nonce": String(nonce),
+    };
+    if (account !== this.#account) headers["x-acting-account"] = account;
+    return headers;
   }
 
   /** Never render the key: `String(signer)` and JSON show only the address. */

@@ -24,10 +24,11 @@ import {
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
 import { bytesToHex, signRequest } from "./sign.js";
+import { tradingRequest, tradingRoute } from "./trading.js";
 import { API_VERSION, SDK_VERSION } from "./version.js";
 import { Cursor, Page, Paginator } from "./pagination.js";
 import type { FetchPage } from "./pagination.js";
-import type { AgentSigner } from "./agent.js";
+import { normalizeAccount, type AgentSigner } from "./agent.js";
 import type { AgentRevocation, EthSigner } from "./wallet.js";
 import type {
   AccountFees,
@@ -416,6 +417,18 @@ export interface NetworkConfig {
    * `null` and only carries a chain id if the caller declared one.
    */
   readonly signingDomain: NetworkSigningDomain;
+  /**
+   * The deployment name a signed trading action binds (the D27 struct's
+   * `domain`: `devnet`, `prd-testnet`, …), or absent when this target names
+   * none. Set, the client signs the eight order-path writes as typed actions
+   * (see {@link ClientOptions.agentSigner}); absent, it sends them as before.
+   *
+   * No built-in network declares one: a typed action only verifies where the
+   * deployment's edge and engine are configured with the same name, which
+   * today is apps-dev (`devnet`) only. Declare it with
+   * {@link CustomNetworkOptions.deploymentDomain}.
+   */
+  readonly deploymentDomain?: string;
 }
 
 // One `name`/`version` pair across all networks. The chain id is per-network
@@ -737,6 +750,14 @@ export interface CustomNetworkOptions {
    * and "caller-supplied domain" means the same thing in every Nexus SDK.
    */
   signingChainId?: number;
+  /**
+   * The deployment name signed trading actions bind (D27), e.g. `"devnet"` on
+   * apps-dev. It must equal the deployment's own `DEPLOYMENT_DOMAIN`; omit it
+   * and the order-path writes are sent without a signed action. 1-64 characters
+   * of `[A-Za-z0-9_-]`, the server's rule. See
+   * {@link NetworkConfig.deploymentDomain}.
+   */
+  deploymentDomain?: string;
 }
 
 /**
@@ -887,6 +908,7 @@ function buildDescriptor(
     funds: unknown;
     faucet?: unknown;
     wsUrl?: unknown;
+    deploymentDomain?: unknown;
   },
   signingChainId: unknown,
 ): NetworkConfig {
@@ -916,6 +938,17 @@ function buildDescriptor(
     normalizeCustomWsUrl(fields.wsUrl, base.url, where) ??
     wsBaseForRestBase(base.url);
   const chainId = normalizeSigningChainId(signingChainId, where);
+  const deploymentDomain = fields.deploymentDomain ?? undefined;
+  if (
+    deploymentDomain !== undefined &&
+    (typeof deploymentDomain !== "string" ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(deploymentDomain))
+  ) {
+    throw new NexusExchangeError(
+      `${where} deploymentDomain must be 1-64 characters of [A-Za-z0-9_-], ` +
+        `got ${JSON.stringify(deploymentDomain)}`,
+    );
+  }
   const config = Object.freeze({
     label,
     funds,
@@ -926,6 +959,7 @@ function buildDescriptor(
       chainId === null
         ? SIGNING_DOMAIN
         : Object.freeze({ ...SIGNING_DOMAIN, chainId }),
+    ...(deploymentDomain === undefined ? {} : { deploymentDomain }),
   }) as NetworkConfig;
   VALIDATED_CONFIGS.add(config);
   return config;
@@ -1441,22 +1475,45 @@ export interface ClientOptions {
   /** Hex-encoded API secret for signed requests (paired with `apiKey`). */
   apiSecret?: string;
   /**
-   * A registered agent key to sign authenticated requests with, instead of an
-   * HMAC API key: every signed request then carries `x-agent` / `x-timestamp` /
-   * `x-nonce` / `x-signature` (the spec's `agentAuth` scheme). See
-   * {@link AgentSigner}.
+   * A registered agent key. Alone, it signs every authenticated request
+   * instead of an HMAC API key: `x-agent` / `x-timestamp` / `x-nonce` /
+   * `x-signature` (the spec's `agentAuth` scheme). See {@link AgentSigner}.
    *
-   * Mutually exclusive with `apiKey` / `apiSecret` — a client has one request
-   * credential, as in the Rust SDK, so which one signed a request is never a
-   * guess. Agent keys are trade-only: they **cannot withdraw**, and
-   * {@link Client.fetchAgents} needs an HMAC client, so it is refused locally
-   * here. {@link Client.revokeAgent} is authorized by the wallet's own
-   * signature, so any client can send it.
+   * **Signed trading actions (D27).** On a network that names its
+   * {@link NetworkConfig.deploymentDomain}, the eight order-path writes
+   * (`createOrder`, `createOrders`, `editOrder`, `cancelOrder`,
+   * `cancelAllOrders`, `addMargin`, and the leverage and margin-mode writes)
+   * also carry the EIP-712 action this agent signs, in `x-action-signature` /
+   * `x-action-timestamp` / `x-action-nonce`. Agent alone, those writes send
+   * `x-agent` with the action headers in place of the canonical string, as the
+   * exchange terminal does. Build the signer with its account
+   * (`AgentSigner.fromHex(key, { account })`) for this.
+   *
+   * **With `apiKey` / `apiSecret` too (D26).** The HMAC key authenticates
+   * every request and the agent only signs the trading actions: under D26 an
+   * HMAC key identifies the caller but does not authorize an order, so once the
+   * engine enforces signed actions an HMAC-only client's orders are refused.
+   * No `x-agent` is sent then.
+   *
+   * Agent keys are trade-only: they **cannot withdraw**, and
+   * {@link Client.fetchAgents} needs an HMAC credential, so an agent-only
+   * client refuses it locally. {@link Client.revokeAgent} is authorized by the
+   * wallet's own signature, so any client can send it.
    *
    * Concurrent writes from one agent key can be refused as replays (ENG-17010);
    * keep one mutating request in flight per agent key. See {@link AgentSigner}.
    */
   agentSigner?: AgentSigner;
+  /**
+   * Trade a subaccount (D30): the account each signed trading action is for,
+   * sent as `x-acting-account`, `0x`-prefixed 20-byte hex. Requires an
+   * {@link agentSigner} and a network with a
+   * {@link NetworkConfig.deploymentDomain}; a trading write that cannot carry
+   * it is refused locally rather than sent for the agent's own account. Until
+   * the engine enforces signed actions it answers `403 ActingAccountUnverified`
+   * for any account other than the caller's own.
+   */
+  actingAccount?: string;
   /**
    * Session bearer token from {@link Client.login} (`POST /auth/login`), used
    * to authenticate the API-key management endpoints (`/keys`). Can be supplied
@@ -1784,6 +1841,7 @@ export class Client {
   readonly #apiKey?: string;
   readonly #apiSecret?: string;
   readonly #agentSigner?: AgentSigner;
+  readonly #actingAccount?: string;
   // Mutable: {@link setSessionToken} / {@link login} update it after login.
   #sessionToken?: string;
   readonly #timeoutMs: number;
@@ -1845,14 +1903,25 @@ export class Client {
         : this.#baseUrl;
     if (
       options.agentSigner !== undefined &&
-      (options.apiKey !== undefined || options.apiSecret !== undefined)
+      (options.apiKey === undefined) !== (options.apiSecret === undefined)
     ) {
       throw new NexusExchangeError(
-        "pass either `agentSigner` or `apiKey`/`apiSecret`, not both: a client " +
-          "signs with one request credential, and silently preferring one of " +
-          "them would leave which key authorized a trade to a rule nobody " +
-          "reads. Use two clients if you need both (e.g. an HMAC client for " +
-          "fetchAgents).",
+        "with an `agentSigner`, pass both `apiKey` and `apiSecret` or neither: " +
+          "the pair authenticates every request and the agent signs the " +
+          "trading actions (D26), so half a pair would leave which credential " +
+          "authenticated a trade to a guess.",
+      );
+    }
+    if (options.actingAccount !== undefined) {
+      if (options.agentSigner === undefined) {
+        throw new NexusExchangeError(
+          "`actingAccount` is signed into a trading action, which needs an " +
+            "`agentSigner`",
+        );
+      }
+      this.#actingAccount = normalizeAccount(
+        "actingAccount",
+        options.actingAccount,
       );
     }
     this.#apiKey = options.apiKey;
@@ -3864,10 +3933,8 @@ export class Client {
       signal,
     } = options;
 
-    const bodyBytes =
-      body === undefined || body === null
-        ? new Uint8Array(0)
-        : new TextEncoder().encode(JSON.stringify(body));
+    let bodyText =
+      body === undefined || body === null ? "" : JSON.stringify(body);
 
     // The path as the indexer sees it: the spec's bare path, which is both the
     // value signed below and the value appended to the base, so the two can
@@ -3896,7 +3963,44 @@ export class Client {
       }
       headers["authorization"] = `Bearer ${this.#sessionToken}`;
     }
-    if (signed && this.#agentSigner) {
+    // D27: on the eight order-path writes, sign the trading action first. It
+    // can rewrite the body (an empty optional string is dropped, since it signs
+    // as absent), and both credentials below must cover the body that is sent.
+    const domain = this.#networkConfig.deploymentDomain;
+    const trading =
+      signed && this.#agentSigner && domain !== undefined
+        ? tradingRequest(method, withQuery(logicalPath, query), bodyText)
+        : null;
+    if (
+      this.#actingAccount !== undefined &&
+      trading === null &&
+      signed &&
+      tradingRoute(method, logicalPath) !== null
+    ) {
+      throw new MissingCredentialsError(
+        `${method.toUpperCase()} ${logicalPath} cannot carry \`actingAccount\`: ` +
+          `it is signed into a trading action, and this network names no ` +
+          `deploymentDomain to sign one under`,
+      );
+    }
+    if (trading) bodyText = trading.body;
+    const bodyBytes = new TextEncoder().encode(bodyText);
+    const actionHeaders =
+      trading && this.#agentSigner && domain !== undefined
+        ? this.#agentSigner.actionHeaders({
+            action: trading.action,
+            domain,
+            timestampMs: this.#now(),
+            actingAccount: this.#actingAccount,
+          })
+        : undefined;
+
+    if (signed && this.#agentSigner && actionHeaders && !this.#apiKey) {
+      // Agent alone: `x-agent` plus the action headers, with no canonical
+      // `x-signature`, which is what selects the typed scheme at the edge.
+      headers["x-agent"] = this.#agentSigner.address;
+      Object.assign(headers, actionHeaders);
+    } else if (signed && this.#agentSigner && !this.#apiKey) {
       if (hmacOnly) {
         throw new MissingCredentialsError(
           `${method.toUpperCase()} ${logicalPath} does not accept agent-key ` +
@@ -3938,6 +4042,8 @@ export class Client {
           this.#now(),
         ),
       );
+      // D26: the HMAC key identifies the caller; the agent authorizes the trade.
+      if (actionHeaders) Object.assign(headers, actionHeaders);
     }
 
     // Assemble the URL by hand so the query bytes signed above match the bytes
