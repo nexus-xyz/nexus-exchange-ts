@@ -658,8 +658,9 @@ await client.revokeAgent(
 
 Once registered, the agent signs requests itself with `AgentSigner` — the
 spec's `agentAuth` scheme, byte-for-byte identical to the Rust SDK and pinned
-against the spec's `x-nexus-test-vectors`. Pass it as `agentSigner` **instead
-of** `apiKey`/`apiSecret` (the two are mutually exclusive):
+against the spec's `x-nexus-test-vectors`. Pass it as `agentSigner` instead of
+`apiKey`/`apiSecret`, or beside them (see
+[Signed trading actions](#signed-trading-actions-d27)):
 
 ```ts
 import { AgentSigner, Client, Network } from "@nexus-xyz/exchange-ts";
@@ -694,6 +695,42 @@ for debugging, since every rejection is the same opaque `401`.
   a bad signature. The SDK does not queue per signer (yet), so keep one mutating
   request in flight per agent key, or register one agent key per concurrent
   writer. Likewise, don't share one agent key across processes.
+
+#### Signed trading actions (D27)
+
+The engine checks an EIP-712 action, signed by an agent key, on the eight
+order-path writes (`createOrder`, `createOrders`, `editOrder`, `cancelOrder`,
+`cancelAllOrders`, `addMargin`, leverage and margin mode). It only counts the
+result today; once it enforces, an order without one is refused, including one
+sent with an HMAC key alone (D26).
+
+The action binds the deployment's name, so the client signs it only on a
+network that declares one. No built-in network does yet: only apps-dev
+(`devnet`) is configured to verify it.
+
+```ts
+const agent = AgentSigner.fromHex(process.env.AGENT_PRIVATE_KEY!, {
+  account: "0x…", // the wallet that registered the agent
+});
+const network = customNetwork({
+  label: "dev",
+  baseUrl,
+  funds: "play",
+  deploymentDomain: "devnet",
+});
+
+// Agent alone: the writes send x-agent + x-action-* instead of x-signature.
+const trader = new Client({ network, agentSigner: agent });
+// HMAC + agent (D26): the key authenticates, the agent signs each action.
+const hmacTrader = new Client({
+  network,
+  apiKey,
+  apiSecret,
+  agentSigner: agent,
+});
+// A subaccount (D30): sent as x-acting-account and signed into the action.
+const sub = new Client({ network, agentSigner: agent, actingAccount: "0x…" });
+```
 
 ### Bridge (deposits & withdrawal wallets)
 

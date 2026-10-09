@@ -1,10 +1,12 @@
 class AgentSigner
+class AgentSigner { actionHeaders(args: { action: TradingAction; domain: string; timestampMs: number; actingAccount?: string; }): ActionHeaders }
 class AgentSigner { authHeaders(parts: AgentRequestParts): AgentAuthHeaders }
+class AgentSigner { get account(): string | undefined }
 class AgentSigner { get address(): string }
 class AgentSigner { nextNonce(floorMs: number): number }
 class AgentSigner { private constructor() }
 class AgentSigner { sign(parts: AgentRequestParts & { nonce: number; }): AgentAuthHeaders }
-class AgentSigner { static fromHex(privateKey: string): AgentSigner }
+class AgentSigner { static fromHex(privateKey: string, options?: AgentSignerOptions): AgentSigner }
 class AgentSigner { toJSON(): { address: string; } }
 class AgentSigner { toString(): string }
 class ApiError extends NexusExchangeError
@@ -271,6 +273,8 @@ interface AgentRevocation { agent: string }
 interface AgentRevocation { chainId: number }
 interface AgentRevocation { nonce: number }
 interface AgentRevocation { signature: string }
+interface AgentSignerOptions
+interface AgentSignerOptions { account?: string }
 interface AmendOrderRequest
 interface AmendOrderRequest { price?: Decimal }
 interface AmendOrderRequest { size?: Decimal }
@@ -329,6 +333,7 @@ interface CancelOnDisconnectStatus { active: boolean }
 interface CancelOnDisconnectStatus { enabled: boolean }
 interface CancelOnDisconnectStatus { grace_secs?: number | null }
 interface ClientOptions
+interface ClientOptions { actingAccount?: string }
 interface ClientOptions { agentSigner?: AgentSigner }
 interface ClientOptions { apiKey?: string }
 interface ClientOptions { apiSecret?: string }
@@ -375,6 +380,7 @@ interface CreditResponse { credited_today: Decimal }
 interface CreditResponse { daily_limit: Decimal }
 interface CustomNetworkOptions
 interface CustomNetworkOptions { baseUrl: string }
+interface CustomNetworkOptions { deploymentDomain?: string }
 interface CustomNetworkOptions { faucet?: boolean }
 interface CustomNetworkOptions { funds: Funds }
 interface CustomNetworkOptions { label: string }
@@ -495,6 +501,7 @@ interface Metadata { signing_domain?: SigningDomain }
 interface Metadata { ws_url?: string }
 interface NetworkConfig
 interface NetworkConfig { readonly baseUrl: string | null }
+interface NetworkConfig { readonly deploymentDomain?: string }
 interface NetworkConfig { readonly faucet: boolean }
 interface NetworkConfig { readonly funds: Funds }
 interface NetworkConfig { readonly label: string }
@@ -710,6 +717,9 @@ interface Trade { side: TradeSide }
 interface Trade { symbol: string }
 interface Trade { takerOrMaker: OpenUnion<TakerOrMaker> | null }
 interface Trade { timestamp: TimestampMs }
+interface TradingAction
+interface TradingAction { fields: Readonly<Record<string, unknown>> }
+interface TradingAction { primaryType: "PlaceOrder" | "PlaceOrders" | "AmendOrder" | "CancelOrder" | "CancelAllOrders" | "AdjustMargin" | "SetMarginMode" | "SetLeverage" }
 interface WebSocketCtor
 interface WebSocketCtor { new (url: string): WebSocketLike }
 interface WebSocketCtor { readonly OPEN: number }
@@ -744,6 +754,7 @@ interface WsSubscription { events: AsyncIterable<WsEvent> }
 interface WsSubscription { health(): WsStreamHealth }
 interface WsSubscription { unsubscribe(): void }
 type AccountChannel = "orders" | "fills" | "positions" | "balances" | "liquidations"
+type ActionHeaders = Record<string, string>
 type BridgeAssetSymbol = "USDC" | "USDX"
 type BridgeDepositStatus = "detected" | "confirming" | "credited" | "failed"
 type CancellationCause = "User" | "SlippageCap" | "Liquidation" | "Expired" | "MarketHalt" | "AmendReplace" | "InsufficientLiquidity" | "BracketClosed" | "BracketFlipped" | "PriceBandExceeded"
