@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.6.0...v0.7.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** AgentSigner.fromHex takes an optional second argument, { account }, the account that registered the agent.
+* **agents:** Client.revokeAgent takes the AgentRevocation returned by EthSigner.revokeAgent({ agent, nonce, chainId, network }) instead of an address string, and no longer sends HMAC auth.
+
+### Features
+
+* **agents:** revoke agents with the wallet signature (ENG-20579) ([#106](https://github.com/nexus-xyz/nexus-exchange-ts/issues/106)) ([5e4408a](https://github.com/nexus-xyz/nexus-exchange-ts/commit/5e4408a9aaa7848c9a64f7d1285d4613099bdf5a))
+* **auth:** sign the typed trading actions on the order routes (ENG-20652) ([#107](https://github.com/nexus-xyz/nexus-exchange-ts/issues/107)) ([df9703e](https://github.com/nexus-xyz/nexus-exchange-ts/commit/df9703e75d7bf128ef9e1ff27580d66909818a5e))
+* **markets:** roundPrice and roundSize tick/lot helpers, matching the Rust SDK (ENG-20360) ([#102](https://github.com/nexus-xyz/nexus-exchange-ts/issues/102)) ([359373e](https://github.com/nexus-xyz/nexus-exchange-ts/commit/359373e38e360404b495d466c15dd9748a3a1225))
+* **ws:** detect a silent connection and surface it as a stale notice (ENG-20363) ([#103](https://github.com/nexus-xyz/nexus-exchange-ts/issues/103)) ([1f0d797](https://github.com/nexus-xyz/nexus-exchange-ts/commit/1f0d797b9af45ed2ee6b0bfb6e53e365945f12d1))
+
+
+### Bug Fixes
+
+* **markets:** decode served market rows and call /markets unsigned (ENG-19678) ([#99](https://github.com/nexus-xyz/nexus-exchange-ts/issues/99)) ([b45ab36](https://github.com/nexus-xyz/nexus-exchange-ts/commit/b45ab36721a8c25e70dbd9e499577d7b4664026f))
+
 ## [0.6.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.5.0...v0.6.0) (2026-10-01)
 
 
