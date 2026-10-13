@@ -352,11 +352,14 @@ class WithoutOasdiff(unittest.TestCase):
     def test_a_published_tag_without_a_snapshot_is_graded_by_the_spec_alone(self):
         code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2", "--published-surface", "")
         self.assertEqual((code, r["outcome"], r["surface_verdict"]), (0, "pass", "no-baseline"))
+        self.assertIn("| `no-baseline` |", V.render(r))
 
     def test_an_empty_surface_file_turns_the_grade_off(self):
         code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2", "--surface-file", "",
                        published_surface="item\ngone\n")
         self.assertEqual((code, r["outcome"], r["surface_verdict"]), (0, "pass", "not-graded"))
+        # Nothing was compared, so the summary row gives no counts.
+        self.assertIn("| `not-graded` |", V.render(r))
 
     def test_a_missing_snapshot_on_the_branch_cannot_be_graded(self):
         code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2", "--surface-file", "/nonexistent/public-api.txt")

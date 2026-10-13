@@ -472,7 +472,7 @@ def render(result):
         f"| Spec change | {cell(result['spec_verdict'])} |",
         f"| Public API since the published version | {cell(result['surface_verdict'])}"
         + (f" ({len(result['surface_removed'])} gone or changed, {result['surface_added']} new)"
-           if result["surface_verdict"] else "") + " |",
+           if result["surface_verdict"] in ("breaking", "additive", "unchanged") else "") + " |",
     ]
     unenforced = unenforced_release(result)
     if unenforced:
