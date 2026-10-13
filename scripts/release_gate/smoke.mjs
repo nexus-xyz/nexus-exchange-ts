@@ -24,7 +24,7 @@
  *   - stub_server.py 503, which answers every request with a 503: must exit 2,
  *     because an outage reads as unreachable, never as failed or passed.
  * Exit 0 (passed) is exercised only by the real read, which runs on a release
- * PR or a change to this gate. Each probe has a 60 s timeout. A wrong code, or
+ * PR or a change to this gate. Each probe has a 180 s timeout. A wrong code, or
  * a timeout, is its own failure, named "(outcomes)". The probes run the built
  * probe directly with stdout and stderr captured, so they emit no annotations;
  * each prints one plain log line instead: case, exit code, first line of output.
@@ -57,7 +57,9 @@ function summary(title, body) {
   }
 }
 
-const PROBE_TIMEOUT_MS = 60_000;
+// The SDK retries transient errors with backoff, so a shorter limit races it.
+const PROBE_TIMEOUT_MS = 180_000;
+const STUB_START_TIMEOUT_MS = 10_000;
 
 /**
  * Run the probe in `consumer` against `baseUrl` and return the spawn result.
@@ -108,16 +110,31 @@ function startStub(status) {
   );
   return new Promise((resolve, reject) => {
     let out = "";
-    stub.once("error", reject);
-    stub.once("exit", (code) =>
+    const timer = setTimeout(() => {
+      stub.kill();
+      reject(
+        new Error(
+          `the stub server printed no port within ${STUB_START_TIMEOUT_MS / 1000}s`,
+        ),
+      );
+    }, STUB_START_TIMEOUT_MS);
+    stub.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    stub.once("exit", (code) => {
+      clearTimeout(timer);
       reject(
         new Error(`the stub server exited (${code}) before printing a port`),
-      ),
-    );
+      );
+    });
     stub.stdout.on("data", (chunk) => {
       out += chunk;
       const port = /^(\d+)\n/.exec(out)?.[1];
-      if (port) resolve({ stub, port });
+      if (port) {
+        clearTimeout(timer);
+        resolve({ stub, port });
+      }
     });
   });
 }
@@ -135,6 +152,11 @@ function expectExit(consumer, label, url, want, what) {
   console.log(`probe ${label}: exit ${exit}: ${firstLine(run)}`);
   if (run.status !== want) {
     return `${label} case: expected exit ${want} from ${what}, ${gotWhat(run)}`;
+  }
+  // As the real read requires: the right code alone could be a crash that
+  // happens to exit that way. The probe also prints its own `smoke: ...` line.
+  if (!/^smoke: \S/.test((run.stdout ?? "").trim())) {
+    return `${label} case: exited ${want} as expected, but printed no "smoke: ..." outcome line. ${firstLine(run)}`;
   }
   return undefined;
 }
