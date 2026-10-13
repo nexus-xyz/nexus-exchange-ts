@@ -17,6 +17,7 @@ The proposed bump is checked against the grade:
   could-not-classify                fails under its own name, exit 2: a person has to look. It never
                                     folds into a pass (the classifier's own rule).
   proposed not above published      fails: a release has to move the version
+  a pre-release or build version    could-not-classify: `0.12.0-rc.1` is not compared as `0.12.0`
 
 WHY THE MINOR IS THE BREAKING DIGIT BELOW 1.0. Cargo and npm caret ranges (`^0.11.1` is
 `>=0.11.1, <0.12.0`) and the release tooling in every SDK repo (release-plz bumps the minor on a
@@ -27,7 +28,8 @@ THE PACKAGE'S OWN API. `prepublish-surface` keeps `public-api.txt` equal to what
 exports, but a PR that removes an export also regenerates that file, so on the release PR the two
 always match. What it lost shows only against the PUBLISHED snapshot: a line of the tag's
 `public-api.txt` that is not on this branch is an item removed or reshaped, and grades `breaking`.
-New lines grade `additive`. The listing has no descriptions, so rewording does not count. Limits:
+New lines grade `additive`. Lines are counted, so a listing that printed one twice and now prints it
+once lost an item. The listing has no descriptions, so rewording does not count. Limits:
   - A published tag without `public-api.txt` (every release before this gate) is `no-baseline`:
     only the spec is graded until the first release that carries the file.
   - An added line can break too (a new required member on an interface callers implement). The
@@ -59,6 +61,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -67,14 +70,15 @@ USER_AGENT = "nexus-exchange pre-publish gate (github.com/nexus-xyz; ENG-18798)"
 TIMEOUT_S = 30
 
 # The vendored files must be the monorepo's bytes, or this gate grades differently from the
-# contract's own versioning. Checked by test_release_verdict.py; see VENDORED.md to refresh.
+# contract's own versioning. load_classifier() refuses other bytes, and test_release_verdict.py
+# checks these digests against the table in VENDORED.md; see VENDORED.md to refresh.
 VENDORED_SHA256 = {
     "classify_spec_change.py": "189f763e9ebf9226c13b5e8de03f76c60a7dba9fe5828e45276b37ed7fe90483",
     "oasdiff-severity-levels.txt": "2375b75e50f85f25a8b0b1c2b9785f6cd2cc7b32ee3f96dc15e98ba26416802d",
 }
 
 EXIT = {"pass": 0, "fail": 1, "could-not-classify": 2}
-VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$")
+VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)([-+][0-9A-Za-z.-]+)?$")
 PIN_RE = re.compile(r"^v\d+(\.\d+){0,2}$")
 
 
@@ -83,6 +87,14 @@ class CannotDecide(Exception):
 
 
 def load_classifier():
+    """The vendored classifier, only if both vendored files are still the monorepo's bytes."""
+    for name, digest in VENDORED_SHA256.items():
+        try:
+            found = sha256(HERE / name)
+        except OSError as err:
+            raise CannotDecide(f"cannot read the vendored {name}: {err}") from None
+        if found != digest:
+            raise CannotDecide(f"{name} is not the vendored monorepo copy (sha256 {found}); see VENDORED.md")
     spec = importlib.util.spec_from_file_location("classify_spec_change", HERE / "classify_spec_change.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -99,7 +111,10 @@ def parse_version(text):
     match = VERSION_RE.match(str(text).strip())
     if not match:
         raise CannotDecide(f"not a semver version: {text!r}")
-    return tuple(int(part) for part in match.groups())
+    if match.group(4):
+        # Comparing only the numbers would read 0.12.0-rc.1 as 0.12.0. A person grades a pre-release.
+        raise CannotDecide(f"{text!r} is a pre-release or build version; the gate grades X.Y.Z only")
+    return tuple(int(part) for part in match.groups()[:3])
 
 
 def fmt(version):
@@ -148,7 +163,8 @@ def http_json(url, headers=None):
                 break
         except (urllib.error.URLError, TimeoutError, ValueError) as err:
             last = str(err)
-        time.sleep(2 ** attempt)
+        if attempt < 2:
+            time.sleep(2 ** attempt)
     raise CannotDecide(f"GET {url} failed: {last}")
 
 
@@ -177,23 +193,41 @@ def published_version(registry, package):
     raise CannotDecide(f"unknown registry {registry!r}")
 
 
+def read_text(path, what):
+    """A file the verdict needs. One that cannot be read stops the verdict; it is not a crash."""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, ValueError) as err:  # ValueError: not UTF-8
+        raise CannotDecide(f"cannot read {what} {path}: {err}") from None
+
+
 def manifest_version(path):
     path = Path(path)
-    if path.name == "package.json":
-        return json.loads(path.read_text())["version"]
+    text = read_text(path, "the manifest")
     try:
-        import tomllib  # 3.11+; the gate runs on the runner's python3, not the SDK's test matrix
-    except ImportError:
-        raise CannotDecide(
-            f"reading {path.name} needs Python 3.11+ (tomllib); this is {sys.version.split()[0]}. "
-            "Run the gate with python3.11 or newer"
-        ) from None
+        if path.name == "package.json":
+            return json.loads(text)["version"]
+        if path.name == ".release-please-manifest.json":
+            # The Go SDK has no version in go.mod: its tag is the release, and release-please keeps
+            # the version here (single package at the repo root, key ".").
+            return json.loads(text)["."]
+        try:
+            import tomllib  # 3.11+; the gate runs on the runner's python3, not the SDK's test matrix
+        except ImportError:
+            raise CannotDecide(
+                f"reading {path.name} needs Python 3.11+ (tomllib); this is {sys.version.split()[0]}. "
+                "Run the gate with python3.11 or newer"
+            ) from None
 
-    data = tomllib.loads(path.read_text())
-    if path.name == "Cargo.toml":
-        return data["package"]["version"]
-    if path.name == "pyproject.toml":
-        return data["project"]["version"]
+        data = tomllib.loads(text)
+        if path.name == "Cargo.toml":
+            return data["package"]["version"]
+        if path.name == "pyproject.toml":
+            return data["project"]["version"]
+    except (KeyError, TypeError, ValueError) as err:
+        # Not parseable, or no literal version (a Cargo.toml with `version.workspace = true` lands
+        # in parse_version as a table and stops there). Either way a person has to look.
+        raise CannotDecide(f"{path} has no readable version: {err!r}") from None
     raise CannotDecide(f"no version reader for {path.name}")
 
 
@@ -204,14 +238,25 @@ def read_pin(text, where):
     return pin
 
 
+def git_text(argv):
+    """(exit code, stdout, stderr) of a git command, decoded as UTF-8. Undecodable output cannot decide."""
+    proc = subprocess.run(["git", *argv], capture_output=True)
+    try:
+        return proc.returncode, proc.stdout.decode("utf-8"), proc.stderr.decode("utf-8", "replace").strip()
+    except ValueError as err:
+        raise CannotDecide(f"git {' '.join(argv)} printed something that is not UTF-8: {err}") from None
+
+
 def pin_at_tag(tag, pin_file):
-    proc = subprocess.run(["git", "show", f"{tag}:{pin_file}"], capture_output=True, text=True)
-    if proc.returncode != 0:
+    # No baseline fallback here, unlike surface_at_tag: without the published pin there is no spec
+    # change to grade, and grading the spec is this gate's main job. Every published tag has the pin.
+    code, out, err = git_text(["show", f"{tag}:{pin_file}"])
+    if code != 0:
         raise CannotDecide(
-            f"cannot read {pin_file} at tag {tag}: {proc.stderr.strip()} "
+            f"cannot read {pin_file} at tag {tag}: {err} "
             "(is the tag fetched? the job needs fetch-depth: 0)"
         )
-    return read_pin(proc.stdout, f"{pin_file} at {tag}")
+    return read_pin(out, f"{pin_file} at {tag}")
 
 
 def fetch_spec(tag, workdir):
@@ -226,25 +271,36 @@ def fetch_spec(tag, workdir):
                 return str(path)
         except (urllib.error.URLError, TimeoutError) as err:
             last = str(err)
-            time.sleep(2 ** attempt)
+            if attempt < 2:
+                time.sleep(2 ** attempt)
     raise CannotDecide(f"cannot fetch the {tag} spec from {url}: {last}")
 
 
 # --- the package's own public API -------------------------------------------------------------
 
 def surface_lines(text):
-    return {line for line in text.splitlines() if line.strip()}
+    """The listing as a multiset: a line printed twice that is now printed once lost an item."""
+    return Counter(line for line in text.splitlines() if line.strip())
 
 
 def surface_at_tag(tag, surface_file):
-    """The tag's snapshot text, or None when the tag predates the snapshot. A missing tag cannot decide."""
-    proc = subprocess.run(["git", "show", f"{tag}:{surface_file}"], capture_output=True, text=True)
-    if proc.returncode == 0:
-        return proc.stdout
-    tagged = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}"], capture_output=True)
-    if tagged.returncode == 0:
+    """The tag's snapshot text, or None when the tag predates the snapshot (the file is not in its tree).
+
+    Anything else that stops the read (a tag that is not fetched, a file in the tree that cannot be
+    read) cannot decide: only a snapshot known to be absent is `no-baseline`."""
+    commit = f"{tag}^{{commit}}"
+    code, _, _ = git_text(["rev-parse", "--verify", "--quiet", commit])
+    if code != 0:
+        raise CannotDecide(f"cannot read tag {tag} (is the tag fetched? the job needs fetch-depth: 0)")
+    code, listed, err = git_text(["ls-tree", "--full-tree", "--name-only", commit, "--", surface_file])
+    if code != 0:
+        raise CannotDecide(f"cannot list {surface_file} at tag {tag}: {err}")
+    if not listed.strip():
         return None
-    raise CannotDecide(f"cannot read tag {tag}: {proc.stderr.strip()} (is the tag fetched? the job needs fetch-depth: 0)")
+    code, text, err = git_text(["show", f"{tag}:{surface_file}"])
+    if code != 0:
+        raise CannotDecide(f"cannot read {surface_file} at tag {tag}: {err}")
+    return text
 
 
 def grade_surface(published_text, branch_text):
@@ -252,7 +308,7 @@ def grade_surface(published_text, branch_text):
     if published_text is None:
         return "no-baseline", [], 0
     old, new = surface_lines(published_text), surface_lines(branch_text)
-    removed, added = sorted(old - new), len(new - old)
+    removed, added = sorted((old - new).elements()), sum((new - old).values())
     if removed:
         return "breaking", removed, added
     return ("additive" if added else "unchanged"), [], added
@@ -305,21 +361,25 @@ def run(args):
         result["bump"] = bump_kind(published, proposed)
 
         tag = f"{args.tag_prefix}{fmt(published)}"
-        old_pin = args.published_pin or pin_at_tag(tag, args.pin_file)
-        new_pin = args.proposed_pin or read_pin(Path(args.pin_file).read_text(), args.pin_file)
+        old_pin = (read_pin(args.published_pin, "--published-pin") if args.published_pin
+                   else pin_at_tag(tag, args.pin_file))
+        new_pin = (read_pin(args.proposed_pin, "--proposed-pin") if args.proposed_pin
+                   else read_pin(read_text(args.pin_file, "the spec pin"), args.pin_file))
         result.update(published_pin=old_pin, proposed_pin=new_pin)
 
         if not args.surface_file:
             result["surface_verdict"] = "not-graded"
         else:
             if args.published_surface is not None:
-                published_text = Path(args.published_surface).read_text() if args.published_surface else None
+                published_text = (read_text(args.published_surface, "the published snapshot")
+                                  if args.published_surface else None)
             else:
                 published_text = surface_at_tag(tag, args.surface_file)
             branch = Path(args.surface_file)
             if not branch.is_file():
-                raise CannotDecide(f"{args.surface_file} is missing on this branch; prepublish-surface writes it")
-            verdict, removed, added = grade_surface(published_text, branch.read_text())
+                raise CannotDecide(f"{args.surface_file} is missing on this branch; "
+                                   "scripts/release_gate/public_api.sh --write writes it")
+            verdict, removed, added = grade_surface(published_text, read_text(branch, "the snapshot"))
             result.update(surface_verdict=verdict, surface_removed=removed, surface_added=added)
 
         if old_pin == new_pin and not (args.old_spec or args.new_spec):
@@ -352,6 +412,11 @@ def run(args):
     return result
 
 
+def cell(value):
+    """A summary table value: in backticks, or a dash when the verdict stopped before setting it."""
+    return "—" if value is None else f"`{value}`"
+
+
 def render(result):
     """Markdown for the job summary. The outcome is the first thing a reader sees."""
     headline = {
@@ -365,13 +430,15 @@ def render(result):
         f"### Pre-publish verdict: {headline}", "",
         f"{result['reason']}", "",
         "| | |", "|---|---|",
-        f"| Published version | `{result['published_version']}` |",
-        f"| Proposed version | `{result['proposed_version']}` ({result['bump']}) |",
-        f"| Spec pin at the published version | `{result['published_pin']}` |",
-        f"| Spec pin on this branch | `{result['proposed_pin']}` |",
-        f"| Spec change | `{result['spec_verdict']}` |",
-        f"| Public API since the published version | `{result['surface_verdict']}` "
-        f"({len(result['surface_removed'])} gone or changed, {result['surface_added']} new) |",
+        f"| Published version | {cell(result['published_version'])} |",
+        f"| Proposed version | {cell(result['proposed_version'])}"
+        + (f" ({result['bump']})" if result["bump"] else "") + " |",
+        f"| Spec pin at the published version | {cell(result['published_pin'])} |",
+        f"| Spec pin on this branch | {cell(result['proposed_pin'])} |",
+        f"| Spec change | {cell(result['spec_verdict'])} |",
+        f"| Public API since the published version | {cell(result['surface_verdict'])}"
+        + (f" ({len(result['surface_removed'])} gone or changed, {result['surface_added']} new)"
+           if result["surface_verdict"] else "") + " |",
     ]
     for change in result["breaking_changes"]:
         lines.append(f"- `{change.get('id')}` {change.get('operation', '')} {change.get('path', '')}: {change.get('text')}")
@@ -388,7 +455,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--registry", choices=["crates.io", "pypi", "npm", "github"], required=True)
     parser.add_argument("--package", required=True, help="registry name, or owner/repo for --registry github")
-    parser.add_argument("--manifest", required=True, help="Cargo.toml, pyproject.toml or package.json")
+    parser.add_argument("--manifest", required=True,
+                        help="Cargo.toml, pyproject.toml, package.json or .release-please-manifest.json")
     parser.add_argument("--pin-file", default=".api-version")
     parser.add_argument("--tag-prefix", default="v")
     parser.add_argument("--surface-file", default="public-api.txt",
