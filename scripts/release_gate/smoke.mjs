@@ -13,16 +13,21 @@
  * testnet answers.
  *
  * NEXUS_SMOKE_BASE_URL (a REST base, as `customNetwork` takes it) points the
- * read elsewhere, for proving the three outcomes.
+ * read elsewhere, for proving the outcomes.
  *
  * In every mode, right after the install and before any testnet read, the
- * just-built probe is run twice that way, so the exit codes are exercised and
- * not only described here: against http://127.0.0.1:1, where nothing listens,
- * it must exit 2 (unreachable, never a pass); against
- * scripts/release_gate/stub_server.py, which answers 200 with no markets, it
- * must exit 1. Either code wrong is its own failure, named "(outcomes)". The
- * probes run the built probe directly, so the annotations below for an exit 1
- * or 2, which are expected there, are not printed for them.
+ * just-built probe is run three times that way, so exit codes 2 and 1 are
+ * exercised on every run and not only described here:
+ *   - http://127.0.0.1:1, where nothing listens: must exit 2 (unreachable);
+ *   - scripts/release_gate/stub_server.py, which answers 200 with no markets:
+ *     must exit 1 (failed);
+ *   - stub_server.py 503, which answers every request with a 503: must exit 2,
+ *     because an outage reads as unreachable, never as failed or passed.
+ * Exit 0 (passed) is exercised only by the real read, which runs on a release
+ * PR or a change to this gate. Each probe has a 60 s timeout. A wrong code, or
+ * a timeout, is its own failure, named "(outcomes)". The probes run the built
+ * probe directly with stdout and stderr captured, so they emit no annotations;
+ * each prints one plain log line instead: case, exit code, first line of output.
  */
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -52,43 +57,61 @@ function summary(title, body) {
   }
 }
 
+const PROBE_TIMEOUT_MS = 60_000;
+
 /**
  * Run the probe in `consumer` against `baseUrl` and return the spawn result.
- * Its own output is not shown: a failure here is reported by the caller.
+ * Stdout and stderr are both captured, so nothing the probe prints can become a
+ * workflow annotation; a failure here is reported by the caller.
  */
 function runProbe(consumer, baseUrl) {
   return spawnSync(process.execPath, ["probe.mjs"], {
     cwd: consumer,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: PROBE_TIMEOUT_MS,
     env: { ...process.env, NEXUS_SMOKE_BASE_URL: baseUrl },
   });
 }
 
+/** The first line a probe printed, defanged so it cannot read as an annotation. */
+function firstLine(run) {
+  const text = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim();
+  return text.split("\n")[0].replace(/^::/, ": :");
+}
+
 /** What a probe run did, for a message: its exit, or why it never ran, and its line. */
 function gotWhat(run) {
-  const got = run.error
-    ? `the probe could not be started: ${run.error.message}`
-    : `got ${run.status ?? run.signal}`;
-  return `${got}. ${(run.stdout ?? "").trim()}`;
+  const got =
+    run.error?.code === "ETIMEDOUT"
+      ? `the probe hit its ${PROBE_TIMEOUT_MS / 1000}s timeout`
+      : run.error
+        ? `the probe could not be started: ${run.error.message}`
+        : `got ${run.status ?? run.signal}`;
+  return `${got}. ${firstLine(run)}`;
 }
 
 /**
- * Start stub_server.py and resolve with the child and the port it printed on
- * its first line of stdout. The caller kills the child.
+ * Start stub_server.py (answering with `status`, or 200 and no markets when
+ * omitted) and resolve with the child and the port it printed on its first line
+ * of stdout. The caller kills the child.
  */
-function startStub() {
+function startStub(status) {
   const stub = spawn(
     "python3",
-    ["-I", join(REPO, "scripts", "release_gate", "stub_server.py")],
+    [
+      "-I",
+      join(REPO, "scripts", "release_gate", "stub_server.py"),
+      ...(status ? [String(status)] : []),
+    ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   return new Promise((resolve, reject) => {
     let out = "";
     stub.once("error", reject);
-    stub.once("exit", (status) =>
+    stub.once("exit", (code) =>
       reject(
-        new Error(`the stub server exited (${status}) before printing a port`),
+        new Error(`the stub server exited (${code}) before printing a port`),
       ),
     );
     stub.stdout.on("data", (chunk) => {
@@ -100,29 +123,60 @@ function startStub() {
 }
 
 /**
+ * One case: run the probe against `url` and expect exit `want`. Logs one plain
+ * line (case, exit code, first line of output) and returns a message naming the
+ * case and what it got when the code is wrong, or undefined when it is right.
+ */
+function expectExit(consumer, label, url, want, what) {
+  const run = runProbe(consumer, url);
+  const exit = run.error
+    ? `no exit (${run.error.code})`
+    : (run.status ?? run.signal);
+  console.log(`probe ${label}: exit ${exit}: ${firstLine(run)}`);
+  if (run.status !== want) {
+    return `${label} case: expected exit ${want} from ${what}, ${gotWhat(run)}`;
+  }
+  return undefined;
+}
+
+/**
  * Prove the probe's outcomes before trusting it with the testnet: nothing
- * listening is exit 2, an answer with no markets is exit 1. Returns a message
- * naming the case and the code it got, or undefined when both are right.
+ * listening is exit 2, an answer with no markets is exit 1, a 503 is exit 2.
+ * Returns a message naming the case and the code it got, or undefined when all
+ * three are right.
  */
 async function checkOutcomes(consumer) {
-  const down = runProbe(consumer, "http://127.0.0.1:1");
-  if (down.status !== 2) {
-    return `unreachable case: expected exit 2 from a base URL nothing listens on, ${gotWhat(down)}`;
-  }
-  let stub;
-  try {
-    let port;
+  const wrong = expectExit(
+    consumer,
+    "unreachable",
+    "http://127.0.0.1:1",
+    2,
+    "a base URL nothing listens on",
+  );
+  if (wrong) return wrong;
+  for (const [label, status, want, what] of [
+    ["empty", undefined, 1, "a server that answers with no markets"],
+    ["outage", 503, 2, "a server that answers every request with 503"],
+  ]) {
+    let stub;
     try {
-      ({ stub, port } = await startStub());
-    } catch (err) {
-      return `empty case: could not start scripts/release_gate/stub_server.py: ${err.message}`;
+      let port;
+      try {
+        ({ stub, port } = await startStub(status));
+      } catch (err) {
+        return `${label} case: could not start scripts/release_gate/stub_server.py: ${err.message}`;
+      }
+      const wrong = expectExit(
+        consumer,
+        label,
+        `http://127.0.0.1:${port}`,
+        want,
+        what,
+      );
+      if (wrong) return wrong;
+    } finally {
+      stub?.kill();
     }
-    const empty = runProbe(consumer, `http://127.0.0.1:${port}`);
-    if (empty.status !== 1) {
-      return `empty case: expected exit 1 from a server that answers with no markets, ${gotWhat(empty)}`;
-    }
-  } finally {
-    stub?.kill();
   }
   return undefined;
 }
@@ -153,7 +207,7 @@ try {
   outcomeError = await checkOutcomes(consumer);
   if (outcomeError !== undefined) throw new Error(outcomeError);
   console.log(
-    "the probe's outcomes hold: nothing listening exits 2, an empty answer exits 1",
+    "the probe's outcomes hold: nothing listening exits 2, an empty answer exits 1, a 503 exits 2",
   );
 
   const probe = spawnSync(
