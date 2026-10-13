@@ -156,10 +156,14 @@ def smallest_breaking_bump(old):
 
 # --- what was published -----------------------------------------------------------------------
 
+RETRY_AFTER_CAP_S = 60
+
+
 def http_json(url, headers=None):
     """GET a JSON document, retrying transient failures. Returns None on 404."""
     last = None
     for attempt in range(3):
+        wait = 2 ** attempt
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
@@ -176,10 +180,14 @@ def http_json(url, headers=None):
                                                 or response_headers.get("X-RateLimit-Remaining") == "0")
             if err.code < 500 and err.code != 429 and not rate_limited:
                 break
+            # A server that says how long to wait is believed, up to a cap that keeps the job short.
+            retry_after = str(response_headers.get("Retry-After") or "")
+            if retry_after.isdigit():
+                wait = min(max(wait, int(retry_after)), RETRY_AFTER_CAP_S)
         except (urllib.error.URLError, TimeoutError, ValueError) as err:
             last = str(err)
         if attempt < 2:
-            time.sleep(2 ** attempt)
+            time.sleep(wait)
     raise CannotDecide(f"GET {url} failed: {last}")
 
 
@@ -298,6 +306,12 @@ def fetch_spec(tag, workdir):
                 path = Path(workdir) / f"openapi-{tag}.json"
                 path.write_bytes(response.read())
                 return str(path)
+        except urllib.error.HTTPError as err:
+            if err.code == 404:  # no such tag: retrying won't make one
+                raise CannotDecide(f"there is no {tag} spec at {url} (404)") from None
+            last = f"HTTP {err.code}"
+            if attempt < 2:
+                time.sleep(2 ** attempt)
         except (urllib.error.URLError, TimeoutError) as err:
             last = str(err)
             if attempt < 2:
@@ -443,6 +457,11 @@ def run(args):
         result.update(outcome=outcome, reason=reason)
     except CannotDecide as why:
         result.update(outcome="could-not-classify", reason=str(why))
+    except Exception as err:  # noqa: BLE001
+        # Anything unforeseen is the gate failing, not a verdict: a traceback would exit 1, which is
+        # the code for "the version does not fit".
+        result.update(outcome="could-not-classify",
+                      reason=f"the gate itself failed: {type(err).__name__}: {err}")
     return result
 
 

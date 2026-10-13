@@ -336,6 +336,22 @@ class Registries(unittest.TestCase):
             self.assertEqual(call.args[0].get_header("Authorization"), "Bearer t0k")
             self.assertIsNone(call.args[0].get_header("Content-length"))
 
+    def test_retry_after_is_believed_up_to_a_cap(self):
+        for header, waits in (("5", [5, 5]), ("600", [V.RETRY_AFTER_CAP_S] * 2)):
+            with self.subTest(header), mock.patch.object(
+                    V.urllib.request, "urlopen",
+                    side_effect=[http_error(429, {"Retry-After": header})] * 2 + [response({"crate": {"max_stable_version": "1.0.0"}})]), \
+                    mock.patch.object(V.time, "sleep") as sleep:
+                self.assertEqual(V.published_version("crates.io", "x"), "1.0.0")
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], waits)
+
+    def test_a_spec_tag_that_does_not_exist_is_not_retried(self):
+        with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(404)]) as urlopen, \
+                mock.patch.object(V.time, "sleep") as sleep, tempfile.TemporaryDirectory() as d, \
+                self.assertRaisesRegex(V.CannotDecide, "404"):
+            V.fetch_spec("v9.9.9", d)
+        self.assertEqual((urlopen.call_count, sleep.call_count), (1, 0))
+
     def test_another_client_error_is_not_retried(self):
         with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(403)]) as urlopen, \
                 mock.patch.object(V.time, "sleep"), self.assertRaises(V.CannotDecide):
@@ -424,6 +440,12 @@ class WithoutOasdiff(unittest.TestCase):
     def test_a_missing_published_snapshot_file_cannot_decide(self):
         code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2", "--published-surface", "/nonexistent/old.txt")
         self.assertEqual((code, r["outcome"]), (2, "could-not-classify"))
+
+    def test_an_unforeseen_error_is_could_not_classify_not_a_failed_version(self):
+        with mock.patch.object(V, "decide", side_effect=RuntimeError("boom")):
+            code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2")
+        self.assertEqual((code, r["outcome"]), (2, "could-not-classify"))
+        self.assertIn("RuntimeError: boom", r["reason"])
 
     def test_report_mode_exits_zero_on_an_unreadable_input_and_still_says_so(self):
         code, r = gate(*SAME_PIN, "--report", "--manifest", "/nonexistent/Cargo.toml")

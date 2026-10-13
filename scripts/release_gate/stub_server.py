@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A stand-in for the testnet that answers but has nothing (ENG-18798). Stdlib only.
 
-smoke.sh points the just-built smoke at it to prove "failed" (exit 1) stays apart from "testnet
+The smoke script (smoke.sh, or smoke.mjs in a JavaScript SDK) points the just-built smoke at it to prove "failed" (exit 1) stays apart from "testnet
 unreachable" (exit 2) and from a pass. With no argument, every GET or POST, on any path, gets
 HTTP 200 with the JSON body `[]`, which holds no market: the smoke must exit 1. With a status code
 (`stub_server.py 503`), every request gets that status and a small JSON error body: for 503 the
