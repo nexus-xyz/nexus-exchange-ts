@@ -96,7 +96,7 @@ jobs:
           # event's base.sha also listed whatever landed on the base since, which flipped unrelated PRs
           # into the testnet read.
           if ! git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
-            echo "::error title=prepublish-smoke::HEAD is not a merge commit, so the PR's own changes can't be listed"
+            echo "::error title=prepublish-smoke::HEAD is not a merge commit, or the checkout is shallow (this job needs fetch-depth: 0), so the PR's own changes can't be listed"
             exit 1
           fi
           # Into a file, not a pipe: under pipefail a failed `git diff`, or one cut short by
