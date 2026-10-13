@@ -412,6 +412,16 @@ class WithoutOasdiff(unittest.TestCase):
         code, r = gate(*SAME_PIN, "--report", "--manifest", "/nonexistent/Cargo.toml")
         self.assertEqual((code, r["outcome"]), (0, "could-not-classify"))
 
+    def test_a_version_above_the_published_one_off_a_release_branch_is_called_out(self):
+        code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2", "--report")
+        self.assertEqual((code, r["outcome"], r["bump"]), (0, "pass", "patch"))
+        self.assertIn("NOT gated", V.unenforced_release(r))
+        self.assertIn("Not enforced", V.render(r))
+        _, r = gate(*SAME_PIN, "--proposed-version", "0.11.1", "--report")
+        self.assertIsNone(V.unenforced_release(r))  # the usual PR: nothing pending
+        _, r = gate(*SAME_PIN, "--proposed-version", "0.11.2")
+        self.assertIsNone(V.unenforced_release(r))  # enforced: nothing to call out
+
     def test_a_package_never_published_passes(self):
         code, r = gate("--published-version", "", "--proposed-version", "0.1.0")
         self.assertEqual((code, r["outcome"]), (0, "pass"))

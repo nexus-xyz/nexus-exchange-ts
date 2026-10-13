@@ -42,7 +42,10 @@ once lost an item. The listing has no descriptions, so rewording does not count.
 
 Outside a release PR (`--report`), the same comparison runs against the version on the branch and
 reports what the next release will need, then exits 0: there is no release to gate, and the job
-runs anyway so it is not first exercised on the day it matters.
+runs anyway so it is not first exercised on the day it matters. The workflow decides "release PR"
+from the head branch's name, so a branch that proposes a version above the published one and still
+gets `--report` is called out with a warning: either a release PR on a branch the workflow does
+not recognise (it is not gated), or `main` holds a version that was never published.
 
 Exit codes: 0 pass (always, with --report), 1 the proposed version does not fit, 2 could not classify.
 Stdlib only.
@@ -436,6 +439,18 @@ def cell(value):
     return "—" if value is None else f"`{value}`"
 
 
+def unenforced_release(result):
+    """The warning for a report-only run on a branch whose version is above the published one, or None."""
+    if result["mode"] != "report" or result["bump"] in (None, "none"):
+        return None
+    return (
+        f"this branch has version {result['proposed_version']}, above the published "
+        f"{result['published_version']}, but the verdict only reported because the head branch is not a "
+        "release PR's. If this is a release PR, the workflow does not recognise its branch and it is NOT "
+        "gated; otherwise the base holds a version that was never published."
+    )
+
+
 def render(result):
     """Markdown for the job summary. The outcome is the first thing a reader sees."""
     headline = {
@@ -459,6 +474,9 @@ def render(result):
         + (f" ({len(result['surface_removed'])} gone or changed, {result['surface_added']} new)"
            if result["surface_verdict"] else "") + " |",
     ]
+    unenforced = unenforced_release(result)
+    if unenforced:
+        lines += ["", f"> ⚠️ Not enforced: {unenforced}"]
     for change in result["breaking_changes"]:
         lines.append(f"- `{change.get('id')}` {change.get('operation', '')} {change.get('path', '')}: {change.get('text')}")
     if result["surface_removed"]:
@@ -504,6 +522,9 @@ def main(argv=None):
     if args.report and result["outcome"] != "pass":
         level = "warning"
     print(f"::{level} title=prepublish-verdict ({result['outcome']})::{result['reason']}", file=sys.stderr)
+    unenforced = unenforced_release(result)
+    if unenforced:
+        print(f"::warning title=prepublish-verdict (not enforced)::{unenforced}", file=sys.stderr)
     return 0 if args.report else EXIT[result["outcome"]]
 
 
