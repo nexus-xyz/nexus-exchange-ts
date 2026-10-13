@@ -45,16 +45,6 @@ describe("refusals", () => {
     assert.throws(() => surface(root), /has no \.\/index\.d\.ts/);
   });
 
-  test("`types` at the top level is read when `exports` has none", () => {
-    const root = pkg(
-      { "main.d.ts": "export declare const A: number;" },
-      {
-        types: "main.d.ts",
-      },
-    );
-    assert.deepEqual(surface(root), ["const A: number"]);
-  });
-
   test("an entry that is a script, not a module", () => {
     assert.throws(() => listing("declare const A: number;"), /is not a module/);
   });
@@ -78,6 +68,16 @@ describe("refusals", () => {
 });
 
 describe("listing", () => {
+  test("`types` at the top level is read when `exports` has none", () => {
+    const root = pkg(
+      { "main.d.ts": "export declare const A: number;" },
+      {
+        types: "main.d.ts",
+      },
+    );
+    assert.deepEqual(surface(root), ["const A: number"]);
+  });
+
   test("one line per export, sorted by code unit", () => {
     assert.deepEqual(
       listing(

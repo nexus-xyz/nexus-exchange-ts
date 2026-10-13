@@ -247,7 +247,10 @@ function summary(markdown) {
   }
 }
 
-/** Run public-surface.test.mjs; its output is the job log. True when it passed. */
+/**
+ * Run public-surface.test.mjs; its output is the job log. Returns undefined when
+ * the tests passed, else why not: they failed, or they could not be started.
+ */
 function selfTest() {
   const test = fileURLToPath(
     new URL("./public-surface.test.mjs", import.meta.url),
@@ -255,7 +258,10 @@ function selfTest() {
   const result = spawnSync(process.execPath, ["--test", test], {
     stdio: "inherit",
   });
-  return result.status === 0;
+  if (result.error) {
+    return `could not be started: ${result.error.message}`;
+  }
+  return result.status === 0 ? undefined : "failed";
 }
 
 function main() {
@@ -276,9 +282,14 @@ function main() {
     process.exit(1);
   }
 
-  if (!selfTest()) {
+  const selfTestFailure = selfTest();
+  if (selfTestFailure !== undefined) {
+    const what =
+      selfTestFailure === "failed"
+        ? "failed, so a listing from the reader can't be trusted"
+        : `${selfTestFailure}, so the reader was not tested`;
     console.log(
-      "::error title=prepublish-surface (self-test)::The surface reader's own tests (scripts/release_gate/public-surface.test.mjs) failed, so a listing from it can't be trusted. Nothing was compared with public-api.txt.",
+      `::error title=prepublish-surface (self-test)::The surface reader's own tests (scripts/release_gate/public-surface.test.mjs) ${what}. Nothing was compared with public-api.txt.`,
     );
     process.exit(1);
   }
