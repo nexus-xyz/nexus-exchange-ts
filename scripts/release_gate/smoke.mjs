@@ -53,8 +53,8 @@ function summary(title, body) {
 }
 
 /**
- * Run the probe in `consumer` against `baseUrl` and return its exit code. The
- * probe's own output is dropped: a failure here is reported by the caller.
+ * Run the probe in `consumer` against `baseUrl` and return the spawn result.
+ * Its own output is not shown: a failure here is reported by the caller.
  */
 function runProbe(consumer, baseUrl) {
   return spawnSync(process.execPath, ["probe.mjs"], {
@@ -63,6 +63,14 @@ function runProbe(consumer, baseUrl) {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NEXUS_SMOKE_BASE_URL: baseUrl },
   });
+}
+
+/** What a probe run did, for a message: its exit, or why it never ran, and its line. */
+function gotWhat(run) {
+  const got = run.error
+    ? `the probe could not be started: ${run.error.message}`
+    : `got ${run.status ?? run.signal}`;
+  return `${got}. ${(run.stdout ?? "").trim()}`;
 }
 
 /**
@@ -99,7 +107,7 @@ function startStub() {
 async function checkOutcomes(consumer) {
   const down = runProbe(consumer, "http://127.0.0.1:1");
   if (down.status !== 2) {
-    return `unreachable case: expected exit 2 from a base URL nothing listens on, got ${down.status ?? down.signal}. ${down.stdout.trim()}`;
+    return `unreachable case: expected exit 2 from a base URL nothing listens on, ${gotWhat(down)}`;
   }
   let stub;
   try {
@@ -111,7 +119,7 @@ async function checkOutcomes(consumer) {
     }
     const empty = runProbe(consumer, `http://127.0.0.1:${port}`);
     if (empty.status !== 1) {
-      return `empty case: expected exit 1 from a server that answers with no markets, got ${empty.status ?? empty.signal}. ${empty.stdout.trim()}`;
+      return `empty case: expected exit 1 from a server that answers with no markets, ${gotWhat(empty)}`;
     }
   } finally {
     stub?.kill();
@@ -153,12 +161,15 @@ try {
     ["probe.mjs", ...(installOnly ? ["--link-only"] : [])],
     { cwd: consumer, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
   );
-  line = probe.stdout.trim();
-  // A probe that crashed (an import that did not resolve, a signal) printed no
-  // outcome of its own, and is a failure, never unreachable.
+  // `stdout` is null when the spawn itself failed (probe.error is set).
+  line = (probe.stdout ?? "").trim();
+  // A probe that crashed (an import that did not resolve, a signal) or never
+  // started printed no outcome of its own, and is a failure, never unreachable.
   code = [0, 1, 2].includes(probe.status) && line ? probe.status : 1;
   if (!line) {
-    line = `smoke: failed: the probe exited ${probe.status ?? probe.signal} without an outcome`;
+    line = probe.error
+      ? `smoke: failed: the probe could not be started: ${probe.error.message}`
+      : `smoke: failed: the probe exited ${probe.status ?? probe.signal} without an outcome`;
   }
 } catch (err) {
   if (installError === undefined && outcomeError === undefined) throw err;
