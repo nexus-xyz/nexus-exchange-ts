@@ -253,6 +253,20 @@ class Surface(unittest.TestCase):
                 for tag in ("v9.9.9", "v0.3.0"):  # not fetched; in the tree but unreadable
                     with self.subTest(tag), self.assertRaises(V.CannotDecide):
                         V.surface_at_tag(tag, "public-api.txt")
+                # The pin: a tag that isn't here points at the fetch depth, a file missing at a tag doesn't.
+                with self.assertRaisesRegex(V.CannotDecide, "fetch-depth"):
+                    V.pin_at_tag("v9.9.9", ".api-version")
+                with self.assertRaises(V.CannotDecide) as caught:
+                    V.pin_at_tag("v0.2.0", ".api-version")
+                self.assertNotIn("fetch-depth", str(caught.exception))
+                self.assertEqual(V.release_tags("v"), ["v0.3.0", "v0.2.0", "v0.1.0"])
+                # A registry that doesn't know a package with release tags is not a first release.
+                with mock.patch.object(V, "published_version", return_value=None):
+                    result = V.run(V.argparse.Namespace(
+                        report=False, published_version=None, registry="npm", package="x",
+                        proposed_version="0.4.0", manifest="package.json", tag_prefix="v"))
+                self.assertEqual(result["outcome"], "could-not-classify")
+                self.assertIn("v0.3.0", result["reason"])
             finally:
                 os.chdir(here)
 

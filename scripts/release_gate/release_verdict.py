@@ -247,15 +247,29 @@ def git_text(argv):
         raise CannotDecide(f"git {' '.join(argv)} printed something that is not UTF-8: {err}") from None
 
 
+def tag_commit(tag):
+    """Stop unless `tag` names a commit here. The usual cause is a shallow checkout."""
+    code, _, _ = git_text(["rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}"])
+    if code != 0:
+        raise CannotDecide(f"cannot read tag {tag} (is the tag fetched? the job needs fetch-depth: 0)")
+    return f"{tag}^{{commit}}"
+
+
+def release_tags(prefix):
+    """This repo's release tags (`<prefix><digit>...`), newest first."""
+    code, out, err = git_text(["tag", "--list", f"{prefix}[0-9]*", "--sort=-v:refname"])
+    if code != 0:
+        raise CannotDecide(f"cannot list the release tags: {err}")
+    return out.split()
+
+
 def pin_at_tag(tag, pin_file):
     # No baseline fallback here, unlike surface_at_tag: without the published pin there is no spec
     # change to grade, and grading the spec is this gate's main job. Every published tag has the pin.
+    tag_commit(tag)
     code, out, err = git_text(["show", f"{tag}:{pin_file}"])
     if code != 0:
-        raise CannotDecide(
-            f"cannot read {pin_file} at tag {tag}: {err} "
-            "(is the tag fetched? the job needs fetch-depth: 0)"
-        )
+        raise CannotDecide(f"cannot read {pin_file} at tag {tag}: {err}")
     return read_pin(out, f"{pin_file} at {tag}")
 
 
@@ -288,10 +302,7 @@ def surface_at_tag(tag, surface_file):
 
     Anything else that stops the read (a tag that is not fetched, a file in the tree that cannot be
     read) cannot decide: only a snapshot known to be absent is `no-baseline`."""
-    commit = f"{tag}^{{commit}}"
-    code, _, _ = git_text(["rev-parse", "--verify", "--quiet", commit])
-    if code != 0:
-        raise CannotDecide(f"cannot read tag {tag} (is the tag fetched? the job needs fetch-depth: 0)")
+    commit = tag_commit(tag)
     code, listed, err = git_text(["ls-tree", "--full-tree", "--name-only", commit, "--", surface_file])
     if code != 0:
         raise CannotDecide(f"cannot list {surface_file} at tag {tag}: {err}")
@@ -349,6 +360,14 @@ def run(args):
         published_raw = args.published_version
         if published_raw is None:
             published_raw = published_version(args.registry, args.package)
+            tags = release_tags(args.tag_prefix) if not published_raw else []
+            if tags:
+                # A registry that has never heard of a package this repo has released is a wrong
+                # --package or a registry answering wrong, not a first release.
+                raise CannotDecide(
+                    f"{args.registry} has no published {args.package}, but this repo has release tags "
+                    f"({', '.join(tags[:3])}): check the package name"
+                )
         proposed = parse_version(args.proposed_version or manifest_version(args.manifest))
         result["proposed_version"] = fmt(proposed)
 
