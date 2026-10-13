@@ -325,10 +325,16 @@ class Registries(unittest.TestCase):
             V.published_version("npm", "x")
         self.assertEqual(sleep.call_count, 2)
 
-    def test_a_github_rate_limit_403_is_retried(self):
-        version, calls, _ = self.lookup("github", "owner/x", http_error(403, {"X-RateLimit-Remaining": "0"}),
-                                        http_error(403, {"Retry-After": "1"}), response({"tag_name": "v1.0.0"}))
+    def test_a_github_rate_limit_403_is_retried_with_the_same_request(self):
+        limited = {"X-RateLimit-Remaining": "0", "Content-Length": "120"}
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "t0k"}):
+            version, calls, _ = self.lookup("github", "owner/x", http_error(403, limited),
+                                            http_error(403, {"Retry-After": "1"}), response({"tag_name": "v1.0.0"}))
         self.assertEqual((version, len(calls)), ("v1.0.0", 3))
+        # Every attempt is the caller's request: its token, and nothing taken from an error response.
+        for call in calls:
+            self.assertEqual(call.args[0].get_header("Authorization"), "Bearer t0k")
+            self.assertIsNone(call.args[0].get_header("Content-length"))
 
     def test_another_client_error_is_not_retried(self):
         with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(403)]) as urlopen, \

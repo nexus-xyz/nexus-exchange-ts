@@ -168,9 +168,12 @@ def http_json(url, headers=None):
             if err.code == 404:
                 return None
             last = f"HTTP {err.code}"
-            headers = err.headers or {}
+            # The RESPONSE's headers, under their own name: `headers` is the request's, and the
+            # retry must send those again (a token included), not these.
+            response_headers = err.headers or {}
             # GitHub reports a secondary rate limit as a 403 with Retry-After or no requests left.
-            rate_limited = err.code == 403 and (headers.get("Retry-After") or headers.get("X-RateLimit-Remaining") == "0")
+            rate_limited = err.code == 403 and (response_headers.get("Retry-After")
+                                                or response_headers.get("X-RateLimit-Remaining") == "0")
             if err.code < 500 and err.code != 429 and not rate_limited:
                 break
         except (urllib.error.URLError, TimeoutError, ValueError) as err:
