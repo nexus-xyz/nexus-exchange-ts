@@ -25,6 +25,12 @@
  * DEFAULT_USER_AGENT, on the release PR, which must not fail this check for
  * moving the version. cargo-public-api lists the Rust SDK's constants the same
  * way: the type is the surface, the value is not.
+ *
+ * The reader's own refusals (no types entry, an entry that is not a module,
+ * `export * as ns`, an export with no declaration) and its listing rules are
+ * tested by public-surface.test.mjs on synthetic input. This script runs that
+ * file first, on every run, so a broken reader fails as a broken reader and
+ * not as a spurious or a missing diff of public-api.txt.
  */
 import {
   appendFileSync,
@@ -34,8 +40,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { REPO, pack, run } from "./pack.mjs";
 
@@ -178,7 +186,7 @@ function linesFor(name, decl) {
 }
 
 /** The sorted listing of everything the package entry at `root` exports. */
-function surface(root) {
+export function surface(root) {
   const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const entryTypes = manifest.exports?.["."]?.types ?? manifest.types;
   if (!entryTypes) {
@@ -239,77 +247,105 @@ function summary(markdown) {
   }
 }
 
-const args = process.argv.slice(2);
-if (args.length > 1 || (args.length === 1 && args[0] !== "--write")) {
-  console.error(
-    "usage: node scripts/release_gate/public-surface.mjs [--write]",
+/** Run public-surface.test.mjs; its output is the job log. True when it passed. */
+function selfTest() {
+  const test = fileURLToPath(
+    new URL("./public-surface.test.mjs", import.meta.url),
   );
-  process.exit(64);
+  const result = spawnSync(process.execPath, ["--test", test], {
+    stdio: "inherit",
+  });
+  return result.status === 0;
 }
-const write = args[0] === "--write";
 
-const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
-const built = `packed ${pkg.name}@${pkg.version}`;
-const work = mkdtempSync(join(tmpdir(), "exchange-ts-surface-"));
-let code = 0;
-try {
-  const tarball = pack(work);
-  run("tar", ["-xzf", tarball, "-C", work]);
-  const listing = `${surface(join(work, "package")).join("\n")}\n`;
-  const count = listing.split("\n").length - 1;
-  const snapshot = join(REPO, SNAPSHOT);
-
-  if (write) {
-    writeFileSync(snapshot, listing);
-    console.log(`wrote ${SNAPSHOT} (${count} items) from ${built}`);
-  } else if (!existsSync(snapshot)) {
-    console.log(
-      `::error title=prepublish-surface::${SNAPSHOT} is missing. Run ${WRITE_CMD} and commit it.`,
+function main() {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== "--write")) {
+    console.error(
+      "usage: node scripts/release_gate/public-surface.mjs [--write]",
     );
-    code = 1;
-  } else if (readFileSync(snapshot, "utf8") === listing) {
-    console.log(`public surface matches ${SNAPSHOT} (${count} items)`);
-  } else {
-    const fresh = join(work, SNAPSHOT);
-    writeFileSync(fresh, listing);
-    let diff = "";
-    try {
-      run("diff", [
-        "-u",
-        "--label",
-        `${SNAPSHOT} (committed)`,
-        "--label",
-        `${SNAPSHOT} (${built})`,
-        snapshot,
-        fresh,
-      ]);
-    } catch (err) {
-      // diff exits 1 when the files differ; anything else is a real error.
-      if (err.status !== 1) throw err;
-      diff = err.stdout;
-    }
-    const body = diff.split("\n").slice(2);
-    const removed = body.filter((line) => line.startsWith("-")).length;
-    const added = body.filter((line) => line.startsWith("+")).length;
-    process.stdout.write(diff);
-    console.log(
-      `::error title=prepublish-surface::The packed package's public API differs from ${SNAPSHOT}: ${removed} item(s) gone or changed, ${added} new. If that is deliberate, run ${WRITE_CMD} and commit ${SNAPSHOT} in this PR, so the change is in the diff a reviewer reads. A "-" line is breaking and needs a "!" PR title. A "+" line can be too, if it adds a required member to an interface callers implement.`,
-    );
-    summary(
-      [
-        `### Public surface: ❌ differs from \`${SNAPSHOT}\``,
-        "",
-        `${removed} item(s) gone or changed (\`-\`), ${added} new (\`+\`). Regenerate with \`${WRITE_CMD}\` if deliberate.`,
-        "",
-        "```diff",
-        diff.trimEnd(),
-        "```",
-        "",
-      ].join("\n"),
-    );
-    code = 1;
+    process.exit(64);
   }
-} finally {
-  rmSync(work, { recursive: true, force: true });
+  const write = args[0] === "--write";
+
+  if (!selfTest()) {
+    console.log(
+      "::error title=prepublish-surface (self-test)::The surface reader's own tests (scripts/release_gate/public-surface.test.mjs) failed, so a listing from it can't be trusted. Nothing was compared with public-api.txt.",
+    );
+    process.exit(1);
+  }
+
+  const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
+  const built = `packed ${pkg.name}@${pkg.version}`;
+  const work = mkdtempSync(join(tmpdir(), "exchange-ts-surface-"));
+  let code = 0;
+  try {
+    const tarball = pack(work);
+    run("tar", ["-xzf", tarball, "-C", work]);
+    const listing = `${surface(join(work, "package")).join("\n")}\n`;
+    const count = listing.split("\n").length - 1;
+    const snapshot = join(REPO, SNAPSHOT);
+
+    if (write) {
+      writeFileSync(snapshot, listing);
+      console.log(`wrote ${SNAPSHOT} (${count} items) from ${built}`);
+    } else if (!existsSync(snapshot)) {
+      console.log(
+        `::error title=prepublish-surface::${SNAPSHOT} is missing. Run ${WRITE_CMD} and commit it.`,
+      );
+      code = 1;
+    } else if (readFileSync(snapshot, "utf8") === listing) {
+      console.log(`public surface matches ${SNAPSHOT} (${count} items)`);
+    } else {
+      const fresh = join(work, SNAPSHOT);
+      writeFileSync(fresh, listing);
+      let diff = "";
+      try {
+        run("diff", [
+          "-u",
+          "--label",
+          `${SNAPSHOT} (committed)`,
+          "--label",
+          `${SNAPSHOT} (${built})`,
+          snapshot,
+          fresh,
+        ]);
+      } catch (err) {
+        // diff exits 1 when the files differ; anything else is a real error.
+        if (err.status !== 1) throw err;
+        diff = err.stdout;
+      }
+      const body = diff.split("\n").slice(2);
+      const removed = body.filter((line) => line.startsWith("-")).length;
+      const added = body.filter((line) => line.startsWith("+")).length;
+      process.stdout.write(diff);
+      console.log(
+        `::error title=prepublish-surface::The packed package's public API differs from ${SNAPSHOT}: ${removed} item(s) gone or changed, ${added} new. If that is deliberate, run ${WRITE_CMD} and commit ${SNAPSHOT} in this PR, so the change is in the diff a reviewer reads. A "-" line is breaking and needs a "!" PR title. A "+" line can be too, if it adds a required member to an interface callers implement.`,
+      );
+      summary(
+        [
+          `### Public surface: ❌ differs from \`${SNAPSHOT}\``,
+          "",
+          `${removed} item(s) gone or changed (\`-\`), ${added} new (\`+\`). Regenerate with \`${WRITE_CMD}\` if deliberate.`,
+          "",
+          "```diff",
+          diff.trimEnd(),
+          "```",
+          "",
+        ].join("\n"),
+      );
+      code = 1;
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+  process.exit(code);
 }
-process.exit(code);
+
+// Run as a script, not when public-surface.test.mjs imports `surface`.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main();
+}
