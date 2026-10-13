@@ -7,7 +7,10 @@ name: Pre-publish
 # the fleet:
 #
 #   prepublish-surface  the packed package's public API equals the committed public-api.txt
-#   prepublish-smoke    the packed package, installed into a clean consumer, reads the public testnet
+#   prepublish-smoke    the packed package, installed into a clean consumer, reads the public testnet;
+#                       first, in every mode, it proves its own outcomes against the built package: a
+#                       base URL nothing listens on must exit 2 (unreachable), and a stub that answers
+#                       with no markets must exit 1 (failed)
 #   prepublish-verdict  the version the release PR proposes fits the spec change since the last
 #                       publish, graded by the monorepo's classifier (scripts/release_gate/VENDORED.md)
 #

@@ -13,9 +13,18 @@
  * testnet answers.
  *
  * NEXUS_SMOKE_BASE_URL (a REST base, as `customNetwork` takes it) points the
- * read elsewhere, for proving the three outcomes locally.
+ * read elsewhere, for proving the three outcomes.
+ *
+ * In every mode, right after the install and before any testnet read, the
+ * just-built probe is run twice that way, so the exit codes are exercised and
+ * not only described here: against http://127.0.0.1:1, where nothing listens,
+ * it must exit 2 (unreachable, never a pass); against
+ * scripts/release_gate/stub_server.py, which answers 200 with no markets, it
+ * must exit 1. Either code wrong is its own failure, named "(outcomes)". The
+ * probes run the built probe directly, so the annotations below for an exit 1
+ * or 2, which are expected there, are not printed for them.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
   copyFileSync,
@@ -43,12 +52,80 @@ function summary(title, body) {
   }
 }
 
+/**
+ * Run the probe in `consumer` against `baseUrl` and return its exit code. The
+ * probe's own output is dropped: a failure here is reported by the caller.
+ */
+function runProbe(consumer, baseUrl) {
+  return spawnSync(process.execPath, ["probe.mjs"], {
+    cwd: consumer,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, NEXUS_SMOKE_BASE_URL: baseUrl },
+  });
+}
+
+/**
+ * Start stub_server.py and resolve with the child and the port it printed on
+ * its first line of stdout. The caller kills the child.
+ */
+function startStub() {
+  const stub = spawn(
+    "python3",
+    ["-I", join(REPO, "scripts", "release_gate", "stub_server.py")],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  return new Promise((resolve, reject) => {
+    let out = "";
+    stub.once("error", reject);
+    stub.once("exit", (status) =>
+      reject(
+        new Error(`the stub server exited (${status}) before printing a port`),
+      ),
+    );
+    stub.stdout.on("data", (chunk) => {
+      out += chunk;
+      const port = /^(\d+)\n/.exec(out)?.[1];
+      if (port) resolve({ stub, port });
+    });
+  });
+}
+
+/**
+ * Prove the probe's outcomes before trusting it with the testnet: nothing
+ * listening is exit 2, an answer with no markets is exit 1. Returns a message
+ * naming the case and the code it got, or undefined when both are right.
+ */
+async function checkOutcomes(consumer) {
+  const down = runProbe(consumer, "http://127.0.0.1:1");
+  if (down.status !== 2) {
+    return `unreachable case: expected exit 2 from a base URL nothing listens on, got ${down.status ?? down.signal}. ${down.stdout.trim()}`;
+  }
+  let stub;
+  try {
+    let port;
+    try {
+      ({ stub, port } = await startStub());
+    } catch (err) {
+      return `empty case: could not start scripts/release_gate/stub_server.py: ${err.message}`;
+    }
+    const empty = runProbe(consumer, `http://127.0.0.1:${port}`);
+    if (empty.status !== 1) {
+      return `empty case: expected exit 1 from a server that answers with no markets, got ${empty.status ?? empty.signal}. ${empty.stdout.trim()}`;
+    }
+  } finally {
+    stub?.kill();
+  }
+  return undefined;
+}
+
 const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
 const built = `${pkg.name}@${pkg.version}`;
 const work = mkdtempSync(join(tmpdir(), "exchange-ts-smoke-"));
 let code;
 let line;
 let installError;
+let outcomeError;
 try {
   let consumer;
   try {
@@ -65,6 +142,12 @@ try {
   );
   console.log(`installed the packed ${built} into a clean consumer`);
 
+  outcomeError = await checkOutcomes(consumer);
+  if (outcomeError !== undefined) throw new Error(outcomeError);
+  console.log(
+    "the probe's outcomes hold: nothing listening exits 2, an empty answer exits 1",
+  );
+
   const probe = spawnSync(
     process.execPath,
     ["probe.mjs", ...(installOnly ? ["--link-only"] : [])],
@@ -78,9 +161,16 @@ try {
     line = `smoke: failed: the probe exited ${probe.status ?? probe.signal} without an outcome`;
   }
 } catch (err) {
-  if (installError === undefined) throw err;
+  if (installError === undefined && outcomeError === undefined) throw err;
 } finally {
   rmSync(work, { recursive: true, force: true });
+}
+if (outcomeError !== undefined) {
+  console.log(
+    `::error title=prepublish-smoke (outcomes)::The probe does not keep its outcomes apart, so a testnet read through it would prove nothing. ${outcomeError}`,
+  );
+  summary("❌ OUTCOMES WRONG: nothing was read", outcomeError);
+  process.exit(1);
 }
 if (installError !== undefined) {
   console.log(
