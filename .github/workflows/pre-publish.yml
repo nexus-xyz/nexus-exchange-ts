@@ -7,7 +7,12 @@ name: Pre-publish
 # the fleet:
 #
 #   prepublish-surface  the packed package's public API equals the committed public-api.txt
-#   prepublish-smoke    the packed package, installed into a clean consumer, reads the public testnet
+#   prepublish-smoke    the packed package, installed into a clean consumer, reads the public testnet.
+#                       Before that, in every mode, it runs the built probe against three stand-ins:
+#                       nothing listening (must exit 2, unreachable), a server that answers with no
+#                       markets (must exit 1, failed) and a server that answers 503 (must exit 2: an
+#                       outage is never failed or passed). So exits 2 and 1 are exercised on every PR;
+#                       exit 0 only by the real read, on a release PR or a change to this gate
 #   prepublish-verdict  the version the release PR proposes fits the spec change since the last
 #                       publish, graded by the monorepo's classifier (scripts/release_gate/VENDORED.md)
 #
@@ -84,12 +89,19 @@ jobs:
         id: mode
         env:
           HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          # HEAD is the PR's merge commit (actions/checkout's default on pull_request), and its first
+          # parent is the base it was merged onto, so this lists the PR's own changes. Diffing from the
+          # event's base.sha also listed whatever landed on the base since, which flipped unrelated PRs
+          # into the testnet read.
+          if ! git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
+            echo "::error title=prepublish-smoke::HEAD is not a merge commit, or the checkout is shallow (this job needs fetch-depth: 0), so the PR's own changes can't be listed"
+            exit 1
+          fi
           # Into a file, not a pipe: under pipefail a failed `git diff`, or one cut short by
           # `grep -q` (SIGPIPE), would read as "not a gate change" and skip the read quietly.
-          git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed.txt"
+          git diff --name-only 'HEAD^1' HEAD > "$RUNNER_TEMP/changed.txt"
           if [[ "$HEAD_REF" == release-please--* ]]; then
             echo "mode=release" >> "$GITHUB_OUTPUT"
           elif grep -qE '^(\.github/workflows/pre-publish\.yml|scripts/release_gate/)' "$RUNNER_TEMP/changed.txt"; then
@@ -128,6 +140,10 @@ jobs:
       # gate fails as a broken gate, and a vendored file that drifted from the
       # monorepo fails here.
       - name: Self-test the gate
+        env:
+          # The end-to-end tests fail instead of skipping if oasdiff is missing, so this step can't
+          # go green without running the classifier.
+          RELEASE_GATE_REQUIRE_OASDIFF: "1"
         run: python3 scripts/release_gate/test_release_verdict.py
       - name: Version proposed vs the spec change since the last publish
         env:

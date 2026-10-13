@@ -60,7 +60,9 @@ one silently ships as a patch — so the `!` is the difference between `0.x.0` a
 release-please opens and maintains the release PR (version bump and changelog).
 Merging it is the release: the `Release` workflow's run on that merge tags it and
 publishes to npm. The only other way to publish is a person dispatching that
-workflow for an existing tag.
+workflow for an existing tag. The pre-publish checks below run on pull requests
+only, so they do not run on that path: whoever dispatches is the check, and
+should have the tag's release PR checks green before doing it.
 
 **Before merging, the pre-publish checks have to be green on the release PR**
 (`.github/workflows/pre-publish.yml`, ENG-18798). release-please opens the PR
