@@ -268,6 +268,14 @@ function main() {
   }
   const write = args[0] === "--write";
 
+  // Before any test, pack or install, so a forgotten snapshot fails in seconds.
+  if (!write && !existsSync(join(REPO, SNAPSHOT))) {
+    console.log(
+      `::error title=prepublish-surface::${SNAPSHOT} is missing. Run ${WRITE_CMD} and commit it.`,
+    );
+    process.exit(1);
+  }
+
   if (!selfTest()) {
     console.log(
       "::error title=prepublish-surface (self-test)::The surface reader's own tests (scripts/release_gate/public-surface.test.mjs) failed, so a listing from it can't be trusted. Nothing was compared with public-api.txt.",
@@ -289,11 +297,6 @@ function main() {
     if (write) {
       writeFileSync(snapshot, listing);
       console.log(`wrote ${SNAPSHOT} (${count} items) from ${built}`);
-    } else if (!existsSync(snapshot)) {
-      console.log(
-        `::error title=prepublish-surface::${SNAPSHOT} is missing. Run ${WRITE_CMD} and commit it.`,
-      );
-      code = 1;
     } else if (readFileSync(snapshot, "utf8") === listing) {
       console.log(`public surface matches ${SNAPSHOT} (${count} items)`);
     } else {
