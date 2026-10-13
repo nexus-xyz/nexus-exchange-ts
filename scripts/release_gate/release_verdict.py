@@ -36,9 +36,15 @@ once lost an item. The listing has no descriptions, so rewording does not count.
     reviewer of that PR has to call it.
   - A change to the listing's own format reads as removals. The gate then asks for the breaking
     bump: below 1.0 that is a minor, the cheap side to err on.
+  - A listing that names private items (a Python base class such as `_ClientCore`, a private type
+    in an annotation) reads their rename as a removal: the breaking bump again, the cheap side.
   - `--surface-file ''` turns this grade off. The Rust SDK does that: release-plz already picks its
     version with cargo-semver-checks, and its listing renders dependency paths that move without
     any change for users.
+
+An unchanged spec pin is not fetched or graded: the gate assumes a published tag of
+nexus-exchange-api never moves. A tag re-pointed there would change the contract under an
+unchanged pin without a grade.
 
 Outside a release PR (`--report`), the same comparison runs against the version on the branch and
 reports what the next release will need, then exits 0: there is no release to gate, and the job
@@ -162,7 +168,10 @@ def http_json(url, headers=None):
             if err.code == 404:
                 return None
             last = f"HTTP {err.code}"
-            if err.code < 500 and err.code != 429:
+            headers = err.headers or {}
+            # GitHub reports a secondary rate limit as a 403 with Retry-After or no requests left.
+            rate_limited = err.code == 403 and (headers.get("Retry-After") or headers.get("X-RateLimit-Remaining") == "0")
+            if err.code < 500 and err.code != 429 and not rate_limited:
                 break
         except (urllib.error.URLError, TimeoutError, ValueError) as err:
             last = str(err)

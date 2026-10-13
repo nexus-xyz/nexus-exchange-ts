@@ -75,7 +75,10 @@ def gate(*argv, published_surface="item\n", branch_surface="item\n"):
         old.write_text(published_surface)
         new.write_text(branch_surface)
         defaults = ["--published-surface", str(old), "--surface-file", str(new)]
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        # GITHUB_STEP_SUMMARY emptied: in CI it is the job's real summary, and a test's verdict must
+        # not land there in front of the real one.
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}):
             code = V.main(["--registry", "crates.io", "--package", "x", "--manifest", "Cargo.toml", *defaults, *argv])
     return code, json.loads(out.getvalue())
 
@@ -276,8 +279,8 @@ def response(body):
     return contextlib.nullcontext(io.BytesIO(json.dumps(body).encode()))
 
 
-def http_error(code):
-    return urllib.error.HTTPError("https://x", code, "stub", {}, None)
+def http_error(code, headers=None):
+    return urllib.error.HTTPError("https://x", code, "stub", headers or {}, None)
 
 
 class Registries(unittest.TestCase):
@@ -321,6 +324,11 @@ class Registries(unittest.TestCase):
                 mock.patch.object(V.time, "sleep") as sleep, self.assertRaises(V.CannotDecide):
             V.published_version("npm", "x")
         self.assertEqual(sleep.call_count, 2)
+
+    def test_a_github_rate_limit_403_is_retried(self):
+        version, calls, _ = self.lookup("github", "owner/x", http_error(403, {"X-RateLimit-Remaining": "0"}),
+                                        http_error(403, {"Retry-After": "1"}), response({"tag_name": "v1.0.0"}))
+        self.assertEqual((version, len(calls)), ("v1.0.0", 3))
 
     def test_another_client_error_is_not_retried(self):
         with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(403)]) as urlopen, \
@@ -429,6 +437,16 @@ class WithoutOasdiff(unittest.TestCase):
         code, r = gate("--published-version", "", "--proposed-version", "0.1.0")
         self.assertEqual((code, r["outcome"]), (0, "pass"))
         self.assertNotIn("None", V.render(r))
+        _, r = gate("--published-version", "", "--proposed-version", "0.1.0", "--report")
+        self.assertIsNone(V.unenforced_release(r))  # nothing published: nothing to be above
+
+    def test_the_self_test_leaves_the_job_summary_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            summary = Path(d, "summary.md")
+            summary.write_text("")
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+                gate(*SAME_PIN, "--proposed-version", "0.11.2", published_surface="item\ngone\n")
+            self.assertEqual(summary.read_text(), "")
 
     def test_a_missing_oasdiff_is_could_not_classify_never_a_pass(self):
         with tempfile.TemporaryDirectory() as d:
