@@ -338,7 +338,10 @@ export interface RegisterAgentOptions {
    */
   expiresAtMs: number | bigint;
   /**
-   * Monotonic nonce. The current Unix timestamp in ms is a safe starting value.
+   * The signing time as Unix ms: pass `Date.now()`, read right before you sign.
+   * The server refuses a nonce older than 5 minutes or more than 60 s ahead of
+   * its clock (the window revoke uses), and one that is not above the last
+   * nonce served for this agent key, so a constant or a counter is refused.
    * Same round-tripping constraint as {@link expiresAtMs}.
    */
   nonce: number | bigint;

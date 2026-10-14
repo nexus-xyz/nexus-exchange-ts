@@ -633,6 +633,7 @@ await client.registerAgent(
     chainId: 20056, // the EIP-712 domain chainId the server verifies
     network: client.network, // salts the domain: valid on this network only
     expiresAtMs: Date.now() + 30 * 24 * 3600_000,
+    // The signing time in Unix ms, within [now - 5 min, now + 60 s].
     nonce: Date.now(),
     label: "my-bot",
   }),
