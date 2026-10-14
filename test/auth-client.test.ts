@@ -193,7 +193,7 @@ test("registerAgent posts the EIP-712 body to host-root /agents/register unauthe
     chainId: 20056,
     network: Network.Local,
     expiresAtMs: 1_782_000_000_000,
-    nonce: 1,
+    nonce: 1_781_913_600_000,
   });
 
   await client.registerAgent(registration);

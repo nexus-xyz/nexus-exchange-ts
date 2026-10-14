@@ -231,8 +231,10 @@ export interface AgentRegistrationRequest {
    */
   expires_at?: TimestampMs;
   /**
-   * Monotonic nonce. Use the current Unix timestamp in ms as a safe starting
-   * value.
+   * The signing time as Unix ms. Refused when it is not above the nonce of the
+   * last request served for this agent key; once freshness is enforced
+   * (ENG-21517), also when older than 5 minutes or more than 60 s ahead of the
+   * server clock.
    */
   nonce: number;
   /**
