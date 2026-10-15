@@ -238,12 +238,15 @@ export interface AgentRegistrationRequest {
    */
   nonce: number;
   /**
-   * EIP-712 signature over `RegisterAgent{agent, expiresAt, nonce}` from the
-   * wallet private key (0x-prefixed).
+   * EIP-712 signature over `RegisterAgent{agent, expiresAt, nonce}`, or over
+   * `RegisterAgent{agent, expiresAt, nonce, termsVersion}` when
+   * `terms_version` is set, from the wallet private key (0x-prefixed).
    */
   signature: string;
   /** Optional human-readable label for the agent (e.g. `"my-bot"`). */
   label?: string;
+  /** The terms-of-use version the wallet accepted, signed inside `RegisterAgent`. */
+  terms_version?: number;
 }
 
 /** An agent record returned by `GET /agents`. */

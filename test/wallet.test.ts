@@ -7,6 +7,7 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   EthSigner,
   SIGN_IN_MESSAGE,
+  registerAgentDigest,
   revokeAgentKeyDigest,
 } from "../src/wallet.js";
 import { MissingCredentialsError, NexusExchangeError } from "../src/errors.js";
@@ -114,6 +115,60 @@ test("registerAgent matches the server's salted known-answer vector", () => {
   const pub = sig.recoverPublicKey(hexToBytesLocal(REGISTER_DIGEST));
   const addr = keccak_256(pub.toBytes(false).slice(1)).slice(12);
   assert.equal(`0x${Buffer.from(addr).toString("hex")}`, TEST_ADDR);
+});
+
+// The four-field shape, pinned against the server's
+// `register_agent::tests::the_digest_with_terms_for_each_network_matches_its_pinned_vector`.
+test("registerAgent with termsVersion matches the server's pinned vectors", () => {
+  const agent = hexToBytesLocal(KAT_AGENT.slice(2));
+  for (const [network, want] of [
+    [Network.Mainnet, "422802a8fc760529083693ce0a8cc3b06b2492b25723b0a4b88a26a28ec86a85"],
+    [Network.Testnet, "92cd47c15ae7986416f4508923012810d6e12a22d8d8e7d734aa75d07025ad7d"],
+    [Network.Local, "43c47ae217cff37b5e7b8aa5c0b82ede02d73953a3ea749270213296e1825dd9"],
+  ] as const) {
+    const digest = registerAgentDigest(
+      agent,
+      KAT_EXPIRES_MS,
+      KAT_NONCE,
+      KAT_CHAIN_ID,
+      network,
+      1,
+    );
+    assert.equal(Buffer.from(digest).toString("hex"), want, network);
+  }
+  const req = EthSigner.fromHex(TEST_KEY).registerAgent({
+    network: KAT_NETWORK,
+    agent: KAT_AGENT,
+    chainId: KAT_CHAIN_ID,
+    expiresAtMs: KAT_EXPIRES_MS,
+    nonce: KAT_NONCE,
+    termsVersion: 1,
+  });
+  assert.equal(req.terms_version, 1);
+  const raw = hexToBytesLocal(req.signature.slice(2));
+  const sig = secp256k1.Signature.fromBytes(
+    raw.slice(0, 64),
+    "compact",
+  ).addRecoveryBit(raw[64]! - 27);
+  const pub = sig.recoverPublicKey(
+    registerAgentDigest(agent, KAT_EXPIRES_MS, KAT_NONCE, KAT_CHAIN_ID, KAT_NETWORK, 1),
+  );
+  const addr = keccak_256(pub.toBytes(false).slice(1)).slice(12);
+  assert.equal(`0x${Buffer.from(addr).toString("hex")}`, TEST_ADDR);
+  for (const bad of [-1, 1.5, 2 ** 32]) {
+    assert.throws(
+      () =>
+        EthSigner.fromHex(TEST_KEY).registerAgent({
+          network: KAT_NETWORK,
+          agent: KAT_AGENT,
+          chainId: KAT_CHAIN_ID,
+          expiresAtMs: KAT_EXPIRES_MS,
+          nonce: KAT_NONCE,
+          termsVersion: bad,
+        }),
+      NexusExchangeError,
+    );
+  }
 });
 
 // Published in the spec's `x-nexus-networks[*].signing_domain.salt`.
@@ -251,6 +306,7 @@ test("registerAgent omits label when not provided", () => {
   });
   assert.equal("label" in req, false);
   assert.equal(JSON.stringify(req).includes("label"), false);
+  assert.equal("terms_version" in req, false);
 });
 
 test("registerAgent rejects a bad agent address", () => {
