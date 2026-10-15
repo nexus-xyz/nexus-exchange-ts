@@ -122,9 +122,18 @@ test("registerAgent matches the server's salted known-answer vector", () => {
 test("registerAgent with termsVersion matches the server's pinned vectors", () => {
   const agent = hexToBytesLocal(KAT_AGENT.slice(2));
   for (const [network, want] of [
-    [Network.Mainnet, "422802a8fc760529083693ce0a8cc3b06b2492b25723b0a4b88a26a28ec86a85"],
-    [Network.Testnet, "92cd47c15ae7986416f4508923012810d6e12a22d8d8e7d734aa75d07025ad7d"],
-    [Network.Local, "43c47ae217cff37b5e7b8aa5c0b82ede02d73953a3ea749270213296e1825dd9"],
+    [
+      Network.Mainnet,
+      "422802a8fc760529083693ce0a8cc3b06b2492b25723b0a4b88a26a28ec86a85",
+    ],
+    [
+      Network.Testnet,
+      "92cd47c15ae7986416f4508923012810d6e12a22d8d8e7d734aa75d07025ad7d",
+    ],
+    [
+      Network.Local,
+      "43c47ae217cff37b5e7b8aa5c0b82ede02d73953a3ea749270213296e1825dd9",
+    ],
   ] as const) {
     const digest = registerAgentDigest(
       agent,
@@ -151,7 +160,14 @@ test("registerAgent with termsVersion matches the server's pinned vectors", () =
     "compact",
   ).addRecoveryBit(raw[64]! - 27);
   const pub = sig.recoverPublicKey(
-    registerAgentDigest(agent, KAT_EXPIRES_MS, KAT_NONCE, KAT_CHAIN_ID, KAT_NETWORK, 1),
+    registerAgentDigest(
+      agent,
+      KAT_EXPIRES_MS,
+      KAT_NONCE,
+      KAT_CHAIN_ID,
+      KAT_NETWORK,
+      1,
+    ),
   );
   const addr = keccak_256(pub.toBytes(false).slice(1)).slice(12);
   assert.equal(`0x${Buffer.from(addr).toString("hex")}`, TEST_ADDR);

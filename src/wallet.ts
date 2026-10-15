@@ -260,7 +260,11 @@ export function registerAgentDigest(
   assertWireSafeUint(nonce, "nonce");
   if (
     termsVersion !== undefined &&
-    !(Number.isInteger(termsVersion) && termsVersion >= 0 && termsVersion <= 0xffffffff)
+    !(
+      Number.isInteger(termsVersion) &&
+      termsVersion >= 0 &&
+      termsVersion <= 0xffffffff
+    )
   ) {
     throw new NexusExchangeError(
       `termsVersion must be an integer in uint32 range, got ${termsVersion}.`,
