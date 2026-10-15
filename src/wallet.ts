@@ -238,15 +238,19 @@ function agentTypedDataDigest(
 }
 
 /**
- * EIP-712 digest for `RegisterAgent{agent, expiresAt, nonce}`. Matches the
- * server's `agent_store::eip712::register_agent_digest`.
+ * EIP-712 digest for `RegisterAgent{agent, expiresAt, nonce}`, or with
+ * `uint32 termsVersion` appended when `termsVersion` is set. Matches the
+ * server's `register_agent::digest` and `digest_with_terms`.
+ *
+ * @internal Not re-exported from the package entry point.
  */
-function registerAgentDigest(
+export function registerAgentDigest(
   agent: Uint8Array,
   expiresAtMs: number | bigint,
   nonce: number | bigint,
   chainId: number | bigint,
   network: NetworkSelector,
+  termsVersion?: number,
 ): Uint8Array {
   // Before any hashing: a bad domain silently yields a signature for the wrong
   // network rather than an error at signing time, and a non-round-tripping
@@ -254,16 +258,40 @@ function registerAgentDigest(
   assertChainId(chainId);
   assertWireSafeUint(expiresAtMs, "expiresAtMs");
   assertWireSafeUint(nonce, "nonce");
+  if (
+    termsVersion !== undefined &&
+    !(
+      Number.isInteger(termsVersion) &&
+      termsVersion >= 0 &&
+      termsVersion <= 0xffffffff
+    )
+  ) {
+    throw new NexusExchangeError(
+      `termsVersion must be an integer in uint32 range, got ${termsVersion}.`,
+    );
+  }
   const salt = agentSalt(network, "RegisterAgent");
   const hashStruct = keccak_256(
-    concatBytes(
-      keccak_256(
-        enc("RegisterAgent(address agent,uint64 expiresAt,uint64 nonce)"),
-      ),
-      addressWord(agent),
-      u256(expiresAtMs),
-      u256(nonce),
-    ),
+    termsVersion === undefined
+      ? concatBytes(
+          keccak_256(
+            enc("RegisterAgent(address agent,uint64 expiresAt,uint64 nonce)"),
+          ),
+          addressWord(agent),
+          u256(expiresAtMs),
+          u256(nonce),
+        )
+      : concatBytes(
+          keccak_256(
+            enc(
+              "RegisterAgent(address agent,uint64 expiresAt,uint64 nonce,uint32 termsVersion)",
+            ),
+          ),
+          addressWord(agent),
+          u256(expiresAtMs),
+          u256(nonce),
+          u256(termsVersion),
+        ),
   );
   return agentTypedDataDigest(chainId, salt, hashStruct);
 }
@@ -348,6 +376,15 @@ export interface RegisterAgentOptions {
   nonce: number | bigint;
   /** Optional human-readable label for the agent (e.g. `"my-bot"`). */
   label?: string;
+  /**
+   * The terms-of-use version the user accepted. When set, it is signed into
+   * the message as `uint32 termsVersion` and sent as `terms_version`. Once the
+   * exchange requires a terms version, a registration without the current one
+   * is refused with 403 `TermsVersionNotCurrent`. Until the exchange verifies
+   * this shape on `POST /agents/register` (ENG-20416) it answers 401
+   * `signer_mismatch`, so leave it unset until then.
+   */
+  termsVersion?: number;
 }
 
 /** Options for {@link EthSigner.revokeAgent}. */
@@ -521,6 +558,7 @@ export class EthSigner {
       options.nonce,
       options.chainId,
       options.network,
+      options.termsVersion,
     );
     const body: AgentRegistrationRequest = {
       wallet: this.#address,
@@ -530,6 +568,9 @@ export class EthSigner {
       signature: this.#signDigest(digest),
     };
     if (options.label !== undefined) body.label = options.label;
+    if (options.termsVersion !== undefined) {
+      body.terms_version = options.termsVersion;
+    }
     return body;
   }
 

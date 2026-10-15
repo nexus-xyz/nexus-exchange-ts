@@ -260,6 +260,7 @@ interface AgentRegistrationRequest { expires_at?: TimestampMs }
 interface AgentRegistrationRequest { label?: string }
 interface AgentRegistrationRequest { nonce: number }
 interface AgentRegistrationRequest { signature: string }
+interface AgentRegistrationRequest { terms_version?: number }
 interface AgentRegistrationRequest { wallet: string }
 interface AgentRequestParts
 interface AgentRequestParts { body?: Uint8Array | string }
@@ -649,6 +650,7 @@ interface RegisterAgentOptions { expiresAtMs: number | bigint }
 interface RegisterAgentOptions { label?: string }
 interface RegisterAgentOptions { network: NetworkSelector }
 interface RegisterAgentOptions { nonce: number | bigint }
+interface RegisterAgentOptions { termsVersion?: number }
 interface RegisterBridgeWalletRequest
 interface RegisterBridgeWalletRequest { address: string }
 interface RegisterBridgeWalletRequest { message: string }
