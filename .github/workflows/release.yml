@@ -76,13 +76,15 @@ jobs:
       # No workflow here triggers on a tag push or a release event, so the tag and
       # release the App creates start nothing new; publish and docs are still
       # chained by `needs`.
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         if: env.HAS_RELEASE_BOT == 'true'
         with:
           app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          # No wider than this job's own grant.
+          # Ask for only what release-please needs. Without these the token gets
+          # every permission the App's installation has; the job's own
+          # `permissions:` block does not cap an App token.
           permission-contents: write
           permission-pull-requests: write
       - uses: googleapis/release-please-action@v5
