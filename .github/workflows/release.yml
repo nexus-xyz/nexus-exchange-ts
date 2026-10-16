@@ -63,11 +63,26 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+    env:
+      HAS_RELEASE_BOT: ${{ secrets.RELEASE_BOT_APP_ID != '' }}
     steps:
+      # Since 10-07 the org no longer lets GITHUB_TOKEN open PRs ("GitHub Actions
+      # is not permitted to create or approve pull requests"). An App token is not
+      # subject to that setting, and its PRs run CI without being held for
+      # approval. Same App as -go, -cli and -mcp (nexus-release-bot2, ENG-22238).
+      # Falls back to GITHUB_TOKEN until the repo has the App secrets. No workflow
+      # here triggers on a tag push or a release event, so the tag and release the
+      # App creates start nothing new; publish and docs are still chained by `needs`.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        if: env.HAS_RELEASE_BOT == 'true'
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

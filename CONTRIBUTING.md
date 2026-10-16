@@ -66,8 +66,9 @@ should have the tag's release PR checks green before doing it.
 
 **Before merging, the pre-publish checks have to be green on the release PR**
 (`.github/workflows/pre-publish.yml`, ENG-18798). release-please opens the PR
-with the default token, so its runs wait for **Approve and run workflows** on
-the PR.
+as the `nexus-release-bot2` App (ENG-22238), so its runs start on their own. If
+the repo is missing the `RELEASE_BOT_*` secrets, `release.yml` falls back to the
+default token, which the org no longer lets open PRs.
 
 - `prepublish-surface`: the packed package's public API equals
   `public-api.txt`.
