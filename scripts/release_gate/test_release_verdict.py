@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -286,7 +287,7 @@ def http_error(code, headers=None):
 class Registries(unittest.TestCase):
     def lookup(self, registry, package, *answers):
         """published_version() against urlopen answering in turn; returns (version, requests made)."""
-        with mock.patch.object(V.urllib.request, "urlopen", side_effect=list(answers)) as urlopen, \
+        with mock.patch.object(V, "urlopen", side_effect=list(answers)) as urlopen, \
                 mock.patch.object(V.time, "sleep") as sleep:
             version = V.published_version(registry, package)
         return version, urlopen.call_args_list, sleep.call_count
@@ -320,7 +321,7 @@ class Registries(unittest.TestCase):
     def test_three_failures_cannot_decide_and_the_last_one_does_not_wait(self):
         with self.assertRaises(V.CannotDecide):
             self.lookup("npm", "x", http_error(503), http_error(503), http_error(503))
-        with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(503)] * 3), \
+        with mock.patch.object(V, "urlopen", side_effect=[http_error(503)] * 3), \
                 mock.patch.object(V.time, "sleep") as sleep, self.assertRaises(V.CannotDecide):
             V.published_version("npm", "x")
         self.assertEqual(sleep.call_count, 2)
@@ -339,24 +340,47 @@ class Registries(unittest.TestCase):
     def test_retry_after_is_believed_up_to_a_cap(self):
         for header, waits in (("5", [5, 5]), ("600", [V.RETRY_AFTER_CAP_S] * 2)):
             with self.subTest(header), mock.patch.object(
-                    V.urllib.request, "urlopen",
+                    V, "urlopen",
                     side_effect=[http_error(429, {"Retry-After": header})] * 2 + [response({"crate": {"max_stable_version": "1.0.0"}})]), \
                     mock.patch.object(V.time, "sleep") as sleep:
                 self.assertEqual(V.published_version("crates.io", "x"), "1.0.0")
             self.assertEqual([c.args[0] for c in sleep.call_args_list], waits)
 
     def test_a_spec_tag_that_does_not_exist_is_not_retried(self):
-        with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(404)]) as urlopen, \
+        with mock.patch.object(V, "urlopen", side_effect=[http_error(404)]) as urlopen, \
                 mock.patch.object(V.time, "sleep") as sleep, tempfile.TemporaryDirectory() as d, \
                 self.assertRaisesRegex(V.CannotDecide, "404"):
             V.fetch_spec("v9.9.9", d)
         self.assertEqual((urlopen.call_count, sleep.call_count), (1, 0))
 
     def test_another_client_error_is_not_retried(self):
-        with mock.patch.object(V.urllib.request, "urlopen", side_effect=[http_error(403)]) as urlopen, \
+        with mock.patch.object(V, "urlopen", side_effect=[http_error(403)]) as urlopen, \
                 mock.patch.object(V.time, "sleep"), self.assertRaises(V.CannotDecide):
             V.published_version("crates.io", "x")
         self.assertEqual(urlopen.call_count, 1)
+
+    def test_the_spec_fetch_retries_as_the_registry_lookups_do(self):
+        for answers, calls in (([http_error(400)], 1), ([http_error(403)], 1),
+                               ([http_error(503)] * 3, 3), ([http_error(429)] * 3, 3)):
+            with self.subTest(answers[0].code), mock.patch.object(V, "urlopen", side_effect=answers) as urlopen, \
+                    mock.patch.object(V.time, "sleep"), tempfile.TemporaryDirectory() as d, \
+                    self.assertRaises(V.CannotDecide):
+                V.fetch_spec("v1.0.0", d)
+            self.assertEqual(urlopen.call_count, calls)
+        with mock.patch.object(V, "urlopen", side_effect=[http_error(503), response({"openapi": "3.1.0"})]), \
+                mock.patch.object(V.time, "sleep"), tempfile.TemporaryDirectory() as d:
+            self.assertEqual(json.loads(Path(V.fetch_spec("v1.0.0", d)).read_text()), {"openapi": "3.1.0"})
+
+    def test_the_token_follows_a_redirect_only_on_its_own_host(self):
+        handler = V.AuthStaysOnItsHost()
+        for newurl, kept in (("https://api.github.com/repositories/1/releases/latest", True),
+                             ("https://elsewhere.example/x", False),
+                             ("http://api.github.com/x", False)):
+            with self.subTest(newurl):
+                req = urllib.request.Request("https://api.github.com/repos/o/x/releases/latest",
+                                             headers={"Authorization": "Bearer t0k"})
+                new = handler.redirect_request(req, None, 302, "Found", {}, newurl)
+                self.assertEqual(new.get_header("Authorization"), "Bearer t0k" if kept else None)
 
 
 class WithoutOasdiff(unittest.TestCase):
@@ -446,6 +470,15 @@ class WithoutOasdiff(unittest.TestCase):
             code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2")
         self.assertEqual((code, r["outcome"]), (2, "could-not-classify"))
         self.assertIn("RuntimeError: boom", r["reason"])
+
+    def test_an_error_while_reporting_is_could_not_classify_too(self):
+        for target in ("render", "unenforced_release"):
+            with self.subTest(target), mock.patch.object(V, target, side_effect=RuntimeError("boom")):
+                code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2")
+                self.assertEqual((code, r["outcome"]), (2, "could-not-classify"))
+                self.assertIn("RuntimeError: boom", r["reason"])
+                code, r = gate(*SAME_PIN, "--proposed-version", "0.11.2", "--report")
+                self.assertEqual((code, r["outcome"]), (0, "could-not-classify"))
 
     def test_report_mode_exits_zero_on_an_unreadable_input_and_still_says_so(self):
         code, r = gate(*SAME_PIN, "--report", "--manifest", "/nonexistent/Cargo.toml")

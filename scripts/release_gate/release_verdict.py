@@ -159,15 +159,34 @@ def smallest_breaking_bump(old):
 RETRY_AFTER_CAP_S = 60
 
 
-def http_json(url, headers=None):
-    """GET a JSON document, retrying transient failures. Returns None on 404."""
+class AuthStaysOnItsHost(urllib.request.HTTPRedirectHandler):
+    """urllib's redirect copies every header but the body's to the new URL, `Authorization` included,
+    whatever host that is. Keep it only when the redirect stays on the same scheme and host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        old_origin = urllib.parse.urlsplit(req.full_url)[:2]
+        if new is not None and urllib.parse.urlsplit(new.full_url)[:2] != old_origin:
+            new.remove_header("Authorization")
+        return new
+
+
+# Every request goes through this one opener (the tests stub it).
+urlopen = urllib.request.build_opener(AuthStaysOnItsHost).open
+
+
+def http_get(url, headers=None, decode=bytes):
+    """GET `url` and return `decode(body)`, retrying transient failures. Returns None on 404.
+
+    Retried: 5xx, 429, a GitHub rate-limit 403, a network error, and a body `decode` rejects with
+    ValueError. Any other 4xx is not: asking again gets the same answer."""
     last = None
     for attempt in range(3):
         wait = 2 ** attempt
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-                return json.load(response)
+            with urlopen(request, timeout=TIMEOUT_S) as response:
+                return decode(response.read())
         except urllib.error.HTTPError as err:
             if err.code == 404:
                 return None
@@ -189,6 +208,11 @@ def http_json(url, headers=None):
         if attempt < 2:
             time.sleep(wait)
     raise CannotDecide(f"GET {url} failed: {last}")
+
+
+def http_json(url, headers=None):
+    """GET a JSON document, as http_get. Returns None on 404."""
+    return http_get(url, headers, decode=json.loads)
 
 
 def published_version(registry, package):
@@ -298,25 +322,12 @@ def pin_at_tag(tag, pin_file):
 
 def fetch_spec(tag, workdir):
     url = SPEC_URL.format(tag=tag)
-    last = None
-    for attempt in range(3):
-        try:
-            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-                path = Path(workdir) / f"openapi-{tag}.json"
-                path.write_bytes(response.read())
-                return str(path)
-        except urllib.error.HTTPError as err:
-            if err.code == 404:  # no such tag: retrying won't make one
-                raise CannotDecide(f"there is no {tag} spec at {url} (404)") from None
-            last = f"HTTP {err.code}"
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-        except (urllib.error.URLError, TimeoutError) as err:
-            last = str(err)
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-    raise CannotDecide(f"cannot fetch the {tag} spec from {url}: {last}")
+    body = http_get(url)
+    if body is None:  # no such tag: retrying won't make one
+        raise CannotDecide(f"there is no {tag} spec at {url} (404)")
+    path = Path(workdir) / f"openapi-{tag}.json"
+    path.write_bytes(body)
+    return str(path)
 
 
 # --- the package's own public API -------------------------------------------------------------
@@ -544,16 +555,25 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     result = run(args)
-    print(json.dumps(result, indent=2))
+    try:
+        markdown, unenforced = render(result), unenforced_release(result)
+    except Exception as err:  # noqa: BLE001
+        # Same rule as run()'s: a traceback here would exit 1, "the version does not fit".
+        result.update(outcome="could-not-classify",
+                      reason=f"the gate itself failed: {type(err).__name__}: {err}")
+        markdown, unenforced = f"### Pre-publish verdict: ⚠️ COULD NOT CLASSIFY\n\n{result['reason']}\n", None
+    print(json.dumps(result, indent=2, default=str))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
-        with open(summary, "a") as handle:
-            handle.write(render(result))
+        try:
+            with open(summary, "a") as handle:
+                handle.write(markdown)
+        except OSError as err:
+            print(f"::warning title=prepublish-verdict::cannot write the job summary: {err}", file=sys.stderr)
     level = {"pass": "notice", "fail": "error", "could-not-classify": "error"}[result["outcome"]]
     if args.report and result["outcome"] != "pass":
         level = "warning"
     print(f"::{level} title=prepublish-verdict ({result['outcome']})::{result['reason']}", file=sys.stderr)
-    unenforced = unenforced_release(result)
     if unenforced:
         print(f"::warning title=prepublish-verdict (not enforced)::{unenforced}", file=sys.stderr)
     return 0 if args.report else EXIT[result["outcome"]]

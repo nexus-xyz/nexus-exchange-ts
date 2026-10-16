@@ -23,11 +23,15 @@
  *     must exit 1 (failed);
  *   - stub_server.py 503, which answers every request with a 503: must exit 2,
  *     because an outage reads as unreachable, never as failed or passed.
+ * Each must also print the `smoke: ...` line that names that outcome (a
+ * TransportError, an EMPTY list, an ApiError 503), so a probe cannot pass on
+ * the right code for another reason.
  * Exit 0 (passed) is exercised only by the real read, which runs on a release
- * PR or a change to this gate. Each probe has a 180 s timeout. A wrong code, or
- * a timeout, is its own failure, named "(outcomes)". The probes run the built
- * probe directly with stdout and stderr captured, so they emit no annotations;
- * each prints one plain log line instead: case, exit code, first line of output.
+ * PR or a change to this gate. Each probe has a 180 s timeout. A wrong code, a
+ * missing outcome line, or a timeout, is its own failure, named "(outcomes)".
+ * The probes run the built probe directly with stdout and stderr captured, so
+ * they emit no annotations; each prints one plain log line instead: case, exit
+ * code, first line of output.
  */
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -140,11 +144,12 @@ function startStub(status) {
 }
 
 /**
- * One case: run the probe against `url` and expect exit `want`. Logs one plain
- * line (case, exit code, first line of output) and returns a message naming the
- * case and what it got when the code is wrong, or undefined when it is right.
+ * One case: run the probe against `url` and expect exit `want` and an outcome
+ * line starting `line`. Logs one plain line (case, exit code, first line of
+ * output) and returns a message naming the case and what it got when either is
+ * wrong, or undefined when both are right.
  */
-function expectExit(consumer, label, url, want, what) {
+function expectExit(consumer, label, url, want, line, what) {
   const run = runProbe(consumer, url);
   const exit = run.error
     ? `no exit (${run.error.code})`
@@ -153,32 +158,51 @@ function expectExit(consumer, label, url, want, what) {
   if (run.status !== want) {
     return `${label} case: expected exit ${want} from ${what}, ${gotWhat(run)}`;
   }
-  // As the real read requires: the right code alone could be a crash that
-  // happens to exit that way. The probe also prints its own `smoke: ...` line.
-  if (!/^smoke: \S/.test((run.stdout ?? "").trim())) {
-    return `${label} case: exited ${want} as expected, but printed no "smoke: ..." outcome line. ${firstLine(run)}`;
+  // The right code alone could be a crash that happens to exit that way, or
+  // another outcome that shares the code (a 503 and a refused connection both
+  // exit 2). The probe's own `smoke: ...` line names which one it was.
+  if (!(run.stdout ?? "").trim().startsWith(line)) {
+    return `${label} case: exited ${want} as expected, but did not print the outcome line for ${what} (expected "${line}..."). ${firstLine(run)}`;
   }
   return undefined;
 }
 
+/** The start of the line probe.mjs prints when `url` gave no usable answer. */
+const unusable = (url) => `smoke: unreachable: ${url} gave no usable answer: `;
+
 /**
  * Prove the probe's outcomes before trusting it with the testnet: nothing
- * listening is exit 2, an answer with no markets is exit 1, a 503 is exit 2.
- * Returns a message naming the case and the code it got, or undefined when all
- * three are right.
+ * listening is exit 2, an answer with no markets is exit 1, a 503 is exit 2,
+ * each with the outcome line probe.mjs prints for it. Returns a message naming
+ * the case and what it got, or undefined when all three are right.
  */
 async function checkOutcomes(consumer) {
+  const nowhere = "http://127.0.0.1:1";
   const wrong = expectExit(
     consumer,
     "unreachable",
-    "http://127.0.0.1:1",
+    nowhere,
     2,
+    `${unusable(nowhere)}TransportError: `,
     "a base URL nothing listens on",
   );
   if (wrong) return wrong;
-  for (const [label, status, want, what] of [
-    ["empty", undefined, 1, "a server that answers with no markets"],
-    ["outage", 503, 2, "a server that answers every request with 503"],
+  for (const [label, status, want, line, what] of [
+    [
+      "empty",
+      undefined,
+      1,
+      (url) =>
+        `smoke: failed: fetchMarketsSummary decoded an EMPTY list from ${url}`,
+      "a server that answers with no markets",
+    ],
+    [
+      "outage",
+      503,
+      2,
+      (url) => `${unusable(url)}ApiError: Exchange API 503: `,
+      "a server that answers every request with 503",
+    ],
   ]) {
     let stub;
     try {
@@ -188,13 +212,8 @@ async function checkOutcomes(consumer) {
       } catch (err) {
         return `${label} case: could not start scripts/release_gate/stub_server.py: ${err.message}`;
       }
-      const wrong = expectExit(
-        consumer,
-        label,
-        `http://127.0.0.1:${port}`,
-        want,
-        what,
-      );
+      const url = `http://127.0.0.1:${port}`;
+      const wrong = expectExit(consumer, label, url, want, line(url), what);
       if (wrong) return wrong;
     } finally {
       stub?.kill();
@@ -229,7 +248,7 @@ try {
   outcomeError = await checkOutcomes(consumer);
   if (outcomeError !== undefined) throw new Error(outcomeError);
   console.log(
-    "the probe's outcomes hold: nothing listening exits 2, an empty answer exits 1, a 503 exits 2",
+    "the probe's outcomes hold: nothing listening exits 2, an empty answer exits 1, a 503 exits 2, each with its outcome line",
   );
 
   const probe = spawnSync(

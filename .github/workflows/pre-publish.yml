@@ -95,8 +95,10 @@ jobs:
           # parent is the base it was merged onto, so this lists the PR's own changes. Diffing from the
           # event's base.sha also listed whatever landed on the base since, which flipped unrelated PRs
           # into the testnet read.
+          # Failing here is deliberate (ENG-21487): a PR with conflicts can't merge anyway, and
+          # guessing its changes from base.sha is what this step replaced.
           if ! git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
-            echo "::error title=prepublish-smoke::HEAD is not a merge commit, or the checkout is shallow (this job needs fetch-depth: 0), so the PR's own changes can't be listed"
+            echo "::error title=prepublish-smoke::HEAD is not a merge commit, so the PR's own changes can't be listed. Either the PR has merge conflicts with its base (GitHub makes no merge commit for it: resolve them and the checks run again), or the checkout is shallow (this job needs fetch-depth: 0)"
             exit 1
           fi
           # Into a file, not a pipe: under pipefail a failed `git diff`, or one cut short by
