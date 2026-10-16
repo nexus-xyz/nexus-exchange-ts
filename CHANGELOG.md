@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.7.0...v0.7.1) (2026-10-16)
+
+
+### Features
+
+* **wallet:** sign RegisterAgent with the accepted terms version (ENG-21315) ([#111](https://github.com/nexus-xyz/nexus-exchange-ts/issues/111)) ([c0ee619](https://github.com/nexus-xyz/nexus-exchange-ts/commit/c0ee619e797edac3844fcca4a201b7e531f125fd))
+
 ## [0.7.0](https://github.com/nexus-xyz/nexus-exchange-ts/compare/v0.6.0...v0.7.0) (2026-10-09)
 
 
