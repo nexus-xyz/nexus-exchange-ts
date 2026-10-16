@@ -80,7 +80,8 @@ jobs:
         id: app-token
         if: env.HAS_RELEASE_BOT == 'true'
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          # The App's numeric ID works as client-id: the action sends either one as the JWT issuer.
+          client-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           # Ask for only what release-please needs. Without these the token gets
           # every permission the App's installation has; the job's own
