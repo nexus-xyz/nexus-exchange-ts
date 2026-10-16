@@ -37,13 +37,14 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { REPO, pack, run } from "./pack.mjs";
 
@@ -356,10 +357,12 @@ function main() {
   process.exit(code);
 }
 
-// Run as a script, not when public-surface.test.mjs imports `surface`.
+// Run as a script, not when public-surface.test.mjs imports `surface`. By
+// realpath: through a symlink, argv[1] is the link and import.meta.url the
+// target, and comparing those as given ran nothing and exited 0.
 if (
   process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
 ) {
   main();
 }
