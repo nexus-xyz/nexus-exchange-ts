@@ -1,13 +1,21 @@
 // Tests for the surface reader in public-surface.mjs (ENG-18798), on synthetic
 // packages written to a temp dir: its refusals, and the listing rules the
-// header promises. public-surface.mjs runs this file before it generates or
-// compares anything.
+// header promises. Also that the script runs when invoked through a symlink.
+// public-surface.mjs runs this file before it generates or compares anything.
 //
 //   node --test scripts/release_gate/public-surface.test.mjs
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 import { surface } from "./public-surface.mjs";
 
@@ -159,6 +167,30 @@ describe("listing", () => {
         "inner.d.ts": "export declare const B: number;",
       }),
       ["const B: number"],
+    );
+  });
+});
+
+describe("invocation", () => {
+  // Through a symlink, argv[1] is the link and import.meta.url its target. A
+  // guard comparing those as given skipped main() and exited 0, a silent pass.
+  // A bad argument is main()'s cheapest observable step: its usage line and
+  // exit 64, before any pack (and before it runs this file again).
+  test("through a symlink, main() still runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "surface-test-"));
+    roots.push(dir);
+    const link = join(dir, "public-surface.mjs");
+    symlinkSync(
+      fileURLToPath(new URL("./public-surface.mjs", import.meta.url)),
+      link,
+    );
+    const result = spawnSync(process.execPath, [link, "--not-a-flag"], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 64, result.stderr);
+    assert.match(
+      result.stderr,
+      /^usage: node scripts\/release_gate\/public-surface\.mjs/,
     );
   });
 });
